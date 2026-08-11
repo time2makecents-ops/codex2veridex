@@ -1,0 +1,3 @@
+[mcp_servers.veridex]
+command = "python"
+args = ["C:\\codex2veridex\\veridex_mcp.py"]
