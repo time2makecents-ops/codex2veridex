@@ -124,6 +124,8 @@ function renderRoute() {
 function render() {
   el("workspace-name").textContent = state.workspace?.label || "Workspace";
   el("session-title").textContent = state.session?.title || "New session";
+  const room = (state.session?.active_room || "lobby").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  el("room-location").textContent = `${room} · ${state.session?.active_persona || "Receptionist"}`;
   el("send-button").disabled = state.sending;
   el("message-input").disabled = state.sending;
   renderNavigation();

@@ -65,6 +65,7 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertLess(command.index("--ask-for-approval"), command.index("exec"))
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
         self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(response["provider"], "codex_cli")
         self.assertEqual(response["text"], "Ready")
 

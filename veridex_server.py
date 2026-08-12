@@ -48,6 +48,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("session_id is required")
     session = STORE.find_session(session_id)
     workspace_id = workspace_id or str(session["workspace_id"])
+    active_room = str(session.get("active_room") or "lobby")
+    active_persona = str(session.get("active_persona") or "Receptionist")
+    room_title = "Lobby" if active_room == "lobby" else active_room.replace("_", " ").title()
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
     user_message = STORE.append_message(workspace_id, session_id, "user", text, speaker="You")
     task_type = classify_task(text)
@@ -55,7 +58,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         {
             "task_type": task_type,
             "system_prompt": (
-                "You are Veridex in My Office. Help the local user directly. "
+                f"You are the {active_persona}, the Veridex assistant in {room_title}. "
+                f"The active room is {room_title}; do not claim the user is in another room. "
                 "Use the governed context for continuity, but do not claim actions that were not performed."
             ),
             "user_prompt": text,
@@ -67,7 +71,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         session_id,
         "assistant",
         result["text"],
-        speaker="Veridex",
+        speaker=active_persona,
         provider=result["provider"],
         model=result["model"],
         reasoning_effort=result["reasoning_effort"],

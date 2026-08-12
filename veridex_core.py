@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
+MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
 
 
 def utc_now() -> str:
@@ -27,6 +28,20 @@ def _title(text: str, fallback: str) -> str:
     if not cleaned:
         return fallback
     return cleaned if len(cleaned) <= 54 else cleaned[:51].rstrip() + "..."
+
+
+def repair_text_encoding(text: Any) -> str:
+    """Repair UTF-8 text that a Windows code page decoded before storage."""
+    value = str(text or "")
+    if not any(marker in value for marker in MOJIBAKE_MARKERS):
+        return value
+    try:
+        repaired = value.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+    original_markers = sum(value.count(marker) for marker in MOJIBAKE_MARKERS)
+    repaired_markers = sum(repaired.count(marker) for marker in MOJIBAKE_MARKERS)
+    return repaired if repaired_markers < original_markers else value
 
 
 def classify_task(text: str) -> str:
@@ -129,8 +144,8 @@ class VeridexStore:
                 "session_id": session_id,
                 "workspace_id": workspace_id,
                 "title": _title(title, "New session"),
-                "active_room": "my_office",
-                "active_persona": "Veridex",
+                "active_room": "lobby",
+                "active_persona": "Receptionist",
                 "created_at": now,
                 "updated_at": now,
             }
@@ -174,8 +189,8 @@ class VeridexStore:
                 "message_id": _identifier("msg"),
                 "timestamp": utc_now(),
                 "role": role,
-                "text": str(text),
-                "room": session.get("active_room", "my_office"),
+                "text": repair_text_encoding(text),
+                "room": session.get("active_room", "lobby"),
             }
             row.update({key: value for key, value in metadata.items() if value not in (None, "")})
             transcript = self.session_dir(workspace_id, session_id) / "transcript.ndjson"
@@ -200,6 +215,7 @@ class VeridexStore:
             except json.JSONDecodeError:
                 continue
             if isinstance(value, dict):
+                value["text"] = repair_text_encoding(value.get("text"))
                 rows.append(value)
         return rows[-max(1, min(limit, 1000)) :]
 

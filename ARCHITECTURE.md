@@ -19,7 +19,8 @@ veridex_server.py :8765
 ```
 
 There is one fixed local account. Workspaces contain sessions; each session owns
-its transcript and one active room (`my_office`). This preserves the single-room
+its transcript and one active room. New sessions start in `lobby` with the
+Receptionist. This preserves the single-room
 governance boundary without requiring onboarding or account discovery.
 
 ## Request lifecycle

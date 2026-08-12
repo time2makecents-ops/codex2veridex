@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from veridex_core import VeridexStore, classify_task
+from veridex_core import VeridexStore, classify_task, repair_text_encoding
 
 
 class VeridexCoreTests(unittest.TestCase):
@@ -27,6 +27,8 @@ class VeridexCoreTests(unittest.TestCase):
             )
             restored = store.bootstrap(workspace_id, session_id)
             self.assertEqual(restored["account"]["user_id"], "local-user")
+            self.assertEqual(restored["session"]["active_room"], "lobby")
+            self.assertEqual(restored["session"]["active_persona"], "Receptionist")
             self.assertEqual(len(restored["messages"]), 2)
             self.assertEqual(restored["messages"][1]["model"], "gpt-5.6-sol")
             transcript = Path(temporary) / "workspaces" / workspace_id / "sessions" / session_id / "transcript.ndjson"
@@ -47,6 +49,9 @@ class VeridexCoreTests(unittest.TestCase):
         self.assertEqual(classify_task("Plan the system architecture"), "planning")
         self.assertEqual(classify_task("Run a smoke check of the UI"), "testing")
         self.assertEqual(classify_task("hello"), "simple")
+
+    def test_repairs_windows_mojibake_in_existing_transcript_text(self) -> None:
+        self.assertEqual(repair_text_encoding("Youâ€™re in the Lobby."), "You’re in the Lobby.")
 
 
 if __name__ == "__main__":

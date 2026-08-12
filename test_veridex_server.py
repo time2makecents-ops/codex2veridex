@@ -34,6 +34,31 @@ class VeridexServerTests(unittest.TestCase):
             rows = store.load_messages(payload["workspace_id"], payload["session_id"])
             self.assertEqual(rows[-1]["provider"], "codex_cli")
             self.assertEqual(rows[-1]["task_type"], "coding")
+            self.assertEqual(rows[-1]["room"], "lobby")
+            self.assertEqual(rows[-1]["speaker"], "Receptionist")
+
+    def test_new_workspace_prompt_identifies_lobby_not_my_office(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            workspace = store.create_workspace("Fresh workspace")
+            session = store.create_session(workspace["workspace_id"], "New session")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "task_type": "simple",
+                "text": "You’re in the Lobby.",
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ) as invoke:
+                veridex_server.chat_response(
+                    {"workspace_id": workspace["workspace_id"], "session_id": session["session_id"], "text": "Where am I?"}
+                )
+            prompt = invoke.call_args.args[0]["system_prompt"]
+            self.assertIn("active room is Lobby", prompt)
+            self.assertNotIn("My Office", prompt)
 
 
 if __name__ == "__main__":

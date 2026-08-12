@@ -183,6 +183,8 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
             command,
             input=prompt,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout_seconds,
             check=False,

@@ -10,6 +10,7 @@ and does not read from or write to `C:\Office-App`.
 - Automatic task routing to Codex models and reasoning levels.
 - A visible status strip whenever the model is selected or changed.
 - Multiple workspaces and sessions under one local account.
+- Every new workspace and session starts in the Lobby with the Receptionist.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
