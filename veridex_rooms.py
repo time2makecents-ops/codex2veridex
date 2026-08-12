@@ -98,6 +98,8 @@ def route_room_request(text: str) -> Optional[Dict[str, Any]]:
         return None
     requested = navigation.group(1)
     room = resolve_room(requested)
+    if room is None and re.search(r"\b(?:past|bypass|around|through)\b.{0,40}\bgate\b", requested):
+        return None
     return {"action": "navigate", "room": room, "requested": requested}
 
 

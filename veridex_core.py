@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import re
@@ -18,6 +19,7 @@ from veridex_rooms import room_by_id, rooms_payload
 DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
 MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
 GOVERNANCE_REGISTRY_PATH = Path(__file__).resolve().parent / "governance" / "navigator_governance_v1.0.0.json"
+GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def utc_now() -> str:
@@ -64,7 +66,10 @@ def classify_task(text: str) -> str:
         return "media"
     if re.search(r"\b(test|testing|verify|validation|smoke check|quality assurance|qa)\w*\b", value):
         return "testing"
-    if re.search(r"\b(search|research|latest|current|look up|find online|web)\w*\b", value):
+    if re.search(
+        r"\b(search|research|latest|current|look up|find online|web|google|social media|upcoming shows?|concert dates?)\w*\b",
+        value,
+    ):
         return "search_synthesis"
     simple = re.sub(r"[^a-z0-9 ]", "", value).strip()
     if simple in {"hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "yes", "no", "good morning", "good night"}:
@@ -106,6 +111,9 @@ class VeridexStore:
 
     def files_manifest_path(self, workspace_id: str, session_id: str) -> Path:
         return self.session_dir(workspace_id, session_id) / "files.json"
+
+    def generated_staging_root(self, workspace_id: str, session_id: str) -> Path:
+        return self.session_dir(workspace_id, session_id) / "generated_staging"
 
     def governance_state_path(self, workspace_id: str) -> Path:
         return self.workspace_dir(workspace_id) / "governance_state.json"
@@ -403,6 +411,9 @@ class VeridexStore:
         filename: str,
         content: bytes,
         content_type: str = "",
+        *,
+        source: str = "upload",
+        source_path: str = "",
     ) -> Dict[str, Any]:
         with self._lock:
             session = self.find_session(session_id)
@@ -417,6 +428,7 @@ class VeridexStore:
             path = self.files_dir(workspace_id, session_id) / stored_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
+            sha256 = hashlib.sha256(content).hexdigest()
             ledger_rows = self.list_artifact_ledger(workspace_id)
             artifact_number = len(ledger_rows) + 1
             row = {
@@ -425,6 +437,8 @@ class VeridexStore:
                 "name": safe_name,
                 "content_type": content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
                 "size": len(content),
+                "sha256": sha256,
+                "source": str(source or "upload"),
                 "path": str(path.resolve()),
                 "created_at": utc_now(),
                 "ledgered_at": utc_now(),
@@ -441,6 +455,9 @@ class VeridexStore:
                     "name": safe_name,
                     "content_type": row["content_type"],
                     "size": len(content),
+                    "sha256": sha256,
+                    "source": row["source"],
+                    "source_path": str(source_path or ""),
                     "path": row["path"],
                     "ledgered_at": row["ledgered_at"],
                 },
@@ -448,6 +465,79 @@ class VeridexStore:
             self._write_json(self.files_manifest_path(workspace_id, session_id), files)
             self._touch_session(workspace_id, session_id)
             return row
+
+    def prepare_generated_output_dir(self, workspace_id: str, session_id: str, request_id: str) -> Path:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        safe_request_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(request_id or "generated")).strip("_")
+        path = self.generated_staging_root(workspace_id, session_id) / (safe_request_id or "generated")
+        path.mkdir(parents=True, exist_ok=True)
+        return path.resolve()
+
+    @staticmethod
+    def _valid_generated_image(path: Path) -> bool:
+        if path.suffix.lower() not in GENERATED_IMAGE_EXTENSIONS or not path.is_file() or path.stat().st_size <= 0:
+            return False
+        with path.open("rb") as stream:
+            header = stream.read(16)
+        suffix = path.suffix.lower()
+        if suffix == ".png":
+            return header.startswith(b"\x89PNG\r\n\x1a\n")
+        if suffix in {".jpg", ".jpeg"}:
+            return header.startswith(b"\xff\xd8\xff")
+        if suffix == ".gif":
+            return header.startswith((b"GIF87a", b"GIF89a"))
+        if suffix == ".webp":
+            return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+        return False
+
+    def import_generated_file(
+        self,
+        workspace_id: str,
+        session_id: str,
+        source_path: Path,
+        display_name: str = "",
+    ) -> Dict[str, Any]:
+        candidate = Path(source_path).resolve()
+        if not self._valid_generated_image(candidate):
+            raise ValueError(f"Generated image is missing, empty, unsupported, or invalid: {candidate}")
+        content = candidate.read_bytes()
+        sha256 = hashlib.sha256(content).hexdigest()
+        for existing in self.list_files(workspace_id, session_id):
+            if str(existing.get("sha256") or "") == sha256:
+                return existing
+        return self.save_file(
+            workspace_id,
+            session_id,
+            display_name or candidate.name,
+            content,
+            mimetypes.guess_type(display_name or candidate.name)[0] or "application/octet-stream",
+            source="generated",
+            source_path=str(candidate),
+        )
+
+    def import_generated_artifacts(
+        self,
+        workspace_id: str,
+        session_id: str,
+        output_dir: Path,
+    ) -> List[Dict[str, Any]]:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        root = self.generated_staging_root(workspace_id, session_id).resolve()
+        candidate_root = Path(output_dir).resolve()
+        if candidate_root != root and root not in candidate_root.parents:
+            raise ValueError("Generated output directory is outside the active session")
+        if not candidate_root.is_dir():
+            return []
+        imported: List[Dict[str, Any]] = []
+        for candidate in sorted(candidate_root.rglob("*")):
+            if not self._valid_generated_image(candidate):
+                continue
+            imported.append(self.import_generated_file(workspace_id, session_id, candidate))
+        return imported
 
     def list_files(self, workspace_id: str, session_id: str) -> List[Dict[str, Any]]:
         session = self.find_session(session_id)

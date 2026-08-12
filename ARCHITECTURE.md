@@ -35,12 +35,19 @@ governance boundary without requiring onboarding or account discovery.
 2. The server saves the user message immediately.
 3. The deterministic room router handles explicit navigation and room-directory
    requests without a model call.
-4. Other requests receive a deterministic task class.
-5. The gateway maps that class to a Codex model and reasoning effort.
-6. An ephemeral `codex exec` process receives the governed prompt, room registry,
+4. Explicit Google requests run through the dedicated repository-local Chrome
+   profile, inspect up to three top sources, and attach bounded Google/source
+   evidence; failure returns locally and never substitutes another provider.
+5. Other requests receive a deterministic task class.
+6. The gateway maps that class to a Codex model and reasoning effort.
+7. An ephemeral `codex exec` process receives the governed prompt, room registry,
    recent transcript context, and the launcher's configured access mode.
-7. The server saves the answer and exact route metadata to `transcript.ndjson`.
-8. The UI shows the current route and a persistent route-change notice.
+8. For generated media, the server validates and imports staged outputs into the
+   active session, then records path, size, SHA-256, and artifact number.
+9. Navigator postflight rejects unsupported operational, file-creation,
+   search-provider, and stale-upcoming claims.
+10. The server saves the answer and exact route/artifact metadata to `transcript.ndjson`.
+11. The UI shows the current route, route-change notice, and verified artifact previews.
 
 ## Room state
 
@@ -61,8 +68,11 @@ dependencies.
 Navigator preflight handles governance questions, persistence scope, explicit
 SAVE authorization, unsupported canon mutation, and governed model-route
 validation before Codex runs. Postflight checks operational claims against
-captured Codex command evidence. A violation suppresses the candidate response
-and saves a separate Navigator hard-stop entry.
+completed Codex evidence. File creation has a stronger evidence contract:
+unrelated tool calls do not count, and completion requires a validated local
+file, exact canonical path, nonzero size, SHA-256 checksum, and numbered ledger
+entry. A violation suppresses the candidate response and saves a separate
+Navigator hard-stop entry when the candidate falsely claimed completion.
 
 Each workspace owns `governance_state.json`, `artifact_ledger.ndjson`, `governance_memos.ndjson`, and an
 append-only `governance_incidents.ndjson`. A session may temporarily own
@@ -74,6 +84,14 @@ Browser attachments are saved inside the active session directory, recorded in
 `files.json`, and passed to Codex by verified local path. Image attachments also
 use Codex's native `--image` input flag.
 
+Generated images follow a separate output path. Before invocation, Veridex
+creates `generated_staging/<message-id>/` inside the active session and gives
+that exact directory to Codex. After invocation, Veridex accepts only valid
+PNG, JPEG, GIF, or WebP files from that directory, imports them into canonical
+session `files/`, hashes and ledgers them, and exposes them through a
+session/file-ID-validated content endpoint. The transcript stores the canonical
+path rather than relying on Codex's temporary generated-image location.
+
 The launcher has two explicit modes:
 
 - Default: `--sandbox read-only --ask-for-approval never`.
@@ -84,6 +102,52 @@ allows normal local shell inspection and file work within the user's requested
 scope. It still requires tool evidence before the assistant claims a file was
 found or changed.
 
+## Browser search boundary
+
+`google_chrome_search.js` launches Chrome with a dedicated user-data directory
+under ignored Veridex `data/`, a loopback-only debugging endpoint, and no access
+to the user's normal Chrome profile. Login is manual and remains in Chrome's
+profile storage; Veridex source and environment configuration contain no Google
+password. `google_chrome_search.py` detects explicit Google intent, extracts the
+query, and returns bounded visible-result text and links to the server.
+
+The server supplies that evidence to Codex as governed data and adds a completed
+`google_browser_search` evidence record. Navigator's provider gate requires that
+record for explicit Google requests and rejects generic `web_search` evidence as
+a substitution. Search synthesis also receives the current local date; postflight
+rejects past written, slash-formatted, or ISO dates inside an upcoming section.
+For that specific failure, the request pipeline performs one bounded rewrite
+using the same governed evidence. Navigator records a visible correction and
+delivers the repaired answer when it passes; a second failure becomes a hard
+stop only when no governed Google evidence can be preserved. For a completed
+explicit Google search, a second date-classification failure returns bounded,
+clearly unclassified source excerpts. Past events are evidence, not violations;
+only falsely labeling them as upcoming violates the gate.
+
+Google continuity is session-scoped and bounded to recent messages. An explicit
+Google request establishes the provider and subject; `again`, `the results`, or
+a search-oriented follow-up with matching subject tokens reuses that subject.
+The query resolver appends only explicit refinements such as `upcoming shows`.
+This prevents conversational filler from becoming a query and keeps related
+follow-ups on the dedicated Google profile without making Google a global
+default for unrelated searches.
+
+Explicit Google requests use the `search_deep` route (`gpt-5.6-sol`, high). The
+Chrome bridge records bounded result text, links, and up to three opened-source
+records with `completed`, `limited`, or `failed` status. Opened page text has
+higher evidentiary weight than snippets; unavailable pages do not erase useful
+indexed snippets.
+
+## Active request cancellation
+
+The browser creates a unique request ID before posting a chat message. The HTTP
+request registers a thread-safe cancellation event for that request and passes
+it into both the Chrome bridge wrapper and Codex gateway. `/api/chat/cancel`
+sets only that event. A cancellable subprocess is terminated, the active request
+is unregistered in `finally`, and the transcript receives a deterministic
+`Stopped by you.` entry. The UI keeps the original chat request open until this
+acknowledgment arrives, so cancellation persistence is not a client-only visual.
+
 ## Personal governance rules
 
 The child Codex process ignores repository/user configuration to prevent MCP
@@ -92,6 +156,7 @@ recursion, so the gateway embeds the governing rules directly:
 - one active room, with no implicit navigation;
 - Veridex owns persistence, state, and authorization;
 - no claims of searches, saves, edits, sends, or execution without evidence;
+- no file-creation claim without a verified path, size, checksum, and artifact number;
 - no claims of durable memory without a saved transcript or governed path;
 - direct answers with uncertainty stated instead of invented results.
 

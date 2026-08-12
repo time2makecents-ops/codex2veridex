@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -43,6 +44,33 @@ ACTION_CLAIM = re.compile(
     r"\bverified (?:the\s+)?(?:file|path|result|command|test)\b",
     re.IGNORECASE,
 )
+FILE_CREATION_CLAIM = re.compile(
+    r"(?:^|[.!?]\s+)(?:successfully\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
+    r"\b(?:file|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif)\b|"
+    r"\b(?:i|we)\s+(?:have\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
+    r"\b(?:file|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif)\b|"
+    r"\b(?:image|illustration|picture|photo|graphic|artwork|bitmap|file)\s+(?:was|has been)\s+"
+    r"(?:created|generated|rendered|exported|saved|produced)\b",
+    re.IGNORECASE,
+)
+MEDIA_CREATION_REQUEST = re.compile(
+    r"\b(?:create|generate|make|draw|render|produce|design)\b.{0,100}"
+    r"\b(?:image|illustration|picture|photo|graphic|artwork|bitmap|comic|sprite)\b|"
+    r"\b(?:image|illustration|picture|photo|graphic|artwork|bitmap|comic|sprite)\b.{0,100}"
+    r"\b(?:create|generate|make|draw|render|produce|design)\b",
+    re.IGNORECASE,
+)
+MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "sept": 9, "october": 10, "november": 11, "december": 12,
+}
+EVENT_DATE = re.compile(
+    r"\b(" + "|".join(MONTHS) + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\b",
+    re.IGNORECASE,
+)
+ISO_EVENT_DATE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+NUMERIC_EVENT_DATE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+NUMERIC_MONTH_DAY = re.compile(r"\b(\d{1,2})/(\d{1,2})(?!/\d{2,4})\b")
 DESTRUCTIVE_INTENT = re.compile(
     r"\b(?:delete|remove|wipe|erase|format)\b.{0,100}\b(?:all files|everything|entire drive|whole drive|system files|windows folder|user profile|home directory)\b|"
     r"\b(?:all files|everything|entire drive|whole drive|system files|windows folder|user profile|home directory)\b.{0,100}\b(?:delete|remove|wipe|erase|format)\b",
@@ -229,16 +257,147 @@ class GovernanceRegistry:
             "gate_ids": [] if allowed else ["MODEL-ROUTE-GATE"],
         }
 
-    def postflight(self, response_text: str, evidence: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    @staticmethod
+    def requires_file_artifact(request_text: str, task_type: str) -> bool:
+        return str(task_type or "") == "media" and bool(MEDIA_CREATION_REQUEST.search(str(request_text or "")))
+
+    def postflight(
+        self,
+        response_text: str,
+        evidence: Iterable[Dict[str, Any]],
+        *,
+        request_text: str = "",
+        task_type: str = "",
+        generated_artifacts: Optional[Iterable[Dict[str, Any]]] = None,
+        current_date: str = "",
+        required_search_provider: str = "",
+    ) -> Dict[str, Any]:
         evidence_rows = [row for row in evidence if isinstance(row, dict)]
-        if ACTION_CLAIM.search(str(response_text or "")) and not evidence_rows:
+        completed_evidence = [row for row in evidence_rows if str(row.get("status") or "").casefold() == "completed"]
+        artifacts = [row for row in (generated_artifacts or []) if isinstance(row, dict)]
+
+        def verified_artifact(row: Dict[str, Any]) -> bool:
+            try:
+                size = int(row.get("size") or 0)
+                artifact_number = int(row.get("artifact_number") or 0)
+                path = Path(str(row.get("path") or "")).resolve()
+            except (TypeError, ValueError):
+                return False
+            sha256 = str(row.get("sha256") or "")
+            if (
+                not path.is_file()
+                or size <= 0
+                or path.stat().st_size != size
+                or artifact_number <= 0
+                or not str(row.get("ledgered_at") or "")
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256)
+            ):
+                return False
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest().casefold() == sha256.casefold()
+
+        valid_artifacts = [row for row in artifacts if verified_artifact(row)]
+        creation_claim = bool(FILE_CREATION_CLAIM.search(str(response_text or "")))
+        artifact_required = self.requires_file_artifact(request_text, task_type)
+        if (creation_claim or artifact_required) and not valid_artifacts:
+            return self._block(
+                ["FILE-ARTIFACT-VERIFICATION-GATE", "GATE-VERIFY", "TOOL-TRUTH-BOUNDARY"],
+                "No generated file was verified. A creation claim requires a real local path, nonzero size, SHA-256 checksum, and artifact-ledger entry.",
+                ["Generate the file, copy it into the active Veridex session, and register it before reporting completion."],
+                incident=creation_claim,
+            )
+        if required_search_provider:
+            matching_search = any(
+                str(row.get("type") or "") == "google_browser_search"
+                and str(row.get("provider") or "") == required_search_provider
+                for row in completed_evidence
+            )
+            substituted_search = any(str(row.get("type") or "") == "web_search" for row in completed_evidence)
+            if not matching_search or substituted_search:
+                reason = (
+                    "A generic web-search provider was used during an explicit Google request."
+                    if substituted_search
+                    else f"No completed search evidence from {required_search_provider} was present."
+                )
+                return self._block(
+                    ["GOOGLE-BROWSER-PROVIDER-GATE", "GATE-VERIFY", "TOOL-TRUTH-BOUNDARY"],
+                    reason,
+                    ["Run the query through the dedicated signed-in Veridex Chrome profile and do not substitute another provider."],
+                    incident=True,
+                )
+        if str(task_type or "") in {"search_synthesis", "search_deep"} and current_date:
+            try:
+                today = date.fromisoformat(current_date)
+            except ValueError:
+                today = None
+            if today:
+                upcoming_section = False
+                stale_dates: List[str] = []
+                unconfirmed_dates: List[str] = []
+                for line in str(response_text or "").splitlines():
+                    lowered = line.casefold()
+                    normalized_line = re.sub(r"^[\s#>*_`-]+|[\s*_`:]+$", "", lowered).strip()
+                    if re.match(r"^upcoming\b", normalized_line) and len(normalized_line) <= 100:
+                        upcoming_section = True
+                    elif re.match(r"^(?:past|previous|date needs confirmation|unconfirmed|other)\b", normalized_line):
+                        upcoming_section = False
+                    direct_upcoming_claim = "upcoming" in lowered and not re.search(
+                        r"\b(?:past|previous|not upcoming|already happened)\b", lowered
+                    )
+                    if not upcoming_section and not direct_upcoming_claim:
+                        continue
+                    for match in EVENT_DATE.finditer(line):
+                        if not match.group(3):
+                            unconfirmed_dates.append(match.group(0))
+                            continue
+                        year = int(match.group(3))
+                        try:
+                            event_date = date(year, MONTHS[match.group(1).casefold()], int(match.group(2)))
+                        except ValueError:
+                            continue
+                        if event_date < today:
+                            stale_dates.append(match.group(0))
+                    for match in ISO_EVENT_DATE.finditer(line):
+                        try:
+                            event_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                        except ValueError:
+                            continue
+                        if event_date < today:
+                            stale_dates.append(match.group(0))
+                    for match in NUMERIC_EVENT_DATE.finditer(line):
+                        try:
+                            event_date = date(int(match.group(3)), int(match.group(1)), int(match.group(2)))
+                        except ValueError:
+                            continue
+                        if event_date < today:
+                            stale_dates.append(match.group(0))
+                    for match in NUMERIC_MONTH_DAY.finditer(line):
+                        unconfirmed_dates.append(match.group(0))
+                if stale_dates:
+                    return self._block(
+                        ["CURRENT-DATE-SEARCH-GATE", "GATE-VERIFY", "TOOL-TRUTH-BOUNDARY"],
+                        f"Past event dates were labeled upcoming relative to {current_date}: {', '.join(stale_dates)}.",
+                        ["Move past dates out of the upcoming section and verify future dates against the current local date."],
+                        incident=True,
+                    )
+                if unconfirmed_dates:
+                    return self._block(
+                        ["CURRENT-DATE-SEARCH-GATE", "GATE-VERIFY", "TOOL-TRUTH-BOUNDARY"],
+                        f"Event dates without a verified year were labeled upcoming relative to {current_date}: {', '.join(unconfirmed_dates)}.",
+                        ["Move yearless dates to a date-needs-confirmation section unless the year is present in the governed evidence."],
+                        incident=True,
+                    )
+        if ACTION_CLAIM.search(str(response_text or "")) and not completed_evidence:
             return self._block(
                 ["VERIFICATION", "GATE-VERIFY", "TOOL-TRUTH-BOUNDARY"],
-                "The drafted response makes an operational claim without captured command or file evidence.",
+                "The drafted response makes an operational claim without completed matching command or file evidence.",
                 ["Run the operation with an evidence-producing tool, or state that the result is Unverified."],
                 incident=True,
             )
-        return {"allowed": True, "evidence": evidence_rows}
+        return {"allowed": True, "evidence": evidence_rows, "generated_artifacts": valid_artifacts}
 
     @staticmethod
     def _block(

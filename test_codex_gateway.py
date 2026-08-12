@@ -4,11 +4,13 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import codex_gateway
+from request_control import RequestCancelled
 
 
 class CodexGatewayTests(unittest.TestCase):
@@ -17,6 +19,8 @@ class CodexGatewayTests(unittest.TestCase):
         planning = codex_gateway.select_model("architecture")
         self.assertEqual((coding.model, coding.reasoning_effort), ("gpt-5.6-sol", "high"))
         self.assertEqual((planning.model, planning.reasoning_effort), ("gpt-5.6-sol", "high"))
+        deep_search = codex_gateway.select_model("search_deep")
+        self.assertEqual((deep_search.model, deep_search.reasoning_effort), ("gpt-5.6-sol", "high"))
 
     def test_selects_lower_cost_plan_models_for_general_and_simple_chat(self) -> None:
         conversation = codex_gateway.select_model("conversation")
@@ -67,6 +71,90 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertIn("never switch rooms implicitly", prompt)
         self.assertIn("tool-backed evidence", prompt)
         self.assertIn("durable memory", prompt)
+
+    def test_media_prompt_requires_copy_to_exact_veridex_output_directory(self) -> None:
+        output_dir = r"C:\codex2veridex\data\workspaces\ws\sessions\sess\generated_staging\msg"
+        prompt = codex_gateway.build_prompt(
+            {
+                "system_prompt": "system",
+                "user_prompt": "create an image",
+                "context": {},
+                "artifact_output_dir": output_dir,
+            },
+            codex_gateway.select_model("media"),
+        )
+        self.assertIn(output_dir, prompt)
+        self.assertIn("copy each final image", prompt)
+        self.assertIn("no verified file was created", prompt)
+
+    def test_google_prompt_uses_supplied_browser_evidence_and_current_date(self) -> None:
+        prompt = codex_gateway.build_prompt(
+            {
+                "system_prompt": "system",
+                "user_prompt": "check Google for Stella Jones",
+                "context": {
+                    "current_local_date": "2026-08-12",
+                    "event_time_scope": "all_relevant_dates",
+                    "google_browser_search": {
+                        "provider": "google_chrome_profile",
+                        "result_text": "September 1, 2026 - Blairally",
+                        "opened_sources": [
+                            {
+                                "title": "Venue calendar",
+                                "url": "https://example.com/show",
+                                "status": "completed",
+                                "text": "Stella Jones performs September 1, 2026.",
+                            }
+                        ],
+                    },
+                },
+            },
+            codex_gateway.select_model("search_deep"),
+        )
+        self.assertIn("dedicated signed-in Chrome profile", prompt)
+        self.assertIn("do not invoke a generic web-search substitute", prompt)
+        self.assertIn("current local date is 2026-08-12", prompt)
+        self.assertIn("past dates are valid evidence", prompt)
+        self.assertIn("all_relevant_dates", prompt)
+        self.assertIn("September 1, 2026 - Blairally", prompt)
+        self.assertIn("https://example.com/show", prompt)
+        self.assertIn("Prefer opened-source text", prompt)
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.subprocess.Popen")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_cancellable_invocation_terminates_process_tree(self, _which, popen, run) -> None:
+        process = popen.return_value
+        process.pid = 4321
+        process.communicate.return_value = ("", "")
+        cancelled = threading.Event()
+        cancelled.set()
+        with patch.dict(os.environ, {"VERIDEX_CODEX_WORKDIR": os.getcwd()}, clear=False):
+            with self.assertRaises(RequestCancelled):
+                codex_gateway.invoke_codex(
+                    {
+                        "task_type": "conversation",
+                        "system_prompt": "system",
+                        "user_prompt": "hello",
+                        "context": {},
+                        "cancel_event": cancelled,
+                    }
+                )
+        self.assertIn("taskkill", str(run.call_args.args[0][0]).casefold())
+
+    def test_execution_evidence_ignores_started_events(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {"type": "command_execution", "status": "in_progress", "command": "Copy-Item source target"},
+                    }
+                ),
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Done"}}),
+            ]
+        )
+        self.assertEqual(codex_gateway.extract_execution_evidence(stdout), [])
 
     @patch("codex_gateway.subprocess.run")
     @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")

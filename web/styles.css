@@ -77,6 +77,12 @@ button { cursor: pointer; }
 .message-governance { color: #9b3f13; font-size: 10px; font-weight: 750; margin-top: 7px; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .message-attachments span { padding: 4px 7px; background: var(--warm); color: #405047; font-size: 10px; }
+.generated-artifacts { display: grid; gap: 12px; margin-top: 14px; }
+.generated-artifact { margin: 0; border: 1px solid var(--line); background: var(--paper); }
+.generated-artifact img { display: block; width: 100%; max-height: 520px; object-fit: contain; background: #eef0eb; }
+.generated-artifact figcaption { display: grid; gap: 4px; padding: 10px 12px; }
+.generated-artifact a { color: var(--accent-dark); font-size: 12px; font-weight: 800; }
+.generated-artifact span, .generated-artifact code { color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
 .processing { color: var(--muted); font-style: italic; }
 
 .composer-wrap { padding: 16px clamp(24px, 10vw, 150px) 20px; background: linear-gradient(to top, white 75%, rgba(255,255,255,.7)); }
@@ -89,6 +95,8 @@ button { cursor: pointer; }
 .composer:focus-within { border-color: var(--accent-dark); box-shadow: 0 12px 38px rgba(23, 32, 25, .12); }
 .composer textarea { resize: none; border: 0; outline: 0; min-height: 54px; max-height: 180px; padding: 16px 18px; color: var(--ink); background: transparent; }
 .composer button { margin: 8px; min-width: 72px; height: 38px; border: 0; color: #102116; background: var(--accent); font-weight: 800; transition: transform 120ms ease, filter 120ms ease; }
+.composer button.stop-button { min-width: 48px; width: 48px; color: white; background: #243229; }
+.stop-glyph { display: block; width: 11px; height: 11px; margin: auto; border-radius: 2px; background: currentColor; }
 .composer .attach-button { min-width: 38px; width: 38px; border: 1px solid var(--line); color: var(--accent-dark); background: var(--paper); font-size: 22px; font-weight: 400; }
 .composer button:hover { filter: brightness(.95); transform: translateY(-1px); }
 .composer button:disabled { cursor: default; opacity: .45; transform: none; }

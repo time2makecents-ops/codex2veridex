@@ -15,6 +15,7 @@ and does not read from or write to `C:\Office-App`.
 - An always-visible Navigator monitor backed by deterministic hard gates.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - Session-scoped file attachments saved beside each session transcript.
+- Generated images verified, ledgered, previewed, and reported with their exact local path and checksum.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
 
@@ -71,6 +72,7 @@ data/
           transcript.ndjson
           files.json
           files/
+          generated_staging/
 ```
 
 Each assistant transcript entry records the provider, exact model, reasoning
@@ -80,6 +82,20 @@ Use the `+` button beside the composer to add files. Uploaded files are copied
 into the active session's `files/` directory and selected for the next message.
 They remain available in that session and can be selected again later.
 Uploaded files enter the workspace's numbered artifact ledger before analysis.
+
+While Veridex is working, the Send button becomes a square Stop control in the
+same composer position. Stop sends the active request ID to the server, cancels
+the running Google/Node or Codex process, and saves `Stopped by you.` in the
+session transcript. It does not stop the Veridex server or affect another
+session.
+
+For image-generation requests, Veridex assigns a request-specific staging
+directory before Codex runs. Codex must copy each final image there. The server
+then independently validates the image signature and nonzero size, copies it
+into the session's canonical `files/` directory, computes SHA-256, creates a
+numbered artifact-ledger entry, and records the exact canonical path in the
+assistant transcript. The completion is blocked if any of those checks fail.
+Verified images appear directly in the chat with an openable preview.
 
 ## Navigator governance
 
@@ -95,6 +111,11 @@ The snapshot is self-contained; Veridex does not read or modify `C:\Office-App`
 at runtime. Attempted hard-rule breaches are blocked with a separate Navigator
 message and appended to the workspace's `governance_incidents.ndjson` when an
 actual attempted breach needs debugging.
+
+Navigator's file-creation rule does not accept generic command activity as
+proof. A response may say that a file was created, generated, rendered,
+exported, or saved only when the same response has a verified local path,
+nonzero size, SHA-256 checksum, and numbered artifact-ledger record.
 
 Persistent preferences use a two-step governed flow: choose `persistent`, then
 reply exactly `SAVE`. Veridex records the approved text in the workspace's
@@ -121,13 +142,63 @@ active room.
 | Architecture, planning | `gpt-5.6-sol` | high |
 | Image/video reasoning | `gpt-5.6-sol` | high |
 | High-stakes topics | `gpt-5.6-sol` | xhigh |
-| Search/general chat | `gpt-5.6-terra` | medium |
+| Explicit Google/deep search | `gpt-5.6-sol` | high |
+| General search and chat | `gpt-5.6-terra` | medium |
 | UI checks and simple testing | `gpt-5.6-luna` | low |
 | Greetings and trivial requests | `gpt-5.6-luna` | low |
 | Room navigation and room directory | deterministic Veridex router | none |
 
 Routing is automatic. Prompt text cannot directly select an arbitrary model.
 Overrides are available in `.env.example`.
+
+## Dedicated Google search profile
+
+Explicit requests such as `check Google for ...`, `search Google for ...`, or
+`use a Google search ...` use a real local Chrome window with a dedicated
+repository-local browser profile. They do not silently fall back to a generic
+web-search provider.
+
+Set up the profile once:
+
+```powershell
+.\veridex.ps1 google-profile
+```
+
+In the Chrome window that opens, manually sign in as the account configured by
+`VERIDEX_GOOGLE_ACCOUNT`. The password is never stored by Veridex; Chrome owns
+the resulting browser session. Check readiness with:
+
+```powershell
+.\veridex.ps1 google-status
+```
+
+The default profile directory is
+`C:\codex2veridex\data\browser_profiles\veridex_google`, which is covered by
+the repository's ignored `data/` directory. It is separate from ordinary Chrome
+profiles and is not copied to GitHub. Search evidence records the provider,
+query, timestamp, configured account, and result count in the chat transcript.
+Navigator blocks an explicit-Google response if the dedicated browser evidence
+is absent or if a generic search provider was substituted. For event searches,
+the current local date is injected into the governed prompt and past dates are
+blocked from an `upcoming` section. When only that date classification fails,
+Navigator visibly performs one evidence-preserving correction and delivers the
+repaired answer. Past events remain valid results when the user asks generally
+about shows. If the correction still cannot classify dates safely, the completed
+Google evidence is returned as unclassified excerpts instead of suppressing the
+search; provider and evidence gates remain enforced.
+
+Google follow-ups inherit the most recent explicit Google subject within the
+active session. Phrases such as `search again`, `give me the results`, or a
+closely related request about the same named artist reuse that subject, so the
+user does not need to repeat `Google` on every turn. The resolved query—not the
+follow-up filler words—is recorded in transcript evidence.
+
+Explicit Google searches also inspect up to three top result pages through the
+same dedicated Chrome profile. Veridex records whether each page opened fully,
+was limited by login/access controls, or failed. Sol/high synthesizes the Google
+page, opened-source text, and URLs; it must prefer opened source text over a
+conflicting snippet and label snippet-only claims. This uses the existing Codex
+desktop authentication and does not add an API-key charge.
 
 ## Codex MCP bridge
 

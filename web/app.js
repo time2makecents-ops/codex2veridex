@@ -11,6 +11,8 @@ const state = {
   runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
   route: null,
   sending: false,
+  stopping: false,
+  activeRequestId: null,
   uploading: false,
   switchingRoom: false,
 };
@@ -114,6 +116,41 @@ function renderMessages() {
         });
         article.append(attachments);
       }
+      if (Array.isArray(row.generated_artifacts) && row.generated_artifacts.length) {
+        const artifacts = document.createElement("div");
+        artifacts.className = "generated-artifacts";
+        row.generated_artifacts.forEach((file) => {
+          const item = document.createElement("figure");
+          item.className = "generated-artifact";
+          const query = new URLSearchParams({
+            workspace_id: state.workspace.workspace_id,
+            session_id: state.session.session_id,
+            file_id: file.file_id,
+          });
+          const contentUrl = `/api/files/content?${query}`;
+          if (String(file.content_type || "").startsWith("image/")) {
+            const preview = document.createElement("img");
+            preview.src = contentUrl;
+            preview.alt = file.name || "Generated image";
+            preview.loading = "lazy";
+            item.append(preview);
+          }
+          const caption = document.createElement("figcaption");
+          const open = document.createElement("a");
+          open.href = contentUrl;
+          open.target = "_blank";
+          open.rel = "noopener";
+          open.textContent = file.name || "Open generated file";
+          const facts = document.createElement("span");
+          facts.textContent = `${formatBytes(file.size || 0)} · Artifact #${file.artifact_number} · SHA-256 ${file.sha256 || "unavailable"}`;
+          const path = document.createElement("code");
+          path.textContent = file.path || "Path unavailable";
+          caption.append(open, facts, path);
+          item.append(caption);
+          artifacts.append(item);
+        });
+        article.append(artifacts);
+      }
       if (row.model) {
         const route = document.createElement("div");
         route.className = "message-route";
@@ -135,7 +172,7 @@ function renderMessages() {
   if (state.sending) {
     const processing = document.createElement("article");
     processing.className = "message assistant processing";
-    processing.textContent = "Veridex is working…";
+    processing.textContent = state.stopping ? "Stopping…" : "Veridex is working…";
     container.append(processing);
   }
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
@@ -235,8 +272,10 @@ function renderRoute() {
   const status = el("route-status");
   if (state.sending) {
     status.className = "route-status checking";
-    el("route-model").textContent = "Checking governed route";
-    el("route-meta").textContent = "Matching room control, task, model, and reasoning level";
+    el("route-model").textContent = state.stopping ? "Stopping active request" : "Checking governed route";
+    el("route-meta").textContent = state.stopping
+      ? "Cancelling browser and model work"
+      : "Matching room control, task, model, and reasoning level";
     el("route-notice").textContent = "";
     return;
   }
@@ -247,7 +286,7 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  const deterministic = ["veridex_router", "veridex_governance"].includes(state.route.provider);
+  const deterministic = ["veridex_router", "veridex_governance", "veridex_google_router"].includes(state.route.provider);
   el("route-model").textContent = deterministic
     ? `Veridex · deterministic ${state.route.task_type.replaceAll("_", " ")}`
     : `Codex CLI · ${state.route.model}`;
@@ -264,7 +303,22 @@ function render() {
   el("composer-note").textContent = fullAccess
     ? "Full computer access · Codex can search and work with local files · transcripts stay here"
     : "Read-only computer access · attach files or restart with -FullAccess · transcripts stay here";
-  el("send-button").disabled = state.sending || state.uploading;
+  const sendButton = el("send-button");
+  sendButton.disabled = state.uploading || state.stopping;
+  sendButton.classList.toggle("stop-button", state.sending);
+  sendButton.replaceChildren();
+  if (state.sending) {
+    const glyph = document.createElement("span");
+    glyph.className = "stop-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    sendButton.append(glyph);
+    sendButton.setAttribute("aria-label", state.stopping ? "Stopping response" : "Stop response");
+    sendButton.title = state.stopping ? "Stopping response" : "Stop response";
+  } else {
+    sendButton.textContent = "Send";
+    sendButton.setAttribute("aria-label", "Send message");
+    sendButton.title = "Send message";
+  }
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
   renderRoomControl();
@@ -283,7 +337,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
 }
 
 function routeNotice(next) {
-  if (["veridex_router", "veridex_governance"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
+  if (["veridex_router", "veridex_governance", "veridex_google_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -297,6 +351,8 @@ function routeNotice(next) {
 async function sendMessage(text) {
   const selectedAttachments = state.files.filter((file) => state.selectedFiles.has(file.file_id));
   state.sending = true;
+  state.stopping = false;
+  state.activeRequestId = globalThis.crypto?.randomUUID?.() || `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   state.messages.push({
     role: "user",
     text: text || "Review the attached file or files and summarize what is important.",
@@ -311,6 +367,7 @@ async function sendMessage(text) {
         workspace_id: state.workspace.workspace_id,
         session_id: state.session.session_id,
         text,
+        request_id: state.activeRequestId,
         attachment_ids: selectedAttachments.map((file) => file.file_id),
       }),
     });
@@ -331,8 +388,30 @@ async function sendMessage(text) {
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
   } finally {
     state.sending = false;
+    state.stopping = false;
+    state.activeRequestId = null;
     render();
     el("message-input").focus();
+  }
+}
+
+async function stopMessage() {
+  if (!state.sending || state.stopping || !state.activeRequestId) return;
+  state.stopping = true;
+  render();
+  try {
+    const result = await api("/api/chat/cancel", {
+      method: "POST",
+      body: JSON.stringify({
+        request_id: state.activeRequestId,
+        session_id: state.session.session_id,
+      }),
+    });
+    if (!result.cancel_requested) showError("The request had already finished.");
+  } catch (error) {
+    state.stopping = false;
+    showError(error.message || String(error));
+    render();
   }
 }
 
@@ -351,6 +430,11 @@ el("composer").addEventListener("submit", async (event) => {
   input.value = "";
   input.style.height = "auto";
   await sendMessage(text);
+});
+
+el("send-button").addEventListener("click", () => {
+  if (state.sending) stopMessage();
+  else el("composer").requestSubmit();
 });
 
 async function uploadFiles(fileList) {

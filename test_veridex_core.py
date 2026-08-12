@@ -50,6 +50,10 @@ class VeridexCoreTests(unittest.TestCase):
         self.assertEqual(classify_task("Plan the system architecture"), "planning")
         self.assertEqual(classify_task("Run a smoke check of the UI"), "testing")
         self.assertEqual(classify_task("hello"), "simple")
+        self.assertEqual(
+            classify_task("check social media and google for a band called Stella Jones"),
+            "search_synthesis",
+        )
 
     def test_repairs_windows_mojibake_in_existing_transcript_text(self) -> None:
         self.assertEqual(repair_text_encoding("Youâ€™re in the Lobby."), "You’re in the Lobby.")
@@ -67,6 +71,40 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
             self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
             self.assertEqual(store.list_artifact_ledger(workspace_id)[0]["file_id"], saved["file_id"])
+            self.assertEqual(saved["source"], "upload")
+            self.assertEqual(len(saved["sha256"]), 64)
+
+    def test_generated_image_is_validated_imported_hashed_and_ledgered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            staging = store.prepare_generated_output_dir(workspace_id, session_id, "msg_test")
+            image = staging / "ant-drummer.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"verified-image-payload")
+
+            imported = store.import_generated_artifacts(workspace_id, session_id, staging)
+
+            self.assertEqual(len(imported), 1)
+            self.assertEqual(imported[0]["name"], "ant-drummer.png")
+            self.assertEqual(imported[0]["source"], "generated")
+            self.assertEqual(len(imported[0]["sha256"]), 64)
+            self.assertTrue(Path(imported[0]["path"]).is_file())
+            ledger = store.list_artifact_ledger(workspace_id)
+            self.assertEqual(ledger[0]["sha256"], imported[0]["sha256"])
+            self.assertEqual(ledger[0]["source_path"], str(image.resolve()))
+
+    def test_invalid_generated_image_is_not_imported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            staging = store.prepare_generated_output_dir(workspace_id, session_id, "msg_invalid")
+            (staging / "not-really-an-image.png").write_bytes(b"plain text")
+            self.assertEqual(store.import_generated_artifacts(workspace_id, session_id, staging), [])
+            self.assertEqual(store.list_artifact_ledger(workspace_id), [])
 
     def test_room_transition_is_validated_persisted_and_session_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -75,7 +77,117 @@ class VeridexGovernanceTests(unittest.TestCase):
 
     def test_model_route_gate_matches_snapshot(self) -> None:
         self.assertTrue(self.registry.validate_model_route("coding", "gpt-5.6-sol", "high")["allowed"])
+        self.assertTrue(self.registry.validate_model_route("search_deep", "gpt-5.6-sol", "high")["allowed"])
         self.assertFalse(self.registry.validate_model_route("coding", "gpt-5.6-luna", "low")["allowed"])
+
+    def test_media_completion_is_blocked_when_only_unrelated_tool_evidence_exists(self) -> None:
+        result = self.registry.postflight(
+            "Created the comic-book-style ant drummer illustration using the built-in image tool.",
+            [{"type": "command_execution", "status": "completed", "command": "Get-Content imagegen/SKILL.md"}],
+            request_text="create an image of an ant playing drums in a comic book style",
+            task_type="media",
+        )
+        self.assertFalse(result["allowed"])
+        self.assertTrue(result["incident"])
+        self.assertIn("FILE-ARTIFACT-VERIFICATION-GATE", result["gate_ids"])
+
+    def test_media_completion_requires_and_accepts_verified_artifact_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ant.png"
+            content = b"\x89PNG\r\n\x1a\nverified"
+            path.write_bytes(content)
+            artifact = {
+                "file_id": "file_test",
+                "artifact_number": 7,
+                "path": str(path),
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "ledgered_at": "2026-08-12T00:00:00Z",
+            }
+            result = self.registry.postflight(
+                "Created the comic-book-style ant drummer illustration.",
+                [{"type": "file_artifact", "status": "completed", **artifact}],
+                request_text="create an image of an ant playing drums in a comic book style",
+                task_type="media",
+                generated_artifacts=[artifact],
+            )
+            self.assertTrue(result["allowed"])
+            self.assertEqual(result["generated_artifacts"][0]["artifact_number"], 7)
+
+    def test_explicit_google_requires_dedicated_provider_without_substitution(self) -> None:
+        missing = self.registry.postflight(
+            "I found a result.",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+            required_search_provider="google_chrome_profile",
+        )
+        self.assertFalse(missing["allowed"])
+        self.assertIn("GOOGLE-BROWSER-PROVIDER-GATE", missing["gate_ids"])
+
+        substituted = self.registry.postflight(
+            "I found a result.",
+            [
+                {"type": "google_browser_search", "status": "completed", "provider": "google_chrome_profile"},
+                {"type": "web_search", "status": "completed"},
+            ],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+            required_search_provider="google_chrome_profile",
+        )
+        self.assertFalse(substituted["allowed"])
+        self.assertIn("generic web-search provider", substituted["reason"])
+
+    def test_search_date_gate_blocks_past_dates_labeled_upcoming(self) -> None:
+        result = self.registry.postflight(
+            "Upcoming shows:\n- July 23, 2026: Portland\n- 8/1/2026: Eugene\n- 2026-09-01: Blairally",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("CURRENT-DATE-SEARCH-GATE", result["gate_ids"])
+        self.assertIn("July 23, 2026", result["reason"])
+        self.assertIn("8/1/2026", result["reason"])
+        self.assertNotIn("2026-09-01", result["reason"])
+
+    def test_search_date_gate_allows_future_upcoming_dates(self) -> None:
+        result = self.registry.postflight(
+            "Upcoming shows:\n- September 1, 2026: Blairally",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_search_date_gate_requires_year_before_labeling_date_upcoming(self) -> None:
+        result = self.registry.postflight(
+            "Upcoming shows:\n- September 1: Blairally\n- 9/6: Shanghai Tunnel",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+        )
+        self.assertFalse(result["allowed"])
+        self.assertIn("CURRENT-DATE-SEARCH-GATE", result["gate_ids"])
+        self.assertIn("without a verified year", result["reason"])
+
+    def test_search_date_gate_allows_past_dates_explicitly_labeled_past(self) -> None:
+        result = self.registry.postflight(
+            "Upcoming shows:\n- September 1, 2026: Blairally\n\nPast shows:\n- June 15, 2026: Campbell Club",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+        )
+        self.assertTrue(result["allowed"])
+
+    def test_search_date_gate_does_not_treat_not_upcoming_as_an_upcoming_section(self) -> None:
+        result = self.registry.postflight(
+            "As of August 12, 2026, no other upcoming dates were verified.\n\nThe July 23 show is past, not upcoming.",
+            [],
+            task_type="search_synthesis",
+            current_date="2026-08-12",
+        )
+        self.assertTrue(result["allowed"])
 
 
 if __name__ == "__main__":

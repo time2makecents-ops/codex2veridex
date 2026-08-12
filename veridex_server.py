@@ -6,6 +6,9 @@ import argparse
 import json
 import mimetypes
 import os
+import re
+import uuid
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +16,8 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
 from codex_gateway import access_mode, invoke_codex, select_model
+from google_chrome_search import GoogleChromeSearchError, continues_google_search, search_google, wants_google_search
+from request_control import ActiveRequestRegistry, RequestCancelled
 from veridex_core import VeridexStore, classify_task, transcript_context
 from veridex_governance import GovernanceRegistry, intervention_text
 from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
@@ -40,6 +45,29 @@ DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve
 STORE = VeridexStore(DATA_ROOT)
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 GOVERNANCE = GovernanceRegistry(ROOT / "governance" / "navigator_governance_v1.0.0.json")
+ACTIVE_REQUESTS = ActiveRequestRegistry()
+
+
+def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str, Any]:
+    keys = ["file_id", "artifact_number", "name", "content_type", "size", "sha256", "source", "ledgered_at"]
+    if include_path:
+        keys.append("path")
+    return {key: row[key] for key in keys if key in row}
+
+
+def generated_artifact_report(artifacts: list[Dict[str, Any]]) -> str:
+    lines = ["Verified generated file:" if len(artifacts) == 1 else "Verified generated files:"]
+    for row in artifacts:
+        lines.extend(
+            [
+                f"- {row['name']}",
+                f"  Path: {row['path']}",
+                f"  Size: {row['size']} bytes",
+                f"  SHA-256: {row['sha256']}",
+                f"  Artifact: #{row['artifact_number']}",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def runtime_status() -> Dict[str, Any]:
@@ -166,6 +194,122 @@ def navigator_intervention_response(
     )
 
 
+def is_date_search_correction(result: Dict[str, Any], task_type: str) -> bool:
+    return (
+        str(task_type or "") in {"search_synthesis", "search_deep"}
+        and "CURRENT-DATE-SEARCH-GATE" in (result.get("gate_ids") or [])
+    )
+
+
+def date_search_retry_request(
+    original_request: Dict[str, Any],
+    candidate_result: Dict[str, Any],
+    gate_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    context = dict(original_request.get("context") or {})
+    context["navigator_date_correction"] = {
+        "prior_draft": str(candidate_result.get("text") or ""),
+        "blocked_reason": str(gate_result.get("reason") or ""),
+        "requirements": list(gate_result.get("requirements") or []),
+    }
+    return {
+        **original_request,
+        "system_prompt": (
+            f"{str(original_request.get('system_prompt') or '').rstrip()} "
+            "Navigator rejected the first draft because it placed a past date in an upcoming classification. "
+            "Rewrite the answer once using the same governed evidence. Do not bypass or argue with the gate. "
+            "Use a clearly labeled 'Upcoming shows' section only for dates on or after the supplied current local date. "
+            "Put older dates under 'Past shows' and dates without a verified year under 'Date needs confirmation'. "
+            "Preserve relevant past-show evidence unless the user's governed event_time_scope is upcoming_only. "
+            "Do not infer a year that the evidence does not state. Do not describe this internal correction process."
+        ),
+        "context": context,
+    }
+
+
+def unclassified_google_result_text(search: Dict[str, Any], current_date: str, reason: str) -> str:
+    lines = [line.strip() for line in str(search.get("result_text") or "").splitlines() if line.strip()]
+    excerpt = "\n".join(lines)[:7000].rstrip()
+    return "\n".join(
+        [
+            "Google search completed, but Navigator could not safely classify every event date after one correction attempt.",
+            f"Current local date: {current_date}.",
+            f"Classification issue: {reason}",
+            "The Google-indexed excerpts below are preserved as unclassified source evidence. Dates may describe past or future shows; no date is being labeled upcoming here.",
+            "",
+            excerpt or "Google returned no visible result text.",
+        ]
+    )
+
+
+def google_search_evidence(search: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "google_browser_search",
+        "status": "completed",
+        "provider": "google_chrome_profile",
+        "query": search.get("query"),
+        "searched_at": search.get("searched_at"),
+        "profile_email": search.get("profile_email"),
+        "result_count": len(search.get("links") or []),
+        "opened_source_count": len(search.get("opened_sources") or []),
+        "opened_sources": [
+            {
+                "url": row.get("url"),
+                "title": row.get("title") or row.get("page_title"),
+                "status": row.get("status"),
+            }
+            for row in (search.get("opened_sources") or [])[:5]
+            if isinstance(row, dict)
+        ],
+    }
+
+
+def request_cancelled_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "")
+    session_id = str(payload.get("session_id") or "")
+    request_id = str(payload.get("request_id") or "")
+    session = STORE.find_session(session_id)
+    user_message = payload.get("_persisted_user_message")
+    if not isinstance(user_message, dict):
+        user_message = STORE.append_message(
+            workspace_id or str(session["workspace_id"]),
+            session_id,
+            "user",
+            str(payload.get("text") or "Stopped request"),
+            speaker="You",
+            request_id=request_id,
+        )
+    return local_chat_response(
+        workspace_id or str(session["workspace_id"]),
+        session_id,
+        user_message,
+        "Stopped by you.",
+        "System",
+        "request_cancelled",
+        response_provider="veridex_router",
+        cancelled=True,
+        request_id=request_id,
+        message_metadata={"message_kind": "system_notice", "cancelled": True, "request_id": request_id},
+    )
+
+
+def run_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    request = dict(payload)
+    request_id = str(request.get("request_id") or f"req_{uuid.uuid4().hex[:12]}").strip()
+    session_id = str(request.get("session_id") or "").strip()
+    active = ACTIVE_REQUESTS.begin(request_id, session_id)
+    request["request_id"] = request_id
+    request["_cancel_event"] = active.cancelled
+    try:
+        result = chat_response(request)
+    except RequestCancelled:
+        result = request_cancelled_response(request)
+    finally:
+        ACTIVE_REQUESTS.finish(request_id)
+    result["request_id"] = request_id
+    return result
+
+
 def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
@@ -200,6 +344,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     text = str(payload.get("text") or "").strip()
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
+    request_id = str(payload.get("request_id") or "").strip()
+    cancel_event = payload.get("_cancel_event")
     if not session_id:
         raise ValueError("session_id is required")
     session = STORE.find_session(session_id)
@@ -214,10 +360,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     room = room_by_id(active_room) or room_by_id("lobby")
     room_title = str(room["title"] if room else "Lobby")
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
-    public_attachments = [
-        {key: row[key] for key in ("file_id", "artifact_number", "name", "content_type", "size") if key in row}
-        for row in attachments
-    ]
+    public_attachments = [public_file(row) for row in attachments]
     user_message = STORE.append_message(
         workspace_id,
         session_id,
@@ -225,7 +368,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         user_prompt,
         speaker="You",
         attachments=public_attachments,
+        request_id=request_id,
     )
+    payload["_persisted_user_message"] = user_message
+    if cancel_event is not None and cancel_event.is_set():
+        raise RequestCancelled("The request was stopped by the user.")
     workspace_governance = STORE.ensure_governance_state(workspace_id)
     active_gates = dict(workspace_governance.get("gates") or {})
     pending = STORE.pending_governance(workspace_id, session_id)
@@ -353,6 +500,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             attachments=public_attachments,
         )
     task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
+    explicit_google_search = wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous)
+    if explicit_google_search:
+        task_type = "search_deep"
     policy = select_model(task_type)
     route_check = GOVERNANCE.validate_model_route(task_type, policy.model, policy.reasoning_effort)
     if not route_check.get("allowed"):
@@ -379,24 +529,178 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     context["available_rooms"] = rooms_payload()
     context["governance"] = governance_status(workspace_id, session_id)
     context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
-    result = invoke_codex(
-        {
-            "task_type": task_type,
-            "system_prompt": (
-                f"You are the {active_persona}, the Veridex assistant in {room_title}. "
-                f"The active room is {room_title}; do not claim the user is in another room. "
-                "The governed context contains the complete available-room directory. Never say room controls or room names are unavailable. "
-                "When asked to find local files, use the available shell tools and report only verified paths. "
-                "Attached files are saved locally and their exact paths are supplied in governed context. "
-                "Use the governed context for continuity, but do not claim actions that were not performed."
-            ),
-            "user_prompt": governed_prompt,
-            "context": context,
-            "attachment_paths": [row["path"] for row in attachments],
-        }
+    context["current_local_date"] = datetime.now().astimezone().date().isoformat()
+    context["event_time_scope"] = (
+        "upcoming_only"
+        if re.search(r"\b(?:upcoming|future|next)\s+(?:show|shows|concert|concerts|date|dates|event|events)\b", governed_prompt, re.IGNORECASE)
+        else "all_relevant_dates"
     )
+    google_browser_search: Dict[str, Any] = {}
+    if explicit_google_search:
+        try:
+            google_browser_search = search_google(governed_prompt, previous, cancel_event=cancel_event)
+        except GoogleChromeSearchError as exc:
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Google browser search could not be completed: {exc} No substitute search was performed.",
+                active_persona,
+                "google_search_unavailable",
+                response_provider="veridex_google_router",
+                google_search={"provider": "google_chrome_profile", "status": "failed", "error": str(exc)},
+                governance=governance_status(workspace_id, session_id),
+            )
+        context["google_browser_search"] = google_browser_search
+    artifact_required = GOVERNANCE.requires_file_artifact(governed_prompt, task_type)
+    artifact_output_dir = (
+        STORE.prepare_generated_output_dir(workspace_id, session_id, user_message["message_id"])
+        if artifact_required
+        else None
+    )
+    if artifact_output_dir:
+        context["required_artifact_output_dir"] = str(artifact_output_dir)
+    codex_request = {
+        "task_type": task_type,
+        "system_prompt": (
+            f"You are the {active_persona}, the Veridex assistant in {room_title}. "
+            f"The active room is {room_title}; do not claim the user is in another room. "
+            "The governed context contains the complete available-room directory. Never say room controls or room names are unavailable. "
+            "When asked to find local files, use the available shell tools and report only verified paths. "
+            "Attached files are saved locally and their exact paths are supplied in governed context. "
+            "Use the governed context for continuity, but do not claim actions that were not performed."
+        ),
+        "user_prompt": governed_prompt,
+        "context": context,
+        "attachment_paths": [row["path"] for row in attachments],
+        "artifact_output_dir": str(artifact_output_dir) if artifact_output_dir else "",
+        "cancel_event": cancel_event,
+    }
+    try:
+        result = invoke_codex(codex_request)
+    except RequestCancelled:
+        raise
+    except Exception as exc:
+        if not google_browser_search:
+            raise
+        evidence_row = google_search_evidence(google_browser_search)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            unclassified_google_result_text(
+                google_browser_search,
+                context["current_local_date"],
+                f"Codex synthesis was unavailable: {exc}",
+            ),
+            active_persona,
+            "search_evidence_unclassified",
+            response_provider="veridex_google_router",
+            fallback_used=True,
+            google_search=google_browser_search,
+            governance=governance_status(workspace_id, session_id),
+            message_metadata={
+                "message_kind": "room_persona_response",
+                "governance_checked": True,
+                "execution_evidence": [evidence_row],
+                "navigator_activation": {
+                    "activated": True,
+                    "visibility": "VISIBLE",
+                    "mode": "unclassified_evidence_fallback",
+                    "gate_ids": ["CURRENT-DATE-SEARCH-GATE"],
+                },
+                "gate_ids": ["CURRENT-DATE-SEARCH-GATE"],
+            },
+        )
     evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
-    postflight = GOVERNANCE.postflight(str(result.get("text") or ""), evidence)
+    if google_browser_search:
+        evidence.append(google_search_evidence(google_browser_search))
+    generated_rows = (
+        STORE.import_generated_artifacts(workspace_id, session_id, artifact_output_dir)
+        if artifact_output_dir
+        else []
+    )
+    generated_artifacts = [public_file(row, include_path=True) for row in generated_rows]
+    evidence.extend(
+        {
+            "type": "file_artifact",
+            "status": "completed",
+            **artifact,
+        }
+        for artifact in generated_artifacts
+    )
+    postflight = GOVERNANCE.postflight(
+        str(result.get("text") or ""),
+        evidence,
+        request_text=governed_prompt,
+        task_type=task_type,
+        generated_artifacts=generated_artifacts,
+        current_date=context["current_local_date"],
+        required_search_provider="google_chrome_profile" if explicit_google_search else "",
+    )
+    navigator_correction: Dict[str, Any] = {}
+    if not postflight.get("allowed") and is_date_search_correction(postflight, task_type):
+        result = invoke_codex(date_search_retry_request(codex_request, result, postflight))
+        retry_evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
+        evidence.extend(retry_evidence)
+        postflight = GOVERNANCE.postflight(
+            str(result.get("text") or ""),
+            evidence,
+            request_text=governed_prompt,
+            task_type=task_type,
+            generated_artifacts=generated_artifacts,
+            current_date=context["current_local_date"],
+            required_search_provider="google_chrome_profile" if explicit_google_search else "",
+        )
+        if postflight.get("allowed"):
+            navigator_correction = {
+                "activated": True,
+                "visibility": "VISIBLE",
+                "mode": "automatic_correction",
+                "gate_ids": ["CURRENT-DATE-SEARCH-GATE"],
+                "reason": "A past date was removed from the upcoming classification before delivery.",
+            }
+        elif is_date_search_correction(postflight, task_type) and google_browser_search:
+            result = {
+                **result,
+                "provider": "veridex_google_router",
+                "model": "deterministic",
+                "reasoning_effort": "none",
+                "task_type": "search_evidence_unclassified",
+                "text": unclassified_google_result_text(
+                    google_browser_search,
+                    context["current_local_date"],
+                    str(postflight.get("reason") or "Date classification remained inconsistent."),
+                ),
+            }
+            postflight = {"allowed": True, "evidence": evidence, "generated_artifacts": generated_artifacts}
+            navigator_correction = {
+                "activated": True,
+                "visibility": "VISIBLE",
+                "mode": "unclassified_evidence_fallback",
+                "gate_ids": ["CURRENT-DATE-SEARCH-GATE"],
+                "reason": "Google evidence was preserved without assigning an unsafe past/future classification.",
+            }
+        if navigator_correction:
+            STORE.append_message(
+                workspace_id,
+                session_id,
+                "assistant",
+                (
+                    "Navigator corrected a stale event-date classification before delivery. Upcoming and past dates were reclassified using the current local date."
+                    if navigator_correction["mode"] == "automatic_correction"
+                    else "Navigator preserved the completed Google search as unclassified source evidence because date classification remained inconsistent."
+                ),
+                speaker="Navigator",
+                provider="veridex_governance",
+                model="deterministic",
+                reasoning_effort="none",
+                task_type="governance_correction",
+                message_kind="navigator_correction",
+                navigator_activation=navigator_correction,
+                gate_ids=["CURRENT-DATE-SEARCH-GATE"],
+                blocked=False,
+            )
     if not postflight.get("allowed"):
         return navigator_intervention_response(
             workspace_id,
@@ -406,11 +710,14 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             governed_prompt,
             evidence={"candidate_response": result.get("text"), "execution_evidence": evidence},
         )
+    response_text = str(result["text"])
+    if generated_artifacts:
+        response_text = f"{response_text.rstrip()}\n\n{generated_artifact_report(generated_artifacts)}"
     assistant_message = STORE.append_message(
         workspace_id,
         session_id,
         "assistant",
-        result["text"],
+        response_text,
         speaker=active_persona,
         provider=result["provider"],
         model=result["model"],
@@ -418,7 +725,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         task_type=result["task_type"],
         message_kind="room_persona_response",
         governance_checked=True,
+        navigator_activation=navigator_correction,
+        gate_ids=navigator_correction.get("gate_ids") if navigator_correction else [],
         execution_evidence=evidence,
+        generated_artifacts=generated_artifacts,
+        request_id=request_id,
     )
     return {
         "ok": True,
@@ -430,8 +741,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "model": result["model"],
         "reasoning_effort": result["reasoning_effort"],
         "task_type": result["task_type"],
-        "fallback_used": False,
+        "fallback_used": result["task_type"] == "search_evidence_unclassified",
         "attachments": public_attachments,
+        "generated_artifacts": generated_artifacts,
         "governance": governance_status(workspace_id, session_id),
         **runtime_status(),
     }
@@ -533,6 +845,22 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+            elif parsed.path == "/api/files/content":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                file_id = str(query.get("file_id", [""])[0]).strip()
+                matches = STORE.resolve_files(workspace_id, session_id, [file_id])
+                if not matches:
+                    raise KeyError("Unknown file")
+                row = matches[0]
+                body = Path(str(row["path"])).read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", str(row.get("content_type") or "application/octet-stream"))
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Disposition", f'inline; filename="{Path(str(row.get("name") or "file")).name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             elif parsed.path == "/api/governance":
                 workspace_id = str(query.get("workspace_id", [""])[0])
                 session_id = str(query.get("session_id", [""])[0])
@@ -583,11 +911,21 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(state_response(STORE.bootstrap(session["workspace_id"], session["session_id"])), HTTPStatus.CREATED)
             elif parsed.path == "/api/rooms":
                 self._json(room_change_response(payload))
+            elif parsed.path == "/api/chat/cancel":
+                request_id = str(payload.get("request_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                if not request_id:
+                    self._json({"error": "request_id is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                # The stop click can race the chat POST by a few milliseconds.
+                # Briefly wait for registration so the user's first click wins.
+                cancelled = ACTIVE_REQUESTS.cancel(request_id, session_id, wait_seconds=0.75)
+                self._json({"ok": True, "request_id": request_id, "cancel_requested": cancelled})
             elif parsed.path in {"/api/chat", "/request"}:
                 if parsed.path == "/request" and not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
                     return
-                result = chat_response(payload)
+                result = run_chat_request(payload)
                 if parsed.path == "/request":
                     result = {
                         "content": [{"type": "text", "text": result["message"]["text"]}],

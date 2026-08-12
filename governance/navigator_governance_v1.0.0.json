@@ -24,7 +24,11 @@
   "core_rules": [
     {"id": "ONE-ACTIVE-ROOM", "text": "Exactly one room is active per session and room changes require an explicit navigation action."},
     {"id": "NAVIGATOR-AUTHORITY", "text": "Navigator is always present as the governance authority and may block, constrain, or require clarification."},
-    {"id": "TOOL-TRUTH-BOUNDARY", "text": "Claims that something was searched, saved, listed, sent, edited, or executed require file-backed or tool-backed evidence."},
+    {"id": "TOOL-TRUTH-BOUNDARY", "text": "Claims that something was searched, saved, listed, sent, edited, or executed require completed evidence that directly matches the claimed action; unrelated tool activity is not proof."},
+    {"id": "FILE-CREATION-TRUTH", "text": "A file may be described as created, generated, rendered, exported, or saved only after Veridex verifies a local path, nonzero size, SHA-256 checksum, and artifact-ledger entry."},
+    {"id": "GOOGLE-PROVIDER-TRUTH", "text": "When the user explicitly requests Google, Veridex must search Google through its dedicated local Chrome profile, identify that provider, and never silently substitute another search provider."},
+    {"id": "CURRENT-DATE-SEARCH-TRUTH", "text": "Search results may be called upcoming only after each stated event date is compared with the current local date. Past events remain valid search evidence and must be labeled rather than suppressed; inaccessible sources and snippet-only evidence must also be labeled."},
+    {"id": "USER-CANCEL-AUTHORITY", "text": "The user may stop an active chat request. Veridex must terminate cancellable browser and model work, save a truthful stopped status, and must not claim the unfinished task completed."},
     {"id": "PERSISTENCE-TRUTH", "text": "The system must not imply durable memory, canon mutation, or product-memory persistence without a verified governed path."},
     {"id": "NO-UNRELATED-DESTRUCTION", "text": "Local computer authority is limited to the user's requested scope and does not authorize unrelated destructive changes."}
   ],
@@ -68,6 +72,34 @@
       "status": "active",
       "applicability": "implemented_for_broad_destructive_requests",
       "definition": "Broad destructive computer actions are blocked until the target is narrow, explicit, and within the user's requested scope."
+    },
+    {
+      "id": "FILE-ARTIFACT-VERIFICATION-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_generated_files",
+      "definition": "File-creation claims and media-generation completion require a verified local file path, nonzero size, SHA-256 checksum, and numbered artifact-ledger entry."
+    },
+    {
+      "id": "GOOGLE-BROWSER-PROVIDER-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_explicit_google_requests",
+      "definition": "Explicit Google requests require completed evidence from the dedicated signed-in Veridex Chrome profile; failures are reported without provider substitution."
+    },
+    {
+      "id": "CURRENT-DATE-SEARCH-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_search_synthesis_and_deep_search",
+      "definition": "Dates in an upcoming section must include a source-backed year and be today or later according to the current local date. Past and year-unconfirmed results remain available as labeled evidence. A failed first draft receives one evidence-preserving correction; if correction still fails, completed Google evidence is returned without a past/future classification rather than suppressing the search."
+    },
+    {
+      "id": "REQUEST-CANCELLATION-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_active_chat_requests",
+      "definition": "A stop request targets one active request ID, terminates cancellable work, and records cancellation without a false completion claim."
     },
     {
       "id": "GATE-CONFLICT",
@@ -124,6 +156,7 @@
     "media": {"model": "gpt-5.6-sol", "reasoning": "high"},
     "high_stakes": {"model": "gpt-5.6-sol", "reasoning": "xhigh"},
     "search_synthesis": {"model": "gpt-5.6-terra", "reasoning": "medium"},
+    "search_deep": {"model": "gpt-5.6-sol", "reasoning": "high"},
     "conversation": {"model": "gpt-5.6-terra", "reasoning": "medium"},
     "testing": {"model": "gpt-5.6-luna", "reasoning": "low", "escalate_on_failure_to": {"model": "gpt-5.6-sol", "reasoning": "high"}},
     "simple": {"model": "gpt-5.6-luna", "reasoning": "low"},

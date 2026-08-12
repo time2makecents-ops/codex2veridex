@@ -230,6 +230,300 @@ class VeridexServerTests(unittest.TestCase):
             self.assertTrue(result["blocked"])
             self.assertIn("GATE-VERIFY", result["gate_ids"])
 
+    def test_generated_image_is_imported_and_reported_with_verified_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+
+            def generate(request):
+                output = Path(request["artifact_output_dir"])
+                (output / "ant-drummer.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"generated")
+                return {
+                    "ok": True,
+                    "provider": "codex_cli",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                    "task_type": "media",
+                    "text": "Created the comic-book-style ant drummer illustration.",
+                    "evidence": [{"type": "command_execution", "status": "completed", "command": "Copy-Item"}],
+                }
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", side_effect=generate
+            ):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "create an image of an ant playing drums in a comic book style",
+                    }
+                )
+
+            artifact = result["generated_artifacts"][0]
+            self.assertTrue(Path(artifact["path"]).is_file())
+            self.assertGreater(artifact["size"], 0)
+            self.assertEqual(len(artifact["sha256"]), 64)
+            self.assertIn(artifact["path"], result["message"]["text"])
+            self.assertEqual(result["message"]["generated_artifacts"][0]["artifact_number"], 1)
+
+    def test_false_media_completion_without_a_file_is_blocked_by_navigator(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "high",
+                "task_type": "media",
+                "text": "Created the comic-book-style ant drummer illustration using the built-in image tool.",
+                "evidence": [{"type": "command_execution", "status": "completed", "command": "Read imagegen skill"}],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "create an image of an ant playing drums in a comic book style",
+                    }
+                )
+            self.assertTrue(result["blocked"])
+            self.assertEqual(result["message"]["speaker"], "Navigator")
+            self.assertIn("FILE-ARTIFACT-VERIFICATION-GATE", result["gate_ids"])
+            self.assertEqual(store.list_files(workspace_id, session_id), [])
+
+    def test_explicit_google_search_uses_dedicated_profile_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            browser_result = {
+                "ok": True,
+                "provider": "google_chrome_profile",
+                "query": "Stella Jones Eugene Oregon show",
+                "searched_at": "2026-08-12T12:00:00Z",
+                "profile_email": "veridexcorp@gmail.com",
+                "result_text": "September 1, 2026 at Blairally",
+                "links": [{"title": "Stella Jones", "url": "https://www.instagram.com/the.stellajones/"}],
+                "opened_sources": [
+                    {
+                        "title": "Stella Jones",
+                        "url": "https://www.instagram.com/the.stellajones/",
+                        "status": "limited",
+                        "text": "Login required",
+                    }
+                ],
+            }
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "high",
+                "task_type": "search_deep",
+                "text": "Upcoming: September 1, 2026 at Blairally.",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "search_google", return_value=browser_result
+            ) as search, patch.object(veridex_server, "invoke_codex", return_value=response) as invoke:
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "search Google for Stella Jones Eugene Oregon show",
+                    }
+                )
+
+            search.assert_called_once()
+            request = invoke.call_args.args[0]
+            self.assertEqual(request["task_type"], "search_deep")
+            self.assertEqual(request["context"]["google_browser_search"]["provider"], "google_chrome_profile")
+            self.assertEqual(request["context"]["event_time_scope"], "all_relevant_dates")
+            self.assertRegex(request["context"]["current_local_date"], r"^\d{4}-\d{2}-\d{2}$")
+            self.assertEqual(result["message"]["execution_evidence"][-1]["type"], "google_browser_search")
+            self.assertEqual(result["message"]["execution_evidence"][-1]["opened_source_count"], 1)
+
+    def test_run_chat_request_saves_truthful_cancelled_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            payload = {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "request_id": "req_cancel_test",
+                "text": "Explain this slowly",
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server,
+                "invoke_codex",
+                side_effect=veridex_server.RequestCancelled("stopped"),
+            ):
+                result = veridex_server.run_chat_request(payload)
+
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(result["message"]["text"], "Stopped by you.")
+            self.assertEqual(result["request_id"], "req_cancel_test")
+            self.assertFalse(veridex_server.ACTIVE_REQUESTS.is_active("req_cancel_test"))
+            messages = store.load_messages(workspace_id, session_id)
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[-1]["message_kind"], "system_notice")
+
+    def test_explicit_google_failure_does_not_substitute_or_call_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server,
+                "search_google",
+                side_effect=veridex_server.GoogleChromeSearchError("profile is not signed in"),
+            ), patch.object(veridex_server, "invoke_codex") as invoke:
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "check Google for Stella Jones",
+                    }
+                )
+
+            invoke.assert_not_called()
+            self.assertEqual(result["provider"], "veridex_google_router")
+            self.assertIn("No substitute search was performed", result["message"]["text"])
+
+    def test_stale_upcoming_draft_is_corrected_once_instead_of_hard_stopping(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            browser_result = {
+                "ok": True,
+                "provider": "google_chrome_profile",
+                "query": "Stella Jones Eugene Oregon shows",
+                "searched_at": "2026-08-12T12:00:00Z",
+                "profile_email": "veridexcorp@gmail.com",
+                "result_text": "June 15, 2026 and September 1, 2026 at Blairally",
+                "links": [],
+            }
+            first = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "medium",
+                "task_type": "search_synthesis",
+                "text": "Upcoming shows:\n- June 15, 2026\n- September 1, 2026",
+                "evidence": [],
+            }
+            corrected = {
+                **first,
+                "text": "Upcoming shows:\n- September 1, 2026: Blairally\n\nPast shows:\n- June 15, 2026",
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "search_google", return_value=browser_result
+            ), patch.object(veridex_server, "invoke_codex", side_effect=[first, corrected]) as invoke:
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "do a Google search for Stella Jones doing a music show in Eugene Oregon",
+                    }
+                )
+
+            self.assertEqual(invoke.call_count, 2)
+            retry_request = invoke.call_args_list[1].args[0]
+            self.assertIn("Navigator rejected the first draft", retry_request["system_prompt"])
+            self.assertIn("prior_draft", retry_request["context"]["navigator_date_correction"])
+            self.assertFalse(result.get("blocked", False))
+            self.assertIn("September 1, 2026", result["message"]["text"])
+            messages = store.load_messages(workspace_id, session_id)
+            self.assertEqual(messages[-2]["speaker"], "Navigator")
+            self.assertEqual(messages[-2]["message_kind"], "navigator_correction")
+            self.assertEqual(messages[-1]["speaker"], "Receptionist")
+
+    def test_second_date_failure_returns_unclassified_google_evidence_not_hard_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            browser_result = {
+                "ok": True,
+                "provider": "google_chrome_profile",
+                "query": "Stella Jones Eugene Oregon show",
+                "searched_at": "2026-08-12T12:00:00Z",
+                "profile_email": "veridexcorp@gmail.com",
+                "result_text": "Instagram @the.stellajones\nJune 15, 2026 show\nSeptember 1, 2026 Blairally",
+                "links": [],
+            }
+            bad = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "medium",
+                "task_type": "search_synthesis",
+                "text": "Upcoming shows:\n- June 15, 2026",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "search_google", return_value=browser_result
+            ), patch.object(veridex_server, "invoke_codex", side_effect=[bad, bad]):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "do a Google search for Stella Jones doing a music show in Eugene Oregon",
+                    }
+                )
+
+            self.assertFalse(result.get("blocked", False))
+            self.assertTrue(result["fallback_used"])
+            self.assertEqual(result["provider"], "veridex_google_router")
+            self.assertEqual(result["model"], "deterministic")
+            self.assertIn("unclassified source evidence", result["message"]["text"])
+            self.assertIn("June 15, 2026 show", result["message"]["text"])
+            self.assertIn("September 1, 2026 Blairally", result["message"]["text"])
+
+    def test_codex_failure_after_google_search_returns_saved_google_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            browser_result = {
+                "ok": True,
+                "provider": "google_chrome_profile",
+                "query": "Stella Jones Eugene Oregon show",
+                "searched_at": "2026-08-12T12:00:00Z",
+                "profile_email": "veridexcorp@gmail.com",
+                "result_text": "September 1, 2026 Blairally",
+                "links": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "search_google", return_value=browser_result
+            ), patch.object(veridex_server, "invoke_codex", side_effect=RuntimeError("timed out")):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "do a Google search for Stella Jones in Eugene Oregon",
+                    }
+                )
+
+            self.assertTrue(result["fallback_used"])
+            self.assertIn("September 1, 2026 Blairally", result["message"]["text"])
+            self.assertEqual(result["message"]["execution_evidence"][0]["provider"], "google_chrome_profile")
+            self.assertEqual(len(store.load_messages(workspace_id, session_id)), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

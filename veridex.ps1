@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("start", "stop", "restart", "status")]
+  [ValidateSet("start", "stop", "restart", "status", "google-profile", "google-status")]
   [string]$Action = "start",
   [switch]$NoBrowser,
   [switch]$FullAccess
@@ -108,5 +108,16 @@ switch ($Action) {
       Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id), $CurrentLabel)."
     }
     else { Write-Host "Standalone Veridex is not running." }
+  }
+  "google-profile" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "google_chrome_search.js"
+    & $Node $Bridge setup
+    Write-Host "A dedicated Chrome window is ready. Sign in only as veridexcorp@gmail.com, then leave or close the window."
+  }
+  "google-status" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "google_chrome_search.js"
+    & $Node $Bridge status
   }
 }
