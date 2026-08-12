@@ -37,7 +37,7 @@ VERIDEX_CODEX_TIMEOUT_SECONDS=240
 
 The optional per-task model variables are listed in `.env.example`. The defaults
 select Sol for coding and planning, Terra for ordinary chat, and Luna for simple
-requests.
+requests. API-backed external model fallback is disabled by default.
 
 ## Install the MCP side into Codex
 

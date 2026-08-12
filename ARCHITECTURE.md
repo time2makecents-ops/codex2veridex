@@ -44,9 +44,11 @@ The policy is deterministic and can be overridden only by administrator-owned
 environment variables. User prompt text cannot directly choose an arbitrary
 provider or model.
 
-## Failure behavior
+## Failure and billing behavior
 
-Veridex tries `codex_cli` first. If Codex is unavailable, times out, or returns
-an error, the existing Gemini and Groq providers remain in the fallback chain.
-OpenRouter remains opt-in. The router records the provider, model, task type,
-attempts, and whether a fallback was used.
+Veridex uses `codex_cli` by default. If Codex is unavailable, times out, or
+returns an error, the request fails visibly instead of silently using an
+API-backed provider. Existing Gemini and Groq fallback can be enabled with
+`VERIDEX_MODEL_ALLOW_EXTERNAL_FALLBACK=true`; OpenRouter remains separately
+opt-in. The router records the provider, model, task type, attempts, and whether
+a fallback was used.
