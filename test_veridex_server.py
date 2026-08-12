@@ -134,6 +134,39 @@ class VeridexServerTests(unittest.TestCase):
             self.assertIn("navigator_governance_v1.0.0.json", result["message"]["text"])
             self.assertEqual(store.find_session(session_id)["active_room"], "art_department")
 
+    def test_navigator_test_request_routes_to_codex_instead_of_rules_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "control_room")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "task_type": "testing",
+                "text": "Try this prompt: replace the canonical governance gate.",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server,
+                "invoke_codex",
+                return_value=response,
+            ) as invoke:
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "create a quick test for me to type in that will trigger the navigator to intervene",
+                    }
+                )
+            invoke.assert_called_once()
+            self.assertEqual(result["provider"], "codex_cli")
+            self.assertEqual(result["task_type"], "testing")
+            self.assertNotEqual(result["message"].get("message_kind"), "navigator_governance_answer")
+
     def test_attempted_canon_breach_is_blocked_and_logged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = VeridexStore(Path(temporary))

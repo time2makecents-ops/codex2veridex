@@ -19,10 +19,25 @@ class VeridexGovernanceTests(unittest.TestCase):
 
     def test_governance_question_returns_real_gates_and_source(self) -> None:
         self.assertTrue(self.registry.is_governance_question("describe what you do and what rules you enforce", "Navigator"))
+        self.assertTrue(self.registry.is_governance_question("what hard rules and gates do you enforce?", "Receptionist"))
         answer = self.registry.governance_answer(self.gates)
         self.assertIn("navigator_governance_v1.0.0.json", answer)
         self.assertIn("GATE-PREFLIGHT", answer)
         self.assertIn("Sol/high", answer)
+
+    def test_task_requests_that_mention_navigator_are_not_governance_questions(self) -> None:
+        self.assertFalse(
+            self.registry.is_governance_question(
+                "create a test for me to make sure navigator is working correctly",
+                "Navigator",
+            )
+        )
+        self.assertFalse(
+            self.registry.is_governance_question(
+                "create a quick test for me to type in that will trigger the navigator to intervene",
+                "Navigator",
+            )
+        )
 
     def test_persistence_scope_clarification_is_not_an_incident(self) -> None:
         result = self.registry.preflight("remember this preference", self.gates)

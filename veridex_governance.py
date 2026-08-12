@@ -9,10 +9,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
-GOVERNANCE_QUESTION = re.compile(
-    r"\b(navigator|governance|hard rules?|gates?|rules? (?:you|veridex|the app) (?:enforce|follow)|"
-    r"what rules|system rules|model policy|model (?:codes|plans|tests)|persistence rules?)\b",
-    re.IGNORECASE,
+GOVERNANCE_QUESTION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bwhat (?:hard )?(?:rules? and gates?|rules?|gates?) (?:do|does) (?:you|navigator|veridex|the app) (?:enforce|follow|apply)\b",
+        r"\b(?:list|show|describe|explain)(?: me)? (?:the )?(?:navigator(?:'s)? (?:role|rules?|gates?)|governance(?: rules?|gates?|policy)?|hard rules?|system rules?|model policy|persistence rules?)\b",
+        r"\b(?:what is|what's|how does) (?:the )?(?:navigator|veridex governance|governance system)(?: do| work)?\b",
+        r"\b(?:navigator|governance) (?:status|rules?|gates?|policy)\b",
+        r"\bwhat model (?:codes|plans|tests)(?: veridex| the app)?\b",
+    )
 )
 ROLE_QUESTION = re.compile(r"\b(describe what you do|what do you do|what can you do|describe your role)\b", re.IGNORECASE)
 PERSISTENCE_INTENT = re.compile(
@@ -85,7 +90,10 @@ class GovernanceRegistry:
         }
 
     def is_governance_question(self, text: str, active_persona: str = "") -> bool:
-        return bool(GOVERNANCE_QUESTION.search(text) or (active_persona == "Navigator" and ROLE_QUESTION.search(text)))
+        return bool(
+            any(pattern.search(text) for pattern in GOVERNANCE_QUESTION_PATTERNS)
+            or (active_persona == "Navigator" and ROLE_QUESTION.search(text))
+        )
 
     def governance_answer(self, active_gates: Dict[str, bool]) -> str:
         enabled = [name for name, value in active_gates.items() if value]
