@@ -19,6 +19,7 @@ from request_control import RequestCancelled
 TRUTHY = {"1", "true", "yes", "on"}
 SUPPORTED_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 ACCESS_MODES = {"read_only", "full"}
+CODEX_DEFAULT_MODEL = "codex_cli_default"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -96,10 +97,76 @@ def select_model(task_type: str) -> ModelPolicy:
     return ModelPolicy(task_type=normalized, model=model, reasoning_effort=effort)
 
 
-def _compact_context(context: Any, max_chars: int = 30000) -> str:
+def _short_text(value: Any, max_chars: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 14)].rstrip() + " ... [trimmed]"
+
+
+def _compact_room(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: row.get(key)
+        for key in ("id", "title", "default_persona")
+        if row.get(key) not in (None, "")
+    }
+
+
+def _compact_transcript_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "role": row.get("role"),
+        "room": row.get("room"),
+        "text": _short_text(row.get("text"), 650),
+    }
+
+
+def _compact_context(context: Any, max_chars: int = 12000) -> str:
     if not isinstance(context, dict) or not context:
         return "{}"
-    encoded = json.dumps(context, ensure_ascii=False, sort_keys=True, default=str)
+    compact: Dict[str, Any] = {}
+    for key in ("current_local_date", "event_time_scope", "required_artifact_output_dir", "artifact_storage_policy"):
+        if context.get(key) not in (None, "", [], {}):
+            compact[key] = context.get(key)
+    if isinstance(context.get("computer_access"), dict):
+        compact["computer_access"] = {
+            key: context["computer_access"].get(key)
+            for key in ("access_mode", "access_label", "can_write_computer")
+            if key in context["computer_access"]
+        }
+    if isinstance(context.get("attached_files"), list):
+        compact["attached_files"] = list(context["attached_files"])[:8]
+    if isinstance(context.get("recent_transcript"), list):
+        compact["recent_transcript"] = [
+            _compact_transcript_row(row)
+            for row in context["recent_transcript"][-8:]
+            if isinstance(row, dict)
+        ]
+    if isinstance(context.get("persistent_workspace_memos"), list):
+        compact["persistent_workspace_memos"] = [
+            {
+                "memo_id": row.get("memo_id"),
+                "text": _short_text(row.get("text"), 500),
+            }
+            for row in context["persistent_workspace_memos"][-5:]
+            if isinstance(row, dict)
+        ]
+    if isinstance(context.get("available_rooms"), list):
+        compact["available_rooms"] = [
+            _compact_room(row)
+            for row in context["available_rooms"]
+            if isinstance(row, dict)
+        ][:12]
+    if isinstance(context.get("governance"), dict):
+        governance = context["governance"]
+        compact["governance"] = {
+            "navigator": governance.get("navigator"),
+            "active_gate_ids": list(governance.get("active_gate_ids") or [])[:20],
+            "workspace_gates": governance.get("workspace_gates"),
+            "latest_incident": governance.get("latest_incident"),
+        }
+    if not compact:
+        compact = dict(context)
+    encoded = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
     if len(encoded) <= max_chars:
         return encoded
     return encoded[:max_chars] + '..."}'
@@ -161,7 +228,7 @@ def build_prompt(request: Dict[str, Any], policy: ModelPolicy) -> str:
         artifact_instructions = (
             "This request requires a generated image file. Use the built-in image generation tool. "
             f'After generation, copy each final image into this exact directory: "{artifact_output_dir}". '
-            "Use a descriptive filename and do not leave the only final copy under the default Codex generated-images directory. "
+            "Use a descriptive filename. Desktop files and files under the default Codex generated-images directory are not Veridex artifacts unless they are copied into that exact directory. "
             "Do not claim that an image or file was created, generated, rendered, exported, or saved unless the copy command completed. "
             "If generation or copying is unavailable, state plainly that no verified file was created. "
         )
@@ -270,6 +337,26 @@ def extract_execution_evidence(stdout: str) -> list[Dict[str, Any]]:
     return rows
 
 
+def _codex_error_detail(stdout: str, stderr: str) -> str:
+    details: list[str] = []
+    for event in _json_events(stdout):
+        if event.get("type") == "error" and event.get("message") not in (None, ""):
+            details.append(str(event.get("message")))
+        error = event.get("error")
+        if isinstance(error, dict) and error.get("message") not in (None, ""):
+            details.append(str(error.get("message")))
+        elif error not in (None, ""):
+            details.append(str(error))
+    if stderr:
+        details.append(str(stderr))
+    return " ".join(" ".join(row.split()) for row in details if row).strip()[:1500]
+
+
+def _requires_newer_codex(detail: str) -> bool:
+    normalized = str(detail or "").casefold()
+    return "requires a newer version of codex" in normalized or "model is not supported when using codex" in normalized
+
+
 def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     if _env("VERIDEX_CODEX_ENABLED", "true").lower() not in TRUTHY:
         raise RuntimeError("Codex gateway is disabled")
@@ -290,36 +377,41 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         for path in request.get("attachment_paths", [])
         if str(path or "").strip() and Path(path).is_file()
     ]
-    command = [
-        codex_path,
-        "--ask-for-approval",
-        "never",
-        "--sandbox",
-        sandbox,
-        "exec",
-    ]
-    for path in attachment_paths:
-        if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            command.extend(["--image", path])
-    command.extend([
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--skip-git-repo-check",
-        "--json",
-        "--model",
-        policy.model,
-        "--config",
-        f'model_reasoning_effort="{policy.reasoning_effort}"',
-        "--cd",
-        str(workdir),
-        "-",
-    ])
+    def command_for(include_model: bool) -> list[str]:
+        command = [
+            codex_path,
+            "--ask-for-approval",
+            "never",
+            "--sandbox",
+            sandbox,
+            "exec",
+        ]
+        for path in attachment_paths:
+            if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                command.extend(["--image", path])
+        command.extend([
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--skip-git-repo-check",
+            "--json",
+        ])
+        if include_model:
+            command.extend(["--model", policy.model])
+        command.extend([
+            "--config",
+            f'model_reasoning_effort="{policy.reasoning_effort}"',
+            "--cd",
+            str(workdir),
+        ])
+        return command
+
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     cancel_event = request.get("cancel_event")
-    try:
+
+    def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
         if cancel_event is None:
-            completed = subprocess.run(
+            return subprocess.run(
                 command,
                 input=prompt,
                 text=True,
@@ -330,56 +422,63 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
                 check=False,
                 creationflags=creation_flags,
             )
-        else:
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=creation_flags,
-            )
-            deadline = time.monotonic() + timeout_seconds
-            first_communicate = True
-            while True:
-                if cancel_event.is_set():
-                    if os.name == "nt":
-                        subprocess.run(
-                            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                            capture_output=True,
-                            creationflags=creation_flags,
-                            check=False,
-                        )
-                    else:
-                        process.terminate()
-                    try:
-                        process.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.communicate()
-                    raise RequestCancelled("The active Codex request was stopped by the user.")
-                if time.monotonic() >= deadline:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creation_flags,
+        )
+        if process.stdin:
+            process.stdin.write(prompt)
+            process.stdin.close()
+            process.stdin = None
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if cancel_event.is_set():
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        capture_output=True,
+                        creationflags=creation_flags,
+                        check=False,
+                    )
+                else:
+                    process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
                     process.kill()
                     process.communicate()
-                    raise subprocess.TimeoutExpired(command, timeout_seconds)
-                try:
-                    stdout, stderr = process.communicate(
-                        input=prompt if first_communicate else None,
-                        timeout=0.25,
-                    )
-                    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-                    break
-                except subprocess.TimeoutExpired:
-                    first_communicate = False
+                raise RequestCancelled("The active Codex request was stopped by the user.")
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.communicate()
+                raise subprocess.TimeoutExpired(command, timeout_seconds)
+            try:
+                stdout, stderr = process.communicate(timeout=0.25)
+                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                continue
+
+    model_fallback_used = False
+    try:
+        completed = run_command(command_for(include_model=True))
+        if completed.returncode != 0:
+            detail = _codex_error_detail(completed.stdout, completed.stderr)
+            if _requires_newer_codex(detail):
+                completed = run_command(command_for(include_model=False))
+                model_fallback_used = True
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Codex request timed out after {timeout_seconds} seconds") from exc
     except OSError as exc:
         raise RuntimeError(f"Codex CLI could not be started: {exc}") from exc
 
     if completed.returncode != 0:
-        detail = " ".join(str(completed.stderr or "").split())[:1500]
+        detail = _codex_error_detail(completed.stdout, completed.stderr)
         raise RuntimeError(f"Codex CLI failed with exit code {completed.returncode}: {detail}")
 
     text = extract_agent_text(completed.stdout)
@@ -387,7 +486,9 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
         "provider": "codex_cli",
-        "model": policy.model,
+        "model": CODEX_DEFAULT_MODEL if model_fallback_used else policy.model,
+        "requested_model": policy.model if model_fallback_used else "",
+        "model_fallback_used": model_fallback_used,
         "reasoning_effort": policy.reasoning_effort,
         "task_type": policy.task_type,
         "access_mode": mode,

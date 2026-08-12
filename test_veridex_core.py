@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from veridex_core import VeridexStore, classify_task, repair_text_encoding
+from veridex_core import VeridexStore, classify_task, repair_text_encoding, transcript_context
 
 
 class VeridexCoreTests(unittest.TestCase):
@@ -54,9 +54,32 @@ class VeridexCoreTests(unittest.TestCase):
             classify_task("check social media and google for a band called Stella Jones"),
             "search_synthesis",
         )
+        self.assertEqual(
+            classify_task("take the file adam.png and have the character sitting next to an animated dog"),
+            "media",
+        )
 
     def test_repairs_windows_mojibake_in_existing_transcript_text(self) -> None:
         self.assertEqual(repair_text_encoding("Youâ€™re in the Lobby."), "You’re in the Lobby.")
+
+    def test_transcript_context_is_bounded_for_model_prompt_economy(self) -> None:
+        messages = [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "text": f"message {index} " + ("x" * 2000),
+                "room": "art_department",
+                "execution_evidence": [{"output": "large ignored output" * 200}],
+            }
+            for index in range(20)
+        ]
+
+        context = transcript_context(messages)
+
+        recent = context["recent_transcript"]
+        self.assertLessEqual(len(recent), 8)
+        self.assertNotIn("execution_evidence", recent[-1])
+        self.assertLessEqual(max(len(row["text"]) for row in recent), 700)
+        self.assertIn("message 19", recent[-1]["text"])
 
     def test_session_files_are_saved_locally_and_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -68,6 +91,10 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(saved["name"], "notes.txt")
             self.assertEqual(saved["artifact_number"], 1)
             self.assertEqual(Path(saved["path"]).read_bytes(), b"hello")
+            self.assertIn(str(Path(temporary) / "workspaces" / workspace_id / "files" / "uploads" / session_id), saved["path"])
+            self.assertEqual(saved["kind"], "upload")
+            self.assertEqual(saved["scope"], "session")
+            self.assertEqual(saved["scope_ref"], session_id)
             self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
             self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
             self.assertEqual(store.list_artifact_ledger(workspace_id)[0]["file_id"], saved["file_id"])
@@ -80,6 +107,7 @@ class VeridexCoreTests(unittest.TestCase):
             initial = store.ensure_default()
             workspace_id = initial["workspace"]["workspace_id"]
             session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
             staging = store.prepare_generated_output_dir(workspace_id, session_id, "msg_test")
             image = staging / "ant-drummer.png"
             image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"verified-image-payload")
@@ -89,11 +117,25 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(len(imported), 1)
             self.assertEqual(imported[0]["name"], "ant-drummer.png")
             self.assertEqual(imported[0]["source"], "generated")
+            self.assertEqual(imported[0]["kind"], "generated_image")
+            self.assertEqual(imported[0]["scope"], "room")
+            self.assertEqual(imported[0]["scope_ref"], "art_department")
+            self.assertEqual(imported[0]["uploaded_by_session_id"], session_id)
             self.assertEqual(len(imported[0]["sha256"]), 64)
             self.assertTrue(Path(imported[0]["path"]).is_file())
+            self.assertIn(
+                str(Path(temporary) / "workspaces" / workspace_id / "files" / "generated" / "art_department"),
+                imported[0]["path"],
+            )
+            self.assertNotIn(str(store.files_dir(workspace_id, session_id)), imported[0]["path"])
+            resolved = store.resolve_files(workspace_id, session_id, [imported[0]["file_id"]])
+            self.assertEqual(resolved[0]["file_id"], imported[0]["file_id"])
             ledger = store.list_artifact_ledger(workspace_id)
             self.assertEqual(ledger[0]["sha256"], imported[0]["sha256"])
             self.assertEqual(ledger[0]["source_path"], str(image.resolve()))
+            self.assertEqual(ledger[0]["kind"], "generated_image")
+            self.assertEqual(ledger[0]["scope"], "room")
+            self.assertEqual(ledger[0]["scope_ref"], "art_department")
 
     def test_invalid_generated_image_is_not_imported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -105,6 +147,31 @@ class VeridexCoreTests(unittest.TestCase):
             (staging / "not-really-an-image.png").write_bytes(b"plain text")
             self.assertEqual(store.import_generated_artifacts(workspace_id, session_id, staging), [])
             self.assertEqual(store.list_artifact_ledger(workspace_id), [])
+
+    def test_discovers_only_new_generated_files_with_matching_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            before_ids = {str(row["file_id"]) for row in store.list_files(workspace_id, session_id)}
+
+            staging = store.prepare_generated_output_dir(workspace_id, session_id, "custom_dir")
+            image = staging / "adam_with_animated_dog.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"verified-image-payload")
+            imported = store.import_generated_artifacts(workspace_id, session_id, staging)[0]
+
+            discovered = store.verified_new_generated_files(
+                workspace_id,
+                session_id,
+                before_ids,
+                "art_department",
+            )
+
+            self.assertEqual([row["file_id"] for row in discovered], [imported["file_id"]])
+            self.assertEqual(discovered[0]["kind"], "generated_image")
+            self.assertEqual(discovered[0]["scope_ref"], "art_department")
 
     def test_room_transition_is_validated_persisted_and_session_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

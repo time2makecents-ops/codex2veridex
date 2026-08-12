@@ -72,6 +72,50 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertIn("tool-backed evidence", prompt)
         self.assertIn("durable memory", prompt)
 
+    def test_governed_context_is_compacted_to_token_economy_budget(self) -> None:
+        prompt = codex_gateway.build_prompt(
+            {
+                "system_prompt": "system",
+                "user_prompt": "hello",
+                "context": {
+                    "recent_transcript": [
+                        {"role": "assistant", "text": "x" * 4000, "room": "art_department"}
+                        for _ in range(12)
+                    ],
+                    "available_rooms": [{"id": f"room_{index}", "description": "y" * 800} for index in range(20)],
+                    "governance": {"large": "z" * 20000},
+                },
+            },
+            codex_gateway.select_model("conversation"),
+        )
+
+        self.assertLess(len(prompt), 18000)
+        self.assertIn("Governed context", prompt)
+        self.assertIn("User request:\nhello", prompt)
+
+    def test_context_compaction_preserves_high_value_fields(self) -> None:
+        prompt = codex_gateway.build_prompt(
+            {
+                "system_prompt": "system",
+                "user_prompt": "what did we discuss?",
+                "context": {
+                    "available_rooms": [{"id": f"room_{index}", "description": "y" * 2000} for index in range(20)],
+                    "governance": {"large": "z" * 20000},
+                    "current_local_date": "2026-08-12",
+                    "event_time_scope": "all_relevant_dates",
+                    "recent_transcript": [
+                        {"role": "user", "text": "keep this recent topic", "room": "art_department"}
+                    ],
+                },
+            },
+            codex_gateway.select_model("conversation"),
+        )
+
+        self.assertLess(len(prompt), 18000)
+        self.assertIn("keep this recent topic", prompt)
+        self.assertIn("2026-08-12", prompt)
+        self.assertIn("all_relevant_dates", prompt)
+
     def test_media_prompt_requires_copy_to_exact_veridex_output_directory(self) -> None:
         output_dir = r"C:\codex2veridex\data\workspaces\ws\sessions\sess\generated_staging\msg"
         prompt = codex_gateway.build_prompt(
@@ -85,6 +129,8 @@ class CodexGatewayTests(unittest.TestCase):
         )
         self.assertIn(output_dir, prompt)
         self.assertIn("copy each final image", prompt)
+        self.assertIn("Desktop", prompt)
+        self.assertIn("default Codex generated-images directory", prompt)
         self.assertIn("no verified file was created", prompt)
 
     def test_google_prompt_uses_supplied_browser_evidence_and_current_date(self) -> None:
@@ -158,6 +204,84 @@ class CodexGatewayTests(unittest.TestCase):
 
     @patch("codex_gateway.subprocess.run")
     @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_invocation_passes_prompt_on_stdin_and_uses_cli_model_fallback(self, _which, run) -> None:
+        unsupported = "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "abc"}),
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": json.dumps(
+                            {
+                                "type": "error",
+                                "status": 400,
+                                "error": {
+                                    "type": "invalid_request_error",
+                                    "message": "The 'gpt-5.6-luna' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.",
+                                },
+                            }
+                        ),
+                    }
+                ),
+                json.dumps({"type": "turn.failed", "error": {"message": "unsupported model"}}),
+            ]
+        )
+        run.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=1, stdout=unsupported, stderr=""),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Ready"}}),
+                stderr="",
+            ),
+        ]
+        with patch.dict(
+            os.environ,
+            {"VERIDEX_CODEX_WORKDIR": os.getcwd(), "VERIDEX_CODEX_ACCESS_MODE": "read_only"},
+            clear=False,
+        ):
+            response = codex_gateway.invoke_codex(
+                {"task_type": "simple", "system_prompt": "Be useful", "user_prompt": "Plan this", "context": {}}
+            )
+        first_command = run.call_args_list[0].args[0]
+        second_command = run.call_args_list[1].args[0]
+        self.assertIn("--model", first_command)
+        self.assertNotIn("--model", second_command)
+        self.assertNotIn("-", first_command[first_command.index("exec") + 1 :])
+        self.assertNotIn("User request:\nPlan this", " ".join(first_command))
+        self.assertIn("User request:\nPlan this", run.call_args_list[0].kwargs["input"])
+        self.assertNotIn("stdin", run.call_args_list[0].kwargs)
+        self.assertEqual(response["model"], "codex_cli_default")
+        self.assertEqual(response["requested_model"], "gpt-5.6-luna")
+        self.assertTrue(response["model_fallback_used"])
+        self.assertEqual(response["text"], "Ready")
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_long_prompt_is_not_put_on_windows_command_line(self, _which, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Ready"}}),
+            stderr="",
+        )
+        long_context = {"history": "x" * 40000}
+        with patch.dict(os.environ, {"VERIDEX_CODEX_WORKDIR": os.getcwd()}, clear=False):
+            codex_gateway.invoke_codex(
+                {
+                    "task_type": "media",
+                    "system_prompt": "system",
+                    "user_prompt": "create another image",
+                    "context": long_context,
+                }
+            )
+        command = run.call_args.args[0]
+        self.assertLess(len(" ".join(command)), 20000)
+        self.assertIn("x" * 1000, run.call_args.kwargs["input"])
+        self.assertIn("User request:\ncreate another image", run.call_args.kwargs["input"])
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
     def test_invocation_is_ephemeral_read_only_and_ignores_user_config(self, _which, run) -> None:
         run.return_value = subprocess.CompletedProcess(
             args=[],
@@ -183,6 +307,10 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
         self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertNotIn("stdin", run.call_args.kwargs)
+        self.assertNotIn("-", command[command.index("exec") + 1 :])
+        self.assertNotIn("User request:\nPlan this", " ".join(command))
+        self.assertIn("User request:\nPlan this", run.call_args.kwargs["input"])
         self.assertEqual(response["provider"], "codex_cli")
         self.assertEqual(response["text"], "Ready")
 

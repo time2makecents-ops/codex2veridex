@@ -114,6 +114,14 @@ class VeridexGovernanceTests(unittest.TestCase):
             self.assertTrue(result["allowed"])
             self.assertEqual(result["generated_artifacts"][0]["artifact_number"], 7)
 
+    def test_png_edit_request_requires_file_artifact(self) -> None:
+        self.assertTrue(
+            self.registry.requires_file_artifact(
+                "take the file adam.png and have the character sitting next to an animated dog",
+                "media",
+            )
+        )
+
     def test_explicit_google_requires_dedicated_provider_without_substitution(self) -> None:
         missing = self.registry.postflight(
             "I found a result.",

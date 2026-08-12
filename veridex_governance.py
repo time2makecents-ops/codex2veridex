@@ -60,6 +60,11 @@ MEDIA_CREATION_REQUEST = re.compile(
     r"\b(?:create|generate|make|draw|render|produce|design)\b",
     re.IGNORECASE,
 )
+MEDIA_FILE_REFERENCE = re.compile(r"\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
+MEDIA_TRANSFORM_INTENT = re.compile(
+    r"\b(?:take|edit|change|modify|alter|transform|update|add|remove|replace|crop|resize|enhance|put|place|have|make)\b",
+    re.IGNORECASE,
+)
 MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
     "july": 7, "august": 8, "september": 9, "sept": 9, "october": 10, "november": 11, "december": 12,
@@ -259,7 +264,11 @@ class GovernanceRegistry:
 
     @staticmethod
     def requires_file_artifact(request_text: str, task_type: str) -> bool:
-        return str(task_type or "") == "media" and bool(MEDIA_CREATION_REQUEST.search(str(request_text or "")))
+        text = str(request_text or "")
+        return str(task_type or "") == "media" and bool(
+            MEDIA_CREATION_REQUEST.search(text)
+            or (MEDIA_FILE_REFERENCE.search(text) and MEDIA_TRANSFORM_INTENT.search(text))
+        )
 
     def postflight(
         self,

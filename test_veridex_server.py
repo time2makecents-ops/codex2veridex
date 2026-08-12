@@ -236,9 +236,16 @@ class VeridexServerTests(unittest.TestCase):
             initial = store.ensure_default()
             workspace_id = initial["workspace"]["workspace_id"]
             session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
 
             def generate(request):
                 output = Path(request["artifact_output_dir"])
+                self.assertEqual(
+                    request["context"]["artifact_storage_policy"]["canonical_dir"],
+                    str(store.generated_files_dir(workspace_id, "art_department")),
+                )
+                self.assertEqual(request["context"]["artifact_storage_policy"]["scope"], "room")
+                self.assertEqual(request["context"]["artifact_storage_policy"]["scope_ref"], "art_department")
                 (output / "ant-drummer.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"generated")
                 return {
                     "ok": True,
@@ -267,6 +274,98 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(len(artifact["sha256"]), 64)
             self.assertIn(artifact["path"], result["message"]["text"])
             self.assertEqual(result["message"]["generated_artifacts"][0]["artifact_number"], 1)
+            self.assertEqual(artifact["kind"], "generated_image")
+            self.assertEqual(artifact["scope"], "room")
+            self.assertEqual(artifact["scope_ref"], "art_department")
+            self.assertIn(str(store.generated_files_dir(workspace_id, "art_department")), artifact["path"])
+            self.assertNotIn(str(store.files_dir(workspace_id, session_id)), artifact["path"])
+
+    def test_reported_generated_image_path_without_staging_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary) / "data")
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            external_output = Path(temporary) / "adam_with_dog.png"
+            external_output.write_bytes(b"\x89PNG\r\n\x1a\n" + b"generated")
+            source_image = Path(temporary) / "adam.png"
+            source_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"source")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "high",
+                "task_type": "media",
+                "text": f"Done. I created the edited image here:\n\n`{external_output}`\n\nThe original file remains unchanged at `{source_image}`.",
+                "evidence": [
+                    {
+                        "type": "command_execution",
+                        "status": "completed",
+                        "command": "Copy-Item generated image",
+                        "output": f"Path          : {external_output}\nLength        : {external_output.stat().st_size}",
+                    }
+                ],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "take the file adam.png located on my desktop and have the character sitting next to an animated dog on the couch with him",
+                    }
+                )
+
+            self.assertTrue(result.get("blocked", False))
+            self.assertEqual(result.get("generated_artifacts", []), [])
+            self.assertEqual(store.list_files(workspace_id, session_id), [])
+            self.assertEqual(store.list_artifact_ledger(workspace_id), [])
+
+    def test_workspace_ledgered_generated_image_is_reported_when_exact_staging_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary) / "data")
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+
+            def generate(request):
+                wrong_staging = store.prepare_generated_output_dir(workspace_id, session_id, "adam_with_animated_dog")
+                image = wrong_staging / "adam_with_animated_dog.png"
+                image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"generated")
+                imported = store.import_generated_artifacts(workspace_id, session_id, wrong_staging)[0]
+                return {
+                    "ok": True,
+                    "provider": "codex_cli",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                    "task_type": "media",
+                    "text": (
+                        "Done. I created the edited image.\n\n"
+                        f"Veridex canonical artifact:\n`{imported['path']}`\n\n"
+                        f"Artifact ledger entry: `#{imported['artifact_number']}`"
+                    ),
+                    "evidence": [{"type": "command_execution", "status": "completed", "command": "import artifact"}],
+                }
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", side_effect=generate
+            ):
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "take the file adam.png located on my desktop and have the character sitting next to an animated dog on the couch with him",
+                    }
+                )
+
+            self.assertFalse(result.get("blocked", False))
+            artifact = result["generated_artifacts"][0]
+            self.assertEqual(artifact["name"], "adam_with_animated_dog.png")
+            self.assertEqual(artifact["kind"], "generated_image")
+            self.assertEqual(artifact["scope_ref"], "art_department")
+            self.assertIn(artifact["path"], result["message"]["text"])
 
     def test_false_media_completion_without_a_file_is_blocked_by_navigator(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

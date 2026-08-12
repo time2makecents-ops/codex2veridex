@@ -62,6 +62,8 @@ def classify_task(text: str) -> str:
         return "coding"
     if re.search(r"\b(architect|architecture|plan|planning|roadmap|design a system|technical design)\w*\b", value):
         return "planning"
+    if re.search(r"\.(?:png|jpe?g|webp|gif)\b", value):
+        return "media"
     if re.search(r"\b(image|photo|picture|video|frame|crop|visual|graphic|render|edit footage)\w*\b", value):
         return "media"
     if re.search(r"\b(test|testing|verify|validation|smoke check|quality assurance|qa)\w*\b", value):
@@ -107,7 +109,10 @@ class VeridexStore:
         return self.workspace_dir(workspace_id) / "sessions" / session_id
 
     def files_dir(self, workspace_id: str, session_id: str) -> Path:
-        return self.session_dir(workspace_id, session_id) / "files"
+        return self.workspace_dir(workspace_id) / "files" / "uploads" / self._safe_path_component(session_id, "session")
+
+    def generated_files_dir(self, workspace_id: str, room_id: str) -> Path:
+        return self.workspace_dir(workspace_id) / "files" / "generated" / self._safe_path_component(room_id, "room")
 
     def files_manifest_path(self, workspace_id: str, session_id: str) -> Path:
         return self.session_dir(workspace_id, session_id) / "files.json"
@@ -277,6 +282,12 @@ class VeridexStore:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(value, ensure_ascii=False) + "\n")
 
+    @staticmethod
+    def _safe_path_component(value: str, fallback: str) -> str:
+        safe = Path(str(value or "").replace("\\", "/")).name.strip()
+        safe = re.sub(r"[^\w.()\- ]+", "_", safe, flags=re.UNICODE).strip(" .")
+        return safe or fallback
+
     def append_governance_incident(
         self,
         workspace_id: str,
@@ -414,34 +425,60 @@ class VeridexStore:
         *,
         source: str = "upload",
         source_path: str = "",
+        kind: str = "",
+        scope: str = "",
+        scope_ref: str = "",
+        description: str = "",
+        uploaded_by_session_id: str = "",
     ) -> Dict[str, Any]:
         with self._lock:
             session = self.find_session(session_id)
             if session.get("workspace_id") != workspace_id:
                 raise KeyError("Session does not belong to workspace")
-            safe_name = Path(str(filename or "").replace("\\", "/")).name.strip()
-            safe_name = re.sub(r"[^\w.()\- ]+", "_", safe_name, flags=re.UNICODE).strip(" .")
+            safe_name = self._safe_path_component(filename, "")
             if not safe_name:
                 raise ValueError("filename is required")
             file_id = _identifier("file")
             stored_name = f"{file_id}__{safe_name}"
-            path = self.files_dir(workspace_id, session_id) / stored_name
+            file_kind = str(kind or ("generated_image" if str(source or "") == "generated" else "upload"))
+            file_scope = str(scope or ("room" if file_kind == "generated_image" else "session"))
+            file_scope_ref = str(
+                scope_ref
+                or (session.get("active_room") if file_scope == "room" else session_id)
+                or ("lobby" if file_scope == "room" else session_id)
+            )
+            if file_kind == "generated_image":
+                path = self.generated_files_dir(workspace_id, file_scope_ref) / stored_name
+            else:
+                path = self.files_dir(workspace_id, session_id) / stored_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             sha256 = hashlib.sha256(content).hexdigest()
             ledger_rows = self.list_artifact_ledger(workspace_id)
             artifact_number = len(ledger_rows) + 1
+            now = utc_now()
             row = {
                 "file_id": file_id,
                 "artifact_number": artifact_number,
                 "name": safe_name,
+                "original_name": safe_name,
+                "stored_name": stored_name,
                 "content_type": content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+                "mime_type": content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
                 "size": len(content),
+                "byte_size": len(content),
                 "sha256": sha256,
                 "source": str(source or "upload"),
+                "kind": file_kind,
+                "scope": file_scope,
+                "scope_ref": file_scope_ref,
+                "description": str(description or ""),
+                "uploaded_by_session_id": str(uploaded_by_session_id or session_id),
                 "path": str(path.resolve()),
-                "created_at": utc_now(),
-                "ledgered_at": utc_now(),
+                "storage_path": str(path.resolve()),
+                "created_at": now,
+                "updated_at": now,
+                "ledgered_at": now,
             }
             files = self.list_files(workspace_id, session_id)
             files.append(row)
@@ -454,11 +491,19 @@ class VeridexStore:
                     "session_id": session_id,
                     "name": safe_name,
                     "content_type": row["content_type"],
+                    "mime_type": row["mime_type"],
                     "size": len(content),
+                    "byte_size": len(content),
                     "sha256": sha256,
                     "source": row["source"],
+                    "kind": row["kind"],
+                    "scope": row["scope"],
+                    "scope_ref": row["scope_ref"],
+                    "description": row["description"],
+                    "uploaded_by_session_id": row["uploaded_by_session_id"],
                     "source_path": str(source_path or ""),
                     "path": row["path"],
+                    "storage_path": row["storage_path"],
                     "ledgered_at": row["ledgered_at"],
                 },
             )
@@ -505,16 +550,24 @@ class VeridexStore:
         content = candidate.read_bytes()
         sha256 = hashlib.sha256(content).hexdigest()
         for existing in self.list_files(workspace_id, session_id):
-            if str(existing.get("sha256") or "") == sha256:
+            if str(existing.get("sha256") or "") == sha256 and str(existing.get("kind") or "") == "generated_image":
                 return existing
+        session = self.find_session(session_id)
+        active_room = str(session.get("active_room") or "lobby")
+        name = display_name or candidate.name
         return self.save_file(
             workspace_id,
             session_id,
-            display_name or candidate.name,
+            name,
             content,
-            mimetypes.guess_type(display_name or candidate.name)[0] or "application/octet-stream",
+            mimetypes.guess_type(name)[0] or "application/octet-stream",
             source="generated",
             source_path=str(candidate),
+            kind="generated_image",
+            scope="room",
+            scope_ref=active_room,
+            description=f"Generated in {active_room}. Source staging file: {candidate}",
+            uploaded_by_session_id=session_id,
         )
 
     def import_generated_artifacts(
@@ -538,6 +591,57 @@ class VeridexStore:
                 continue
             imported.append(self.import_generated_file(workspace_id, session_id, candidate))
         return imported
+
+    def verified_new_generated_files(
+        self,
+        workspace_id: str,
+        session_id: str,
+        known_file_ids: Iterable[str],
+        room_id: str,
+    ) -> List[Dict[str, Any]]:
+        known = {str(file_id) for file_id in known_file_ids if str(file_id).strip()}
+        ledger_by_file_id = {
+            str(row.get("file_id")): row
+            for row in self.list_artifact_ledger(workspace_id)
+            if isinstance(row, dict) and str(row.get("file_id") or "").strip()
+        }
+        verified: List[Dict[str, Any]] = []
+        for row in self.list_files(workspace_id, session_id):
+            file_id = str(row.get("file_id") or "")
+            if not file_id or file_id in known:
+                continue
+            if str(row.get("kind") or "") != "generated_image":
+                continue
+            if str(row.get("source") or "") != "generated":
+                continue
+            if str(row.get("scope") or "") != "room" or str(row.get("scope_ref") or "") != str(room_id or ""):
+                continue
+            if str(row.get("uploaded_by_session_id") or "") != session_id:
+                continue
+            path = Path(str(row.get("path") or ""))
+            if not self._valid_generated_image(path):
+                continue
+            content = path.read_bytes()
+            sha256 = hashlib.sha256(content).hexdigest()
+            if sha256 != str(row.get("sha256") or "").lower():
+                continue
+            if len(content) != int(row.get("size") or -1):
+                continue
+            ledger = ledger_by_file_id.get(file_id)
+            if not ledger:
+                continue
+            if str(ledger.get("sha256") or "").lower() != sha256:
+                continue
+            if int(ledger.get("size") or -1) != len(content):
+                continue
+            if str(ledger.get("path") or "") != str(path.resolve()):
+                continue
+            if str(ledger.get("kind") or "") != "generated_image":
+                continue
+            if str(ledger.get("scope") or "") != "room" or str(ledger.get("scope_ref") or "") != str(room_id or ""):
+                continue
+            verified.append(row)
+        return verified
 
     def list_files(self, workspace_id: str, session_id: str) -> List[Dict[str, Any]]:
         session = self.find_session(session_id)
@@ -612,8 +716,21 @@ class VeridexStore:
         self._touch_workspace(workspace_id)
 
 
-def transcript_context(messages: Iterable[Dict[str, Any]], limit: int = 20) -> Dict[str, Any]:
+def _compact_message_text(text: Any, max_chars: int = 650) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= max_chars:
+        return value
+    return value[: max(0, max_chars - 14)].rstrip() + " ... [trimmed]"
+
+
+def transcript_context(messages: Iterable[Dict[str, Any]], limit: int = 8) -> Dict[str, Any]:
     compact = []
     for row in list(messages)[-limit:]:
-        compact.append({"role": row.get("role"), "text": row.get("text"), "room": row.get("room")})
+        compact.append(
+            {
+                "role": row.get("role"),
+                "text": _compact_message_text(row.get("text")),
+                "room": row.get("room"),
+            }
+        )
     return {"recent_transcript": compact, "governance": {"single_user": True, "active_room_limit": 1}}

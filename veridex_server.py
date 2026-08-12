@@ -49,7 +49,19 @@ ACTIVE_REQUESTS = ActiveRequestRegistry()
 
 
 def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str, Any]:
-    keys = ["file_id", "artifact_number", "name", "content_type", "size", "sha256", "source", "ledgered_at"]
+    keys = [
+        "file_id",
+        "artifact_number",
+        "name",
+        "content_type",
+        "size",
+        "sha256",
+        "source",
+        "kind",
+        "scope",
+        "scope_ref",
+        "ledgered_at",
+    ]
     if include_path:
         keys.append("path")
     return {key: row[key] for key in keys if key in row}
@@ -560,6 +572,16 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     if artifact_output_dir:
         context["required_artifact_output_dir"] = str(artifact_output_dir)
+        context["artifact_storage_policy"] = {
+            "handoff_dir": str(artifact_output_dir),
+            "canonical_dir": str(STORE.generated_files_dir(workspace_id, active_room)),
+            "kind": "generated_image",
+            "scope": "room",
+            "scope_ref": active_room,
+            "owner": "veridex",
+            "rule": "Write final generated image files to handoff_dir only. Veridex will verify, ledger, and move them to canonical_dir before reporting them to the user.",
+        }
+    pre_codex_file_ids = {str(row.get("file_id") or "") for row in STORE.list_files(workspace_id, session_id)}
     codex_request = {
         "task_type": task_type,
         "system_prompt": (
@@ -620,6 +642,16 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         if artifact_output_dir
         else []
     )
+    if artifact_output_dir:
+        generated_rows.extend(
+            STORE.verified_new_generated_files(
+                workspace_id,
+                session_id,
+                pre_codex_file_ids,
+                active_room,
+            )
+        )
+    generated_rows = list({str(row.get("file_id")): row for row in generated_rows}.values())
     generated_artifacts = [public_file(row, include_path=True) for row in generated_rows]
     evidence.extend(
         {
