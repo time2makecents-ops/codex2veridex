@@ -29,6 +29,7 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(restored["account"]["user_id"], "local-user")
             self.assertEqual(restored["session"]["active_room"], "lobby")
             self.assertEqual(restored["session"]["active_persona"], "Receptionist")
+            self.assertTrue(any(room["id"] == "art_department" for room in restored["rooms"]))
             self.assertEqual(len(restored["messages"]), 2)
             self.assertEqual(restored["messages"][1]["model"], "gpt-5.6-sol")
             transcript = Path(temporary) / "workspaces" / workspace_id / "sessions" / session_id / "transcript.ndjson"
@@ -64,6 +65,20 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(Path(saved["path"]).read_bytes(), b"hello")
             self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
             self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
+
+    def test_room_transition_is_validated_persisted_and_session_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            first_session_id = initial["session"]["session_id"]
+            second = store.create_session(workspace_id, "Second")
+            transition = store.set_room(workspace_id, first_session_id, "art_department")
+            self.assertEqual(transition["active_persona"], "Creative Director")
+            self.assertEqual(store.find_session(first_session_id)["active_room"], "art_department")
+            self.assertEqual(store.find_session(second["session_id"])["active_room"], "lobby")
+            with self.assertRaises(ValueError):
+                store.set_room(workspace_id, first_session_id, "imaginary_room")
 
 
 if __name__ == "__main__":

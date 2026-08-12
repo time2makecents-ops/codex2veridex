@@ -69,6 +69,54 @@ class VeridexServerTests(unittest.TestCase):
             self.assertIn("active room is Lobby", prompt)
             self.assertNotIn("My Office", prompt)
 
+    def test_explicit_room_navigation_changes_state_without_calling_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "invoke_codex") as invoke:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "go to art department"}
+                )
+            invoke.assert_not_called()
+            self.assertEqual(result["provider"], "veridex_router")
+            self.assertEqual(result["room_transition"]["active_room"], "art_department")
+            self.assertEqual(store.find_session(session_id)["active_persona"], "Creative Director")
+            rows = store.load_messages(workspace_id, session_id)
+            self.assertEqual(rows[0]["room"], "lobby")
+            self.assertEqual(rows[1]["room"], "art_department")
+            self.assertIn("You're now in Art Department", rows[1]["text"])
+
+    def test_room_directory_is_complete_and_does_not_call_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "invoke_codex") as invoke:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "can you list available rooms?"}
+                )
+            invoke.assert_not_called()
+            self.assertEqual(result["task_type"], "room_directory")
+            self.assertIn("Art Department", result["message"]["text"])
+            self.assertIn("Records Archive", result["message"]["text"])
+
+    def test_visible_room_control_uses_same_persistent_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store):
+                result = veridex_server.room_change_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "room_id": "art_department"}
+                )
+            self.assertEqual(result["session"]["active_room"], "art_department")
+            self.assertEqual(result["room_transition"]["active_persona"], "Creative Director")
+            self.assertEqual(result["messages"][-1]["speaker"], "System")
+
 
 if __name__ == "__main__":
     unittest.main()

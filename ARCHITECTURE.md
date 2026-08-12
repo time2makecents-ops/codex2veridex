@@ -13,6 +13,8 @@ Browser / Codex MCP
         v
 veridex_server.py :8765
         |
+        +--> veridex_rooms.py --> room registry / explicit navigation
+        |
         +--> veridex_core.py --> data/workspaces/.../transcript.ndjson
         |
         +--> codex_gateway.py --> authenticated `codex exec`
@@ -27,12 +29,23 @@ governance boundary without requiring onboarding or account discovery.
 
 1. The user submits a message in a workspace session.
 2. The server saves the user message immediately.
-3. Deterministic text classification selects a task class.
-4. The gateway maps that class to a Codex model and reasoning effort.
-5. An ephemeral, read-only `codex exec` process receives the governed prompt and
-   recent transcript context.
-6. The server saves the answer and exact route metadata to `transcript.ndjson`.
-7. The UI shows the current route and a persistent model-change notice.
+3. The deterministic room router handles explicit navigation and room-directory
+   requests without a model call.
+4. Other requests receive a deterministic task class.
+5. The gateway maps that class to a Codex model and reasoning effort.
+6. An ephemeral `codex exec` process receives the governed prompt, room registry,
+   recent transcript context, and the launcher's configured access mode.
+7. The server saves the answer and exact route metadata to `transcript.ndjson`.
+8. The UI shows the current route and a persistent route-change notice.
+
+## Room state
+
+`veridex_rooms.py` is the standalone authoritative registry. The browser room
+selector, `/api/rooms`, natural-language navigation, and local tool bridge all
+use the same validated `VeridexStore.set_room` transition. Only commands with
+explicit navigation intent can change the active room; mentioning another room
+as a topic cannot move the session. The new room and its default persona are
+written to that session's `session.json`.
 
 ## File and computer access
 
@@ -61,8 +74,9 @@ recursion, so the gateway embeds the governing rules directly:
 - no claims of durable memory without a saved transcript or governed path;
 - direct answers with uncertainty stated instead of invented results.
 
-The child process is ephemeral, read-only, and cannot approve actions. Veridex,
-not the Codex thread, owns conversation continuity.
+The child process is ephemeral and cannot pause for approval. Its filesystem
+mode is read-only by default and full only after the explicit `-FullAccess`
+launch option. Veridex, not the Codex thread, owns conversation continuity.
 
 ## Billing and fallback
 

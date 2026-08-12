@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 from codex_gateway import access_mode, invoke_codex
 from veridex_core import VeridexStore, classify_task, transcript_context
+from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
 
 
 ROOT = Path(__file__).resolve().parent
@@ -52,6 +53,72 @@ def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
     return {**value, "runtime": runtime_status()}
 
 
+def local_chat_response(
+    workspace_id: str,
+    session_id: str,
+    user_message: Dict[str, Any],
+    text: str,
+    speaker: str,
+    task_type: str,
+    **extra: Any,
+) -> Dict[str, Any]:
+    assistant_message = STORE.append_message(
+        workspace_id,
+        session_id,
+        "assistant",
+        text,
+        speaker=speaker,
+        provider="veridex_router",
+        model="deterministic",
+        reasoning_effort="none",
+        task_type=task_type,
+    )
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "user_message": user_message,
+        "message": assistant_message,
+        "provider": "veridex_router",
+        "model": "deterministic",
+        "reasoning_effort": "none",
+        "task_type": task_type,
+        "fallback_used": False,
+        **runtime_status(),
+        **extra,
+    }
+
+
+def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    room_id = str(payload.get("room_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    session = STORE.find_session(session_id)
+    workspace_id = workspace_id or str(session["workspace_id"])
+    transition = STORE.set_room(workspace_id, session_id, room_id)
+    if transition["previous_room"] != transition["active_room"]:
+        STORE.append_message(
+            workspace_id,
+            session_id,
+            "system",
+            f"Entered {transition['room_title']}. {transition['active_persona']} is active.",
+            speaker="System",
+            task_type="room_navigation",
+        )
+    return {
+        **state_response(STORE.bootstrap(workspace_id, session_id)),
+        "room_transition": transition,
+        "route": {
+            "provider": "veridex_router",
+            "model": "deterministic",
+            "reasoning_effort": "none",
+            "task_type": "room_navigation",
+        },
+    }
+
+
 def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     text = str(payload.get("text") or "").strip()
     workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -67,7 +134,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     user_prompt = text or "Review the attached file or files and summarize what is important."
     active_room = str(session.get("active_room") or "lobby")
     active_persona = str(session.get("active_persona") or "Receptionist")
-    room_title = "Lobby" if active_room == "lobby" else active_room.replace("_", " ").title()
+    room = room_by_id(active_room) or room_by_id("lobby")
+    room_title = str(room["title"] if room else "Lobby")
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
     public_attachments = [
         {key: row[key] for key in ("file_id", "name", "content_type", "size") if key in row}
@@ -81,6 +149,49 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         speaker="You",
         attachments=public_attachments,
     )
+    room_route = route_room_request(user_prompt) if not attachments else None
+    if room_route and room_route["action"] == "directory":
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            room_directory_text(),
+            active_persona,
+            "room_directory",
+            rooms=rooms_payload(),
+            attachments=public_attachments,
+        )
+    if room_route and room_route["action"] == "navigate":
+        target = room_route.get("room")
+        if not target:
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Room not recognized. Available rooms: {valid_room_titles()}.",
+                active_persona,
+                "room_navigation",
+                rooms=rooms_payload(),
+                attachments=public_attachments,
+            )
+        transition = STORE.set_room(workspace_id, session_id, str(target["id"]))
+        moved = transition["previous_room"] != transition["active_room"]
+        response_text = (
+            f"You're now in {transition['room_title']}. {transition['active_persona']} is active."
+            if moved
+            else f"You're already in {transition['room_title']}. {transition['active_persona']} is active."
+        )
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            response_text,
+            str(transition["active_persona"]),
+            "room_navigation",
+            room_transition=transition,
+            rooms=rooms_payload(),
+            attachments=public_attachments,
+        )
     task_type = classify_task(" ".join([user_prompt, *[str(row.get("name") or "") for row in attachments]]))
     context = transcript_context(previous)
     context["attached_files"] = [
@@ -94,12 +205,14 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         for row in attachments
     ]
     context["computer_access"] = runtime_status()
+    context["available_rooms"] = rooms_payload()
     result = invoke_codex(
         {
             "task_type": task_type,
             "system_prompt": (
                 f"You are the {active_persona}, the Veridex assistant in {room_title}. "
                 f"The active room is {room_title}; do not claim the user is in another room. "
+                "The governed context contains the complete available-room directory. Never say room controls or room names are unavailable. "
                 "When asked to find local files, use the available shell tools and report only verified paths. "
                 "Attached files are saved locally and their exact paths are supplied in governed context. "
                 "Use the governed context for continuity, but do not claim actions that were not performed."
@@ -141,6 +254,8 @@ TOOLS = [
     {"name": "office.workspace_list", "description": "List local workspaces."},
     {"name": "office.session_create", "description": "Create a session in a workspace."},
     {"name": "office.transcript_get", "description": "Read a session transcript."},
+    {"name": "office.room_list", "description": "List available governed rooms and personas."},
+    {"name": "office.room_set", "description": "Explicitly change the active room for one session."},
 ]
 
 
@@ -268,6 +383,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     str(payload.get("title") or "New session"),
                 )
                 self._json(state_response(STORE.bootstrap(session["workspace_id"], session["session_id"])), HTTPStatus.CREATED)
+            elif parsed.path == "/api/rooms":
+                self._json(room_change_response(payload))
             elif parsed.path in {"/api/chat", "/request"}:
                 if parsed.path == "/request" and not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
@@ -310,6 +427,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 "session_id": session["session_id"],
                 "entries": STORE.load_messages(session["workspace_id"], session["session_id"]),
             }
+        elif tool == "office.room_list":
+            value = {"rooms": rooms_payload()}
+        elif tool == "office.room_set":
+            value = room_change_response(args)
         else:
             raise ValueError(f"Unknown tool: {tool}")
         return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}], "structuredContent": value}

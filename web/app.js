@@ -5,11 +5,13 @@ const state = {
   sessions: [],
   messages: [],
   files: [],
+  rooms: [],
   selectedFiles: new Set(),
   runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
   route: null,
   sending: false,
   uploading: false,
+  switchingRoom: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -43,6 +45,7 @@ function applyState(value, preserveRoute = false) {
   state.sessions = value.sessions || [];
   state.messages = value.messages || [];
   state.files = value.files || [];
+  state.rooms = value.rooms || state.rooms;
   state.runtime = value.runtime || state.runtime;
   if (sessionChanged) state.selectedFiles.clear();
   if (!preserveRoute) state.route = savedRoute(state.messages);
@@ -162,12 +165,25 @@ function renderFiles() {
   });
 }
 
+function renderRoomControl() {
+  const selector = el("room-selector");
+  selector.replaceChildren();
+  state.rooms.forEach((room) => {
+    const option = document.createElement("option");
+    option.value = room.id;
+    option.textContent = `${room.title} · ${room.default_persona}`;
+    selector.append(option);
+  });
+  selector.value = state.session?.active_room || "lobby";
+  selector.disabled = state.sending || state.uploading || state.switchingRoom;
+}
+
 function renderRoute() {
   const status = el("route-status");
   if (state.sending) {
     status.className = "route-status checking";
-    el("route-model").textContent = "Checking model route";
-    el("route-meta").textContent = "Matching task, model, and reasoning level";
+    el("route-model").textContent = "Checking governed route";
+    el("route-meta").textContent = "Matching room control, task, model, and reasoning level";
     el("route-notice").textContent = "";
     return;
   }
@@ -178,7 +194,9 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  el("route-model").textContent = `Codex CLI · ${state.route.model}`;
+  el("route-model").textContent = state.route.provider === "veridex_router"
+    ? "Veridex · deterministic room control"
+    : `Codex CLI · ${state.route.model}`;
   el("route-meta").textContent = `${state.route.reasoning_effort} reasoning · ${state.route.task_type.replaceAll("_", " ")}`;
   el("route-notice").textContent = state.route.notice;
 }
@@ -186,8 +204,6 @@ function renderRoute() {
 function render() {
   el("workspace-name").textContent = state.workspace?.label || "Workspace";
   el("session-title").textContent = state.session?.title || "New session";
-  const room = (state.session?.active_room || "lobby").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-  el("room-location").textContent = `${room} · ${state.session?.active_persona || "Receptionist"}`;
   const fullAccess = state.runtime.access_mode === "full";
   el("access-status").className = `access-status ${fullAccess ? "full" : "read-only"}`;
   el("access-label").textContent = state.runtime.access_label || (fullAccess ? "Full computer access" : "Read-only computer access");
@@ -197,6 +213,7 @@ function render() {
   el("send-button").disabled = state.sending || state.uploading;
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
+  renderRoomControl();
   renderNavigation();
   renderMessages();
   renderFiles();
@@ -211,6 +228,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
 }
 
 function routeNotice(next) {
+  if (next.provider === "veridex_router") return "Handled by Veridex's governed room router; no model call was needed.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -247,7 +265,9 @@ async function sendMessage(text) {
       reasoning_effort: result.reasoning_effort,
       task_type: result.task_type,
     };
-    nextRoute.notice = routeNotice(nextRoute);
+    nextRoute.notice = result.room_transition
+      ? `Room changed: ${result.room_transition.room_title} · ${result.room_transition.active_persona}.`
+      : routeNotice(nextRoute);
     state.route = nextRoute;
     state.selectedFiles.clear();
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
@@ -308,6 +328,32 @@ async function uploadFiles(fileList) {
 
 el("attach-button").addEventListener("click", () => el("file-input").click());
 el("file-input").addEventListener("change", (event) => uploadFiles([...event.target.files]));
+
+el("room-selector").addEventListener("change", async (event) => {
+  const roomId = event.target.value;
+  if (!roomId || roomId === state.session?.active_room || state.switchingRoom) return;
+  state.switchingRoom = true;
+  render();
+  try {
+    const result = await api("/api/rooms", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        room_id: roomId,
+      }),
+    });
+    applyState(result, true);
+    state.route = result.route;
+    state.route.notice = `Room changed: ${result.room_transition.room_title} · ${result.room_transition.active_persona}.`;
+  } catch (error) {
+    showError(error.message || String(error));
+    await loadState(state.workspace.workspace_id, state.session.session_id, true);
+  } finally {
+    state.switchingRoom = false;
+    render();
+  }
+});
 
 el("message-input").addEventListener("input", (event) => {
   event.target.style.height = "auto";

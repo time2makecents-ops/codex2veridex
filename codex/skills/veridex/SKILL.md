@@ -17,6 +17,9 @@ After activation:
 - Use `veridex_request` for natural-language work that should follow room and
   workspace governance.
 - Use `veridex_call` for explicit Veridex tools.
+- Use `office.room_list` to inspect the authoritative room directory and
+  `office.room_set` for an explicit room transition. Natural-language commands
+  such as `go to Art Department` are handled by the same governed transition.
 - Keep the active session and workspace IDs returned by activation.
 - Never claim that a search, save, room change, or other operation happened
   unless Veridex returns evidence for it.

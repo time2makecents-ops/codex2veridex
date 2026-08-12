@@ -11,6 +11,7 @@ and does not read from or write to `C:\Office-App`.
 - A visible status strip whenever the model is selected or changed.
 - Multiple workspaces and sessions under one local account.
 - Every new workspace and session starts in the Lobby with the Receptionist.
+- A visible room selector and explicit natural-language room navigation.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - Session-scoped file attachments saved beside each session transcript.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
@@ -74,6 +75,15 @@ Use the `+` button beside the composer to add files. Uploaded files are copied
 into the active session's `files/` directory and selected for the next message.
 They remain available in that session and can be selected again later.
 
+## Rooms
+
+Choose a room from the selector beneath the session title, or type an explicit
+command such as `go to Art Department`. Commands such as `list rooms`, `list
+room controls`, and `can you list available rooms?` return the authoritative
+directory. Room navigation and directory requests are handled deterministically
+by Veridex before Codex is called, and every session still has exactly one
+active room.
+
 ## Model routing
 
 | Task | Default model | Reasoning |
@@ -85,6 +95,7 @@ They remain available in that session and can be selected again later.
 | Search/general chat | `gpt-5.6-terra` | medium |
 | UI checks and simple testing | `gpt-5.6-luna` | low |
 | Greetings and trivial requests | `gpt-5.6-luna` | low |
+| Room navigation and room directory | deterministic Veridex router | none |
 
 Routing is automatic. Prompt text cannot directly select an arbitrary model.
 Overrides are available in `.env.example`.

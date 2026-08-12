@@ -49,7 +49,12 @@
           <div>
             <div class="eyebrow" id="workspace-name">Workspace</div>
             <h1 id="session-title">New session</h1>
-            <div id="room-location" class="room-location">Lobby · Receptionist</div>
+            <div class="room-control">
+              <label for="room-selector">Room</label>
+              <select id="room-selector" aria-label="Active room">
+                <option value="lobby">Lobby · Receptionist</option>
+              </select>
+            </div>
             <div id="access-status" class="access-status read-only"><span class="access-dot"></span><span id="access-label">Read-only computer access</span></div>
           </div>
           <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">

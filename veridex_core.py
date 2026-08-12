@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from veridex_rooms import room_by_id, rooms_payload
+
 
 DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
 MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
@@ -180,6 +182,27 @@ class VeridexStore:
                     return row
         raise KeyError(f"Unknown session: {session_id}")
 
+    def set_room(self, workspace_id: str, session_id: str, room_id: str) -> Dict[str, Any]:
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            room = room_by_id(room_id)
+            if not room:
+                raise ValueError(f"Unknown room: {room_id}")
+            previous_room = str(session.get("active_room") or "lobby")
+            session["active_room"] = room["id"]
+            session["active_persona"] = room["default_persona"]
+            session["updated_at"] = utc_now()
+            self._write_json(self.session_dir(workspace_id, session_id) / "session.json", session)
+            self._touch_workspace(workspace_id)
+            return {
+                "previous_room": previous_room,
+                "active_room": room["id"],
+                "active_persona": room["default_persona"],
+                "room_title": room["title"],
+            }
+
     def append_message(
         self,
         workspace_id: str,
@@ -291,6 +314,7 @@ class VeridexStore:
             "session": selected_session,
             "messages": self.load_messages(selected_workspace["workspace_id"], selected_session["session_id"]),
             "files": self.list_files(selected_workspace["workspace_id"], selected_session["session_id"]),
+            "rooms": rooms_payload(),
         }
 
     def _touch_workspace(self, workspace_id: str) -> None:
