@@ -1,56 +1,55 @@
-# Codex ↔ Veridex local bridge
+# Codex and Veridex local bridge
 
-This bridge adds a local MCP server that lets Codex use Veridex workspace and
-room tools. It does not replace Codex's ChatGPT-authenticated model and does
-not require an OpenAI API key.
+This repository connects Codex and Veridex in both directions without adding
+an OpenAI API key:
 
-## Configure
+- `veridex_mcp.py`: lets an interactive Codex session use governed Veridex tools.
+- `codex_gateway.py`: lets Veridex AI chats use the locally authenticated Codex CLI.
 
-1. Choose an existing Veridex session ID from the Veridex UI.
-2. Set the same random local token in `C:\Office-App\.env.local`:
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the governance boundary, recursion
+barrier, model-routing policy, and fallback behavior.
 
-```text
-VERIDEX_CODEX_TOKEN=<random-local-secret>
-```
+## Configure Codex to Veridex
 
-3. Set these values in the environment used by Codex:
+Choose an existing Veridex session ID and set the same random local token in
+`C:\Office-App\.env.local` and `C:\codex2veridex\.env.local`:
 
 ```text
 VERIDEX_BASE_URL=http://127.0.0.1:8078
-VERIDEX_CODEX_TOKEN=<same-random-local-secret>
+VERIDEX_CODEX_TOKEN=<random-local-secret>
 VERIDEX_CODEX_SESSION_ID=<your-veridex-session-id>
 VERIDEX_AUTOSTART=true
 ```
 
-The token is a Veridex-local integration secret, not an OpenAI credential.
-Keep it out of Git and do not expose the backend beyond localhost.
+The token is a local Veridex integration secret, not an OpenAI credential. Keep
+it out of Git and do not expose the backend beyond localhost.
 
-## Run manually
+## Configure Veridex to Codex
 
-```powershell
-python C:\codex2veridex\veridex_mcp.py
+Add the following to `C:\Office-App\.env.local`:
+
+```text
+VERIDEX_CODEX_ENABLED=true
+VERIDEX_CODEX_GATEWAY=C:\codex2veridex\codex_gateway.py
+VERIDEX_CODEX_WORKDIR=C:\Office-App
+VERIDEX_CODEX_TIMEOUT_SECONDS=240
 ```
 
-Codex should launch the bridge through its MCP server configuration. The
-global Codex instruction recognizes “use Veridex model” as activation of the
-Veridex MCP tools; the underlying Codex model remains unchanged.
+The optional per-task model variables are listed in `.env.example`. The defaults
+select Sol for coding and planning, Terra for ordinary chat, and Luna for simple
+requests.
 
-## Install into Codex
+## Install the MCP side into Codex
 
-The repository includes the portable Codex skill and configuration template:
+The portable skill and MCP configuration template are included at:
 
 - `codex/skills/veridex/SKILL.md`
 - `codex/config-snippet.toml`
 
-Copy the skill into your user-level Codex skills directory and add the MCP
-block from the config snippet to your user-level `config.toml`. The current
-machine already has these installed.
+The current machine already has these installed.
 
-## Available tools
+## Test
 
-- `veridex_activate`
-- `veridex_status`
-- `veridex_request`
-- `veridex_call`
-- `veridex_list_tools`
-- `veridex_deactivate`
+```powershell
+python -m unittest discover -v
+```
