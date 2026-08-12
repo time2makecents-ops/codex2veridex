@@ -61,6 +61,10 @@ def select_model(task_type: str) -> ModelPolicy:
             _env("VERIDEX_CODEX_SEARCH_MODEL", "gpt-5.6-terra"),
             _env("VERIDEX_CODEX_SEARCH_EFFORT", "medium"),
         ),
+        "testing": (
+            _env("VERIDEX_CODEX_TESTING_MODEL", "gpt-5.6-luna"),
+            _env("VERIDEX_CODEX_TESTING_EFFORT", "low"),
+        ),
         "simple": (
             _env("VERIDEX_CODEX_SIMPLE_MODEL", "gpt-5.6-luna"),
             _env("VERIDEX_CODEX_SIMPLE_EFFORT", "low"),
@@ -149,7 +153,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
 
     policy = select_model(str(request.get("task_type") or "conversation"))
     prompt = build_prompt(request, policy)
-    workdir = Path(_env("VERIDEX_CODEX_WORKDIR", r"C:\Office-App")).resolve()
+    workdir = Path(_env("VERIDEX_CODEX_WORKDIR", str(Path(__file__).resolve().parent))).resolve()
     if not workdir.is_dir():
         raise RuntimeError(f"Codex working directory does not exist: {workdir}")
     timeout_seconds = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "240")))

@@ -29,7 +29,7 @@ class VeridexMcpTests(unittest.TestCase):
                 return FakeResponse({"structuredContent": {"session_id": "sess_1", "workspace_id": "ws_1", "title": "Codex"}, "content": [{"type": "text", "text": tool}]})
             return FakeResponse({})
 
-        client = VeridexClient(base_url="http://127.0.0.1:8078", token="secret", opener=opener)
+        client = VeridexClient(base_url="http://127.0.0.1:8765", token="secret", opener=opener)
         result = client.activate("sess_1")
         self.assertTrue(result["active"])
         self.assertEqual(client.session_id, "sess_1")

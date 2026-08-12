@@ -20,8 +20,7 @@ After activation:
 - Keep the active session and workspace IDs returned by activation.
 - Never claim that a search, save, room change, or other operation happened
   unless Veridex returns evidence for it.
-- If activation fails because no session is configured, ask the user to set
-  `VERIDEX_CODEX_SESSION_ID` in `C:\codex2veridex\.env.local` using a session
-  ID from the Veridex UI.
+- If no session is configured, allow the standalone server to create and use
+  its default local workspace and session automatically.
 
 Use `veridex_deactivate` when the user says to stop using Veridex.

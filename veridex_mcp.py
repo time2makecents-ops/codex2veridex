@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -35,7 +36,7 @@ def _load_env_file(path: str) -> None:
 
 @dataclass
 class VeridexClient:
-    base_url: str = "http://127.0.0.1:8078"
+    base_url: str = "http://127.0.0.1:8765"
     token: str = ""
     session_id: str = ""
     workspace_id: str = ""
@@ -47,19 +48,11 @@ class VeridexClient:
         except RuntimeError as initial_error:
             if _env("VERIDEX_AUTOSTART", "true").lower() not in {"1", "true", "yes", "on"}:
                 raise initial_error
-            command = [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                r"C:\Office-App\veridex.ps1",
-                "-Action",
-                "start",
-            ]
+            root = Path(__file__).resolve().parent
+            command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(root / "veridex.ps1"), "start", "-NoBrowser"]
             creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             try:
-                subprocess.Popen(command, cwd=r"C:\Office-App", creationflags=creation_flags)
+                subprocess.Popen(command, cwd=str(root), creationflags=creation_flags)
             except OSError as exc:
                 raise RuntimeError(f"Veridex is not running and could not be started: {exc}") from exc
             deadline = time.monotonic() + 30
@@ -74,10 +67,10 @@ class VeridexClient:
 
     @classmethod
     def from_env(cls) -> "VeridexClient":
-        _load_env_file(r"C:\codex2veridex\.env.local")
-        _load_env_file(r"C:\Office-App\.env.local")
+        root = Path(__file__).resolve().parent
+        _load_env_file(str(root / ".env.local"))
         return cls(
-            base_url=_env("VERIDEX_BASE_URL", "http://127.0.0.1:8078").rstrip("/"),
+            base_url=_env("VERIDEX_BASE_URL", "http://127.0.0.1:8765").rstrip("/"),
             token=_env("VERIDEX_CODEX_TOKEN"),
             session_id=_env("VERIDEX_CODEX_SESSION_ID"),
         )
@@ -97,7 +90,7 @@ class VeridexClient:
             headers=self._headers(),
         )
         try:
-            with self.opener(request, timeout=10) as response:
+            with self.opener(request, timeout=max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "300")))) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib_error.HTTPError as exc:
@@ -117,7 +110,12 @@ class VeridexClient:
     def activate(self, session_id: Optional[str] = None, workspace_id: Optional[str] = None) -> Dict[str, Any]:
         candidate_session = str(session_id or self.session_id).strip()
         if not candidate_session:
-            raise RuntimeError("No Veridex session configured. Pass session_id to veridex_activate or set VERIDEX_CODEX_SESSION_ID.")
+            self.ensure_backend()
+            bootstrap = self.request("/api/bootstrap")
+            session = bootstrap.get("session") if isinstance(bootstrap, dict) else {}
+            candidate_session = str(session.get("session_id") or "").strip() if isinstance(session, dict) else ""
+            if not candidate_session:
+                raise RuntimeError("Standalone Veridex could not create a default session.")
         previous_session, previous_workspace = self.session_id, self.workspace_id
         self.session_id = candidate_session
         try:

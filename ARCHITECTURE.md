@@ -1,54 +1,55 @@
-# Governed Codex and Veridex architecture
+# Standalone Codex + Veridex architecture
 
-The integration has two deliberately separate directions.
+## Boundary
 
-## Codex to Veridex
+Everything required at runtime is rooted at `C:\codex2veridex`. The server binds
+to `127.0.0.1` by default, serves its own static UI, writes only to its local
+`data/` and `.runtime/` directories, and invokes the authenticated Codex CLI with
+this repository as its working directory.
 
-`veridex_mcp.py` exposes Veridex's existing governed HTTP tools to an interactive
-Codex session. Veridex remains authoritative for the selected workspace, room,
-session, transcript, files, artifacts, and action permissions.
+```text
+Browser / Codex MCP
+        |
+        v
+veridex_server.py :8765
+        |
+        +--> veridex_core.py --> data/workspaces/.../transcript.ndjson
+        |
+        +--> codex_gateway.py --> authenticated `codex exec`
+```
 
-## Veridex to Codex
+There is one fixed local account. Workspaces contain sessions; each session owns
+its transcript and one active room (`my_office`). This preserves the single-room
+governance boundary without requiring onboarding or account discovery.
 
-`codex_gateway.py` lets Veridex use the locally authenticated Codex CLI as its
-primary reasoning provider. Each chat turn launches one ephemeral `codex exec`
-process, sends the governed prompt through stdin, and reads the final agent
-message from Codex's JSON event stream.
+## Request lifecycle
 
-The child process:
+1. The user submits a message in a workspace session.
+2. The server saves the user message immediately.
+3. Deterministic text classification selects a task class.
+4. The gateway maps that class to a Codex model and reasoning effort.
+5. An ephemeral, read-only `codex exec` process receives the governed prompt and
+   recent transcript context.
+6. The server saves the answer and exact route metadata to `transcript.ndjson`.
+7. The UI shows the current route and a persistent model-change notice.
 
-- uses the user's existing Codex/ChatGPT sign-in instead of an OpenAI API key;
-- is read-only and cannot approve actions;
-- ignores user config, repository rules, and MCP registration to prevent a
-  Veridex-to-Codex-to-Veridex recursion loop;
-- does not persist its Codex thread; Veridex persists the conversation instead.
+## Personal governance rules
 
-The gateway explicitly embeds the personal Veridex rules for one active room,
-no implicit navigation, Navigator authority, tool-truth claims, and governed
-persistence. These rules therefore still apply even though Codex user config is
-disabled for the isolated child process.
+The child Codex process ignores repository/user configuration to prevent MCP
+recursion, so the gateway embeds the governing rules directly:
 
-## Model policy
+- one active room, with no implicit navigation;
+- Veridex owns persistence, state, and authorization;
+- no claims of searches, saves, edits, sends, or execution without evidence;
+- no claims of durable memory without a saved transcript or governed path;
+- direct answers with uncertainty stated instead of invented results.
 
-| Task | Default model | Reasoning |
-| --- | --- | --- |
-| Coding, debugging | `gpt-5.6-sol` | high |
-| Architecture, planning | `gpt-5.6-sol` | high |
-| Image/video reasoning | `gpt-5.6-sol` | high |
-| Legal, medical, financial, security risk | `gpt-5.6-sol` | xhigh |
-| Search synthesis | `gpt-5.6-terra` | medium |
-| General conversation | `gpt-5.6-terra` | medium |
-| Greetings and trivial requests | `gpt-5.6-luna` | low |
+The child process is ephemeral, read-only, and cannot approve actions. Veridex,
+not the Codex thread, owns conversation continuity.
 
-The policy is deterministic and can be overridden only by administrator-owned
-environment variables. User prompt text cannot directly choose an arbitrary
-provider or model.
+## Billing and fallback
 
-## Failure and billing behavior
-
-Veridex uses `codex_cli` by default. If Codex is unavailable, times out, or
-returns an error, the request fails visibly instead of silently using an
-API-backed provider. Existing Gemini and Groq fallback can be enabled with
-`VERIDEX_MODEL_ALLOW_EXTERNAL_FALLBACK=true`; OpenRouter remains separately
-opt-in. The router records the provider, model, task type, attempts, and whether
-a fallback was used.
+The primary provider is the locally authenticated Codex CLI, using the existing
+ChatGPT/Codex subscription. This standalone app contains no API-provider fallback
+and does not require OpenAI, Gemini, Groq, or OpenRouter API keys. A Codex failure
+is shown to the user rather than silently switching to a paid API.

@@ -19,8 +19,10 @@ class CodexGatewayTests(unittest.TestCase):
     def test_selects_lower_cost_plan_models_for_general_and_simple_chat(self) -> None:
         conversation = codex_gateway.select_model("conversation")
         simple = codex_gateway.select_model("simple")
+        testing = codex_gateway.select_model("testing")
         self.assertEqual((conversation.model, conversation.reasoning_effort), ("gpt-5.6-terra", "medium"))
         self.assertEqual((simple.model, simple.reasoning_effort), ("gpt-5.6-luna", "low"))
+        self.assertEqual((testing.model, testing.reasoning_effort), ("gpt-5.6-luna", "low"))
 
     def test_extracts_last_agent_message_from_json_events(self) -> None:
         stdout = "\n".join(

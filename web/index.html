@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Codex + Veridex</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2318251d'/%3E%3Cpath d='M8 7h5l3 12 3-12h5l-6 19h-4z' fill='%233dd06f'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail">
+        <div class="brand-block">
+          <div class="brand-mark">V</div>
+          <div>
+            <div class="eyebrow">Local governed AI</div>
+            <div class="brand">Veridex</div>
+          </div>
+        </div>
+
+        <div class="rail-section">
+          <div class="rail-heading">
+            <span>Workspaces</span>
+            <button id="new-workspace" class="text-action" type="button">New</button>
+          </div>
+          <nav id="workspace-list" class="nav-list" aria-label="Workspaces"></nav>
+        </div>
+
+        <div class="rail-section sessions-section">
+          <div class="rail-heading">
+            <span>Sessions</span>
+            <button id="new-session" class="text-action" type="button">New</button>
+          </div>
+          <nav id="session-list" class="nav-list" aria-label="Sessions"></nav>
+        </div>
+
+        <div class="local-account">
+          <span class="presence-dot"></span>
+          <div>
+            <strong id="account-name">Local User</strong>
+            <span>Single account · saved locally</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <div class="eyebrow" id="workspace-name">Workspace</div>
+            <h1 id="session-title">New session</h1>
+          </div>
+          <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">
+            <div class="route-primary"><span class="route-dot"></span><span id="route-model">Model routing ready</span></div>
+            <div id="route-meta" class="route-meta">Codex selects the model automatically</div>
+            <div id="route-notice" class="route-notice"></div>
+          </div>
+        </header>
+
+        <section id="messages" class="messages" aria-label="Chat transcript">
+          <div class="empty-state">
+            <div class="empty-rule"></div>
+            <h2>Start where the work is.</h2>
+            <p>Coding and planning receive stronger reasoning. Simple checks use a lighter model. Every switch appears above.</p>
+          </div>
+        </section>
+
+        <footer class="composer-wrap">
+          <form id="composer" class="composer">
+            <textarea id="message-input" rows="1" placeholder="Message Veridex…" aria-label="Message Veridex"></textarea>
+            <button id="send-button" type="submit">Send</button>
+          </form>
+          <div class="composer-note">Codex uses your desktop sign-in · no API key · transcripts stay in this repository</div>
+        </footer>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

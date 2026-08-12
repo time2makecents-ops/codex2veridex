@@ -4,4 +4,6 @@ __pycache__/
 .env
 .env.local
 .veridex-codex-session
-
+data/
+.runtime/
+.playwright-cli/
