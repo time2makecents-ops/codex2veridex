@@ -12,6 +12,7 @@ and does not read from or write to `C:\Office-App`.
 - Multiple workspaces and sessions under one local account.
 - Every new workspace and session starts in the Lobby with the Receptionist.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
+- Session-scoped file attachments saved beside each session transcript.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
 
@@ -32,6 +33,19 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 .\veridex.ps1 stop
 ```
 
+To let Veridex use Codex's normal local shell tools across the computer, start
+it explicitly in full-access mode:
+
+```powershell
+.\veridex.ps1 restart -FullAccess
+```
+
+The page always displays either `Read-only computer access` or
+`Full computer access` beneath the current room. Full access uses Codex's
+documented `danger-full-access` sandbox with approvals set to `never`. This lets
+Codex actually search and work with local files; only enable it when you intend
+to give the chat that authority. A normal `restart` returns to read-only mode.
+
 Requirements: Python 3 and a working `codex` command authenticated through the
 Codex desktop app/CLI. The runtime uses Python's standard library only.
 
@@ -49,10 +63,16 @@ data/
         sess_.../
           session.json
           transcript.ndjson
+          files.json
+          files/
 ```
 
 Each assistant transcript entry records the provider, exact model, reasoning
 effort, and task class used for that response.
+
+Use the `+` button beside the composer to add files. Uploaded files are copied
+into the active session's `files/` directory and selected for the next message.
+They remain available in that session and can be selected again later.
 
 ## Model routing
 

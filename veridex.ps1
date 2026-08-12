@@ -1,7 +1,8 @@
 param(
   [ValidateSet("start", "stop", "restart", "status")]
   [string]$Action = "start",
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  [switch]$FullAccess
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,15 @@ $LogRoot = Join-Path $RuntimeRoot "logs"
 $PidPath = Join-Path $RuntimeRoot "veridex.pid"
 $Port = if ($env:VERIDEX_PORT) { [int]$env:VERIDEX_PORT } else { 8765 }
 $HealthUrl = "http://127.0.0.1:$Port/health"
+$RequestedAccessMode = if ($FullAccess) { "full" } else { "read_only" }
+
+function Get-AccessStatus {
+  try {
+    return Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2
+  } catch {
+    return $null
+  }
+}
 
 function Get-VeridexProcess {
   if (-not (Test-Path -LiteralPath $PidPath)) { return $null }
@@ -19,10 +29,19 @@ function Get-VeridexProcess {
   return Get-Process -Id ([int]$SavedPid) -ErrorAction SilentlyContinue
 }
 
+function Stop-VeridexProcessTree {
+  param([int]$ProcessId)
+  $Children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue
+  foreach ($Child in $Children) {
+    Stop-VeridexProcessTree -ProcessId ([int]$Child.ProcessId)
+  }
+  Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 function Stop-Veridex {
   $Process = Get-VeridexProcess
   if ($Process) {
-    Stop-Process -Id $Process.Id -Force
+    Stop-VeridexProcessTree -ProcessId $Process.Id
     $Process.WaitForExit()
     Write-Host "Stopped standalone Veridex (PID $($Process.Id))."
   } else {
@@ -34,13 +53,22 @@ function Stop-Veridex {
 function Start-Veridex {
   $Existing = Get-VeridexProcess
   if ($Existing) {
-    Write-Host "Standalone Veridex is already running at http://127.0.0.1:$Port"
-    if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
-    return
+    $CurrentStatus = Get-AccessStatus
+    if ($FullAccess -and $CurrentStatus -and $CurrentStatus.access_mode -ne "full") {
+      Write-Host "Restarting Veridex to enable full computer access."
+      Stop-Veridex
+    } else {
+      $CurrentLabel = if ($CurrentStatus) { $CurrentStatus.access_label } else { "access mode unavailable" }
+      Write-Host "Standalone Veridex is already running at http://127.0.0.1:$Port ($CurrentLabel)."
+      if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
+      return
+    }
   }
   New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
   $Python = (Get-Command python -ErrorAction Stop).Source
   $Server = Join-Path $RepoRoot "veridex_server.py"
+  $PreviousAccessMode = $env:VERIDEX_CODEX_ACCESS_MODE
+  $env:VERIDEX_CODEX_ACCESS_MODE = $RequestedAccessMode
   $Process = Start-Process -FilePath $Python `
     -ArgumentList @($Server, "--host", "127.0.0.1", "--port", "$Port") `
     -WorkingDirectory $RepoRoot `
@@ -48,6 +76,8 @@ function Start-Veridex {
     -RedirectStandardOutput (Join-Path $LogRoot "server.out.log") `
     -RedirectStandardError (Join-Path $LogRoot "server.err.log") `
     -PassThru
+  if ($null -eq $PreviousAccessMode) { Remove-Item Env:VERIDEX_CODEX_ACCESS_MODE -ErrorAction SilentlyContinue }
+  else { $env:VERIDEX_CODEX_ACCESS_MODE = $PreviousAccessMode }
   Set-Content -LiteralPath $PidPath -Value $Process.Id -Encoding ascii
   $Ready = $false
   for ($Attempt = 0; $Attempt -lt 40; $Attempt++) {
@@ -61,7 +91,8 @@ function Start-Veridex {
   if (-not $Ready) {
     throw "Standalone Veridex did not become ready. See $LogRoot"
   }
-  Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id))."
+  $AccessLabel = if ($FullAccess) { "FULL COMPUTER ACCESS" } else { "read-only computer access" }
+  Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id), $AccessLabel)."
   if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
 }
 
@@ -71,7 +102,11 @@ switch ($Action) {
   "restart" { Stop-Veridex; Start-Veridex }
   "status" {
     $Process = Get-VeridexProcess
-    if ($Process) { Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id))." }
+    if ($Process) {
+      $CurrentStatus = Get-AccessStatus
+      $CurrentLabel = if ($CurrentStatus) { $CurrentStatus.access_label } else { "access mode unavailable" }
+      Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id), $CurrentLabel)."
+    }
     else { Write-Host "Standalone Veridex is not running." }
   }
 }

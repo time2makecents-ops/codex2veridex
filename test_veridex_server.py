@@ -19,6 +19,10 @@ class VeridexServerTests(unittest.TestCase):
                 "session_id": initial["session"]["session_id"],
                 "text": "Debug this Python function",
             }
+            attached = store.save_file(
+                payload["workspace_id"], payload["session_id"], "service.py", b"print('hello')", "text/x-python"
+            )
+            payload["attachment_ids"] = [attached["file_id"]]
             response = {
                 "ok": True,
                 "provider": "codex_cli",
@@ -27,7 +31,9 @@ class VeridexServerTests(unittest.TestCase):
                 "task_type": "coding",
                 "text": "Here is the fix.",
             }
-            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "invoke_codex", return_value=response):
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ) as invoke:
                 result = veridex_server.chat_response(payload)
             self.assertEqual(result["model"], "gpt-5.6-sol")
             self.assertEqual(result["reasoning_effort"], "high")
@@ -36,6 +42,9 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(rows[-1]["task_type"], "coding")
             self.assertEqual(rows[-1]["room"], "lobby")
             self.assertEqual(rows[-1]["speaker"], "Receptionist")
+            self.assertEqual(rows[0]["attachments"][0]["name"], "service.py")
+            self.assertEqual(invoke.call_args.args[0]["attachment_paths"], [attached["path"]])
+            self.assertEqual(invoke.call_args.args[0]["context"]["attached_files"][0]["name"], "service.py")
 
     def test_new_workspace_prompt_identifies_lobby_not_my_office(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

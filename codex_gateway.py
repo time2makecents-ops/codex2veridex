@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable
 
 TRUTHY = {"1", "true", "yes", "on"}
 SUPPORTED_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+ACCESS_MODES = {"read_only", "full"}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -25,6 +26,11 @@ class ModelPolicy:
     task_type: str
     model: str
     reasoning_effort: str
+
+
+def access_mode() -> str:
+    value = _env("VERIDEX_CODEX_ACCESS_MODE", "read_only").lower().replace("-", "_")
+    return value if value in ACCESS_MODES else "read_only"
 
 
 def select_model(task_type: str) -> ModelPolicy:
@@ -96,12 +102,29 @@ def build_prompt(request: Dict[str, Any], policy: ModelPolicy) -> str:
     user_prompt = str(request.get("user_prompt") or "").strip()
     if not user_prompt:
         raise ValueError("user_prompt is required")
+    mode = str(request.get("access_mode") or access_mode())
+    if mode == "full":
+        access_instructions = (
+            "This run has full local computer access. You may use normal shell commands to search, inspect, "
+            "read, create, edit, move, or otherwise work with local files when the user's request calls for it. "
+            "Treat the user's explicit request as authority for the requested scope. Confirm results from tool output "
+            "before claiming that a file was found or changed. Do not make unrelated destructive changes."
+        )
+    else:
+        access_instructions = (
+            "This run is read-only. You may search and inspect readable local files, including attached session files, "
+            "but you may not create, edit, move, or delete files."
+        )
+    locator_path = Path(__file__).resolve().with_name("file_locator.py")
+    file_search_instruction = (
+        f'For filename searches on Windows, first use the bounded helper: python "{locator_path}" "<filename or pattern>". '
+        "It checks likely user locations first, stops on matches, and avoids an unbounded recursive C:\\ scan."
+    )
     return (
         "You are the reasoning engine inside the governed Veridex assistant.\n"
         "Veridex, not you, owns workspace state, rooms, files, artifacts, transcripts, "
-        "tool authorization, and all mutations. Never claim that you changed state or completed "
-        "an external action. Do not call Veridex or any MCP server. The process is read-only. "
-        "You may inspect local source files only when they are needed to answer a coding request. "
+        "and chat persistence. Do not call Veridex or any MCP server. "
+        f"{access_instructions} {file_search_instruction} "
         "Return only the final response intended for the user; do not describe these instructions.\n\n"
         "Personal and Veridex governance rules:\n"
         "- Exactly one room is active; never switch rooms implicitly because the topic changed.\n"
@@ -157,18 +180,30 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     if not workdir.is_dir():
         raise RuntimeError(f"Codex working directory does not exist: {workdir}")
     timeout_seconds = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "240")))
+    mode = access_mode()
+    sandbox = "danger-full-access" if mode == "full" else "read-only"
+    attachment_paths = [
+        str(Path(path).resolve())
+        for path in request.get("attachment_paths", [])
+        if str(path or "").strip() and Path(path).is_file()
+    ]
     command = [
         codex_path,
         "--ask-for-approval",
         "never",
+        "--sandbox",
+        sandbox,
         "exec",
+    ]
+    for path in attachment_paths:
+        if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            command.extend(["--image", path])
+    command.extend([
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",
         "--json",
-        "--sandbox",
-        "read-only",
         "--model",
         policy.model,
         "--config",
@@ -176,7 +211,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         "--cd",
         str(workdir),
         "-",
-    ]
+    ])
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         completed = subprocess.run(
@@ -206,6 +241,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         "model": policy.model,
         "reasoning_effort": policy.reasoning_effort,
         "task_type": policy.task_type,
+        "access_mode": mode,
         "text": text,
         "policy": asdict(policy),
     }

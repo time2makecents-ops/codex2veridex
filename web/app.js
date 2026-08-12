@@ -1,4 +1,16 @@
-const state = { workspace: null, session: null, workspaces: [], sessions: [], messages: [], route: null, sending: false };
+const state = {
+  workspace: null,
+  session: null,
+  workspaces: [],
+  sessions: [],
+  messages: [],
+  files: [],
+  selectedFiles: new Set(),
+  runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
+  route: null,
+  sending: false,
+  uploading: false,
+};
 
 const el = (id) => document.getElementById(id);
 const api = async (path, options = {}) => {
@@ -24,11 +36,15 @@ function savedRoute(messages) {
 }
 
 function applyState(value, preserveRoute = false) {
+  const sessionChanged = state.session?.session_id && state.session.session_id !== value.session?.session_id;
   state.workspace = value.workspace;
   state.session = value.session;
   state.workspaces = value.workspaces || [];
   state.sessions = value.sessions || [];
   state.messages = value.messages || [];
+  state.files = value.files || [];
+  state.runtime = value.runtime || state.runtime;
+  if (sessionChanged) state.selectedFiles.clear();
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
   render();
@@ -82,6 +98,16 @@ function renderMessages() {
       body.className = "message-body";
       body.textContent = row.text || "";
       article.append(role, body);
+      if (Array.isArray(row.attachments) && row.attachments.length) {
+        const attachments = document.createElement("div");
+        attachments.className = "message-attachments";
+        row.attachments.forEach((file) => {
+          const chip = document.createElement("span");
+          chip.textContent = `Attached: ${file.name}`;
+          attachments.append(chip);
+        });
+        article.append(attachments);
+      }
       if (row.model) {
         const route = document.createElement("div");
         route.className = "message-route";
@@ -98,6 +124,42 @@ function renderMessages() {
     container.append(processing);
   }
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+}
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderFiles() {
+  const tray = el("file-tray");
+  tray.replaceChildren();
+  if (!state.files.length && !state.uploading) {
+    tray.hidden = true;
+    return;
+  }
+  tray.hidden = false;
+  if (state.uploading) {
+    const uploading = document.createElement("span");
+    uploading.className = "file-uploading";
+    uploading.textContent = "Saving file…";
+    tray.append(uploading);
+  }
+  state.files.forEach((file) => {
+    const button = document.createElement("button");
+    const selected = state.selectedFiles.has(file.file_id);
+    button.type = "button";
+    button.className = `file-chip${selected ? " selected" : ""}`;
+    button.textContent = `${selected ? "✓ " : ""}${file.name} · ${formatBytes(file.size || 0)}`;
+    button.title = selected ? "Included with the next message" : "Click to include with the next message";
+    button.addEventListener("click", () => {
+      if (selected) state.selectedFiles.delete(file.file_id);
+      else state.selectedFiles.add(file.file_id);
+      renderFiles();
+    });
+    tray.append(button);
+  });
 }
 
 function renderRoute() {
@@ -126,10 +188,18 @@ function render() {
   el("session-title").textContent = state.session?.title || "New session";
   const room = (state.session?.active_room || "lobby").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   el("room-location").textContent = `${room} · ${state.session?.active_persona || "Receptionist"}`;
-  el("send-button").disabled = state.sending;
-  el("message-input").disabled = state.sending;
+  const fullAccess = state.runtime.access_mode === "full";
+  el("access-status").className = `access-status ${fullAccess ? "full" : "read-only"}`;
+  el("access-label").textContent = state.runtime.access_label || (fullAccess ? "Full computer access" : "Read-only computer access");
+  el("composer-note").textContent = fullAccess
+    ? "Full computer access · Codex can search and work with local files · transcripts stay here"
+    : "Read-only computer access · attach files or restart with -FullAccess · transcripts stay here";
+  el("send-button").disabled = state.sending || state.uploading;
+  el("message-input").disabled = state.sending || state.uploading;
+  el("attach-button").disabled = state.sending || state.uploading;
   renderNavigation();
   renderMessages();
+  renderFiles();
   renderRoute();
 }
 
@@ -152,8 +222,14 @@ function routeNotice(next) {
 }
 
 async function sendMessage(text) {
+  const selectedAttachments = state.files.filter((file) => state.selectedFiles.has(file.file_id));
   state.sending = true;
-  state.messages.push({ role: "user", text, speaker: "You" });
+  state.messages.push({
+    role: "user",
+    text: text || "Review the attached file or files and summarize what is important.",
+    speaker: "You",
+    attachments: selectedAttachments,
+  });
   render();
   try {
     const result = await api("/api/chat", {
@@ -162,6 +238,7 @@ async function sendMessage(text) {
         workspace_id: state.workspace.workspace_id,
         session_id: state.session.session_id,
         text,
+        attachment_ids: selectedAttachments.map((file) => file.file_id),
       }),
     });
     const nextRoute = {
@@ -172,6 +249,7 @@ async function sendMessage(text) {
     };
     nextRoute.notice = routeNotice(nextRoute);
     state.route = nextRoute;
+    state.selectedFiles.clear();
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
   } catch (error) {
     showError(error.message || String(error));
@@ -194,11 +272,42 @@ el("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = el("message-input");
   const text = input.value.trim();
-  if (!text || state.sending) return;
+  if ((!text && !state.selectedFiles.size) || state.sending || state.uploading) return;
   input.value = "";
   input.style.height = "auto";
   await sendMessage(text);
 });
+
+async function uploadFiles(fileList) {
+  if (!state.workspace || !state.session) return;
+  state.uploading = true;
+  render();
+  try {
+    for (const file of fileList) {
+      const query = new URLSearchParams({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        name: file.name,
+      });
+      const result = await api(`/api/files?${query}`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      state.files = result.files || state.files;
+      if (result.file?.file_id) state.selectedFiles.add(result.file.file_id);
+    }
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    state.uploading = false;
+    el("file-input").value = "";
+    render();
+  }
+}
+
+el("attach-button").addEventListener("click", () => el("file-input").click());
+el("file-input").addEventListener("change", (event) => uploadFiles([...event.target.files]));
 
 el("message-input").addEventListener("input", (event) => {
   event.target.style.height = "auto";

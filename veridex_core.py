@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import threading
 import uuid
@@ -95,6 +96,12 @@ class VeridexStore:
 
     def session_dir(self, workspace_id: str, session_id: str) -> Path:
         return self.workspace_dir(workspace_id) / "sessions" / session_id
+
+    def files_dir(self, workspace_id: str, session_id: str) -> Path:
+        return self.session_dir(workspace_id, session_id) / "files"
+
+    def files_manifest_path(self, workspace_id: str, session_id: str) -> Path:
+        return self.session_dir(workspace_id, session_id) / "files.json"
 
     def ensure_default(self) -> Dict[str, Any]:
         with self._lock:
@@ -200,6 +207,54 @@ class VeridexStore:
             self._touch_session(workspace_id, session_id, first_user_text=text if role == "user" else "")
             return row
 
+    def save_file(
+        self,
+        workspace_id: str,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            safe_name = Path(str(filename or "").replace("\\", "/")).name.strip()
+            safe_name = re.sub(r"[^\w.()\- ]+", "_", safe_name, flags=re.UNICODE).strip(" .")
+            if not safe_name:
+                raise ValueError("filename is required")
+            file_id = _identifier("file")
+            stored_name = f"{file_id}__{safe_name}"
+            path = self.files_dir(workspace_id, session_id) / stored_name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            row = {
+                "file_id": file_id,
+                "name": safe_name,
+                "content_type": content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+                "size": len(content),
+                "path": str(path.resolve()),
+                "created_at": utc_now(),
+            }
+            files = self.list_files(workspace_id, session_id)
+            files.append(row)
+            self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+            self._touch_session(workspace_id, session_id)
+            return row
+
+    def list_files(self, workspace_id: str, session_id: str) -> List[Dict[str, Any]]:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        rows = self._read_json(self.files_manifest_path(workspace_id, session_id), [])
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict) and Path(str(row.get("path") or "")).is_file()]
+
+    def resolve_files(self, workspace_id: str, session_id: str, file_ids: Iterable[str]) -> List[Dict[str, Any]]:
+        wanted = {str(file_id) for file_id in file_ids if str(file_id).strip()}
+        return [row for row in self.list_files(workspace_id, session_id) if str(row.get("file_id")) in wanted]
+
     def load_messages(self, workspace_id: str, session_id: str, limit: int = 300) -> List[Dict[str, Any]]:
         self.get_workspace(workspace_id)
         session = self.find_session(session_id)
@@ -235,6 +290,7 @@ class VeridexStore:
             "sessions": sessions,
             "session": selected_session,
             "messages": self.load_messages(selected_workspace["workspace_id"], selected_session["session_id"]),
+            "files": self.list_files(selected_workspace["workspace_id"], selected_session["session_id"]),
         }
 
     def _touch_workspace(self, workspace_id: str) -> None:

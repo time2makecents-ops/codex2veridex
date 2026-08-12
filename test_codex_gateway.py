@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import codex_gateway
@@ -54,7 +56,11 @@ class CodexGatewayTests(unittest.TestCase):
             ),
             stderr="",
         )
-        with patch.dict(os.environ, {"VERIDEX_CODEX_WORKDIR": os.getcwd()}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"VERIDEX_CODEX_WORKDIR": os.getcwd(), "VERIDEX_CODEX_ACCESS_MODE": "read_only"},
+            clear=False,
+        ):
             response = codex_gateway.invoke_codex(
                 {"task_type": "coding", "system_prompt": "Be useful", "user_prompt": "Plan this", "context": {}}
             )
@@ -68,6 +74,55 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(response["provider"], "codex_cli")
         self.assertEqual(response["text"], "Ready")
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_full_access_uses_documented_danger_full_access_sandbox(self, _which, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Found it"}}),
+            stderr="",
+        )
+        with patch.dict(
+            os.environ,
+            {"VERIDEX_CODEX_WORKDIR": os.getcwd(), "VERIDEX_CODEX_ACCESS_MODE": "full"},
+            clear=False,
+        ):
+            response = codex_gateway.invoke_codex(
+                {"task_type": "conversation", "system_prompt": "Search when asked", "user_prompt": "Find my file", "context": {}}
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--sandbox") + 1], "danger-full-access")
+        self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
+        self.assertEqual(response["access_mode"], "full")
+        self.assertIn("full local computer access", run.call_args.kwargs["input"])
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_image_attachments_are_passed_to_exec(self, _which, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Seen"}}),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            image_path = Path(temporary) / "reference.png"
+            image_path.write_bytes(b"png-placeholder")
+            with patch.dict(os.environ, {"VERIDEX_CODEX_WORKDIR": os.getcwd()}, clear=False):
+                codex_gateway.invoke_codex(
+                    {
+                        "task_type": "image_video",
+                        "system_prompt": "Inspect the image",
+                        "user_prompt": "Describe it",
+                        "context": {},
+                        "attachment_paths": [str(image_path)],
+                    }
+                )
+        command = run.call_args.args[0]
+        self.assertGreater(command.index("--image"), command.index("exec"))
+        self.assertEqual(command[command.index("--image") + 1], str(image_path.resolve()))
 
 
 if __name__ == "__main__":

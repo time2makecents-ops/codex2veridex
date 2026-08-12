@@ -53,6 +53,18 @@ class VeridexCoreTests(unittest.TestCase):
     def test_repairs_windows_mojibake_in_existing_transcript_text(self) -> None:
         self.assertEqual(repair_text_encoding("Youâ€™re in the Lobby."), "You’re in the Lobby.")
 
+    def test_session_files_are_saved_locally_and_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            saved = store.save_file(workspace_id, session_id, "../notes.txt", b"hello", "text/plain")
+            self.assertEqual(saved["name"], "notes.txt")
+            self.assertEqual(Path(saved["path"]).read_bytes(), b"hello")
+            self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
+            self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

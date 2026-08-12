@@ -34,6 +34,22 @@ governance boundary without requiring onboarding or account discovery.
 6. The server saves the answer and exact route metadata to `transcript.ndjson`.
 7. The UI shows the current route and a persistent model-change notice.
 
+## File and computer access
+
+Browser attachments are saved inside the active session directory, recorded in
+`files.json`, and passed to Codex by verified local path. Image attachments also
+use Codex's native `--image` input flag.
+
+The launcher has two explicit modes:
+
+- Default: `--sandbox read-only --ask-for-approval never`.
+- `-FullAccess`: `--sandbox danger-full-access --ask-for-approval never`.
+
+The server reports the active mode to the UI. In full mode, the governed prompt
+allows normal local shell inspection and file work within the user's requested
+scope. It still requires tool evidence before the assistant claims a file was
+found or changed.
+
 ## Personal governance rules
 
 The child Codex process ignores repository/user configuration to prevent MCP
