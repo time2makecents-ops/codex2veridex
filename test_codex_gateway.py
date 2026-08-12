@@ -36,6 +36,29 @@ class CodexGatewayTests(unittest.TestCase):
         )
         self.assertEqual(codex_gateway.extract_agent_text(stdout), "final")
 
+    def test_extracts_bounded_execution_evidence_from_json_events(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "status": "completed",
+                            "command": "rg --files",
+                            "aggregated_output": "README.md\nveridex_server.py",
+                        },
+                    }
+                ),
+                json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Found files"}}),
+            ]
+        )
+        evidence = codex_gateway.extract_execution_evidence(stdout)
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["type"], "command_execution")
+        self.assertEqual(evidence[0]["command"], "rg --files")
+        self.assertIn("README.md", evidence[0]["output"])
+
     def test_prompt_embeds_personal_governance_rules(self) -> None:
         prompt = codex_gateway.build_prompt(
             {"system_prompt": "system", "user_prompt": "hello", "context": {}},

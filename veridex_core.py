@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from veridex_governance import GovernanceRegistry
 from veridex_rooms import room_by_id, rooms_payload
 
 
 DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
 MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
+GOVERNANCE_REGISTRY_PATH = Path(__file__).resolve().parent / "governance" / "navigator_governance_v1.0.0.json"
 
 
 def utc_now() -> str:
@@ -105,6 +107,21 @@ class VeridexStore:
     def files_manifest_path(self, workspace_id: str, session_id: str) -> Path:
         return self.session_dir(workspace_id, session_id) / "files.json"
 
+    def governance_state_path(self, workspace_id: str) -> Path:
+        return self.workspace_dir(workspace_id) / "governance_state.json"
+
+    def governance_incidents_path(self, workspace_id: str) -> Path:
+        return self.workspace_dir(workspace_id) / "governance_incidents.ndjson"
+
+    def artifact_ledger_path(self, workspace_id: str) -> Path:
+        return self.workspace_dir(workspace_id) / "artifact_ledger.ndjson"
+
+    def governance_memos_path(self, workspace_id: str) -> Path:
+        return self.workspace_dir(workspace_id) / "governance_memos.ndjson"
+
+    def pending_governance_path(self, workspace_id: str, session_id: str) -> Path:
+        return self.session_dir(workspace_id, session_id) / "pending_governance.json"
+
     def ensure_default(self) -> Dict[str, Any]:
         with self._lock:
             if not self.account_path.exists():
@@ -126,6 +143,7 @@ class VeridexStore:
                 "updated_at": now,
             }
             self._write_json(self.workspace_dir(workspace_id) / "workspace.json", row)
+            self.ensure_governance_state(workspace_id)
             return row
 
     def list_workspaces(self) -> List[Dict[str, Any]]:
@@ -203,6 +221,154 @@ class VeridexStore:
                 "room_title": room["title"],
             }
 
+    def ensure_governance_state(self, workspace_id: str) -> Dict[str, Any]:
+        with self._lock:
+            self.get_workspace(workspace_id)
+            path = self.governance_state_path(workspace_id)
+            state = self._read_json(path, {})
+            if not isinstance(state, dict):
+                state = {}
+            defaults = GovernanceRegistry(GOVERNANCE_REGISTRY_PATH).gate_defaults
+            gates = dict(state.get("gates") or {})
+            for name, enabled in defaults.items():
+                gates.setdefault(name, enabled)
+            state.update(
+                {
+                    "navigator_status": "ACTIVE",
+                    "navigator_always_present": True,
+                    "navigator_visibility": "VISIBLE_STATUS",
+                    "gates": gates,
+                    "registry_path": str(GOVERNANCE_REGISTRY_PATH.resolve()),
+                    "updated_at": state.get("updated_at") or utc_now(),
+                }
+            )
+            self._write_json(path, state)
+            return state
+
+    def pending_governance(self, workspace_id: str, session_id: str) -> Dict[str, Any]:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        value = self._read_json(self.pending_governance_path(workspace_id, session_id), {})
+        return value if isinstance(value, dict) else {}
+
+    def set_pending_governance(self, workspace_id: str, session_id: str, value: Dict[str, Any]) -> None:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        self._write_json(self.pending_governance_path(workspace_id, session_id), dict(value))
+
+    def clear_pending_governance(self, workspace_id: str, session_id: str) -> None:
+        path = self.pending_governance_path(workspace_id, session_id)
+        if path.exists():
+            path.unlink()
+
+    @staticmethod
+    def _append_ndjson(path: Path, value: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, ensure_ascii=False) + "\n")
+
+    def append_governance_incident(
+        self,
+        workspace_id: str,
+        session_id: str,
+        *,
+        gate_ids: Iterable[str],
+        attempted_action: str,
+        reason: str,
+        evidence: Any = None,
+        disposition: str = "blocked",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            row = {
+                "incident_id": _identifier("inc"),
+                "timestamp": utc_now(),
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "room": session.get("active_room", "lobby"),
+                "persona": session.get("active_persona", "Receptionist"),
+                "gate_ids": [str(value) for value in gate_ids],
+                "attempted_action": str(attempted_action or "")[:4000],
+                "reason": str(reason or ""),
+                "evidence": evidence if evidence is not None else [],
+                "disposition": disposition,
+                "resolution": None,
+            }
+            self._append_ndjson(self.governance_incidents_path(workspace_id), row)
+            return row
+
+    def list_governance_incidents(self, workspace_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        self.get_workspace(workspace_id)
+        path = self.governance_incidents_path(workspace_id)
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows[-max(1, min(limit, 1000)) :]
+
+    def list_artifact_ledger(self, workspace_id: str) -> List[Dict[str, Any]]:
+        self.get_workspace(workspace_id)
+        path = self.artifact_ledger_path(workspace_id)
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
+    def append_governance_memo(
+        self,
+        workspace_id: str,
+        session_id: str,
+        text: str,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            row = {
+                "memo_id": _identifier("memo"),
+                "created_at": utc_now(),
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "durability_scope": "persistent",
+                "text": str(text or "").strip(),
+                "gov_save": "complete",
+                "app_commit": "unverified",
+            }
+            self._append_ndjson(self.governance_memos_path(workspace_id), row)
+            return row
+
+    def list_governance_memos(self, workspace_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        self.get_workspace(workspace_id)
+        path = self.governance_memos_path(workspace_id)
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows[-max(1, min(limit, 1000)) :]
+
     def append_message(
         self,
         workspace_id: str,
@@ -251,16 +417,34 @@ class VeridexStore:
             path = self.files_dir(workspace_id, session_id) / stored_name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
+            ledger_rows = self.list_artifact_ledger(workspace_id)
+            artifact_number = len(ledger_rows) + 1
             row = {
                 "file_id": file_id,
+                "artifact_number": artifact_number,
                 "name": safe_name,
                 "content_type": content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
                 "size": len(content),
                 "path": str(path.resolve()),
                 "created_at": utc_now(),
+                "ledgered_at": utc_now(),
             }
             files = self.list_files(workspace_id, session_id)
             files.append(row)
+            self._append_ndjson(
+                self.artifact_ledger_path(workspace_id),
+                {
+                    "artifact_number": artifact_number,
+                    "file_id": file_id,
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "name": safe_name,
+                    "content_type": row["content_type"],
+                    "size": len(content),
+                    "path": row["path"],
+                    "ledgered_at": row["ledgered_at"],
+                },
+            )
             self._write_json(self.files_manifest_path(workspace_id, session_id), files)
             self._touch_session(workspace_id, session_id)
             return row
@@ -306,6 +490,7 @@ class VeridexStore:
         if not sessions:
             sessions = [self.create_session(selected_workspace["workspace_id"], "New session")]
         selected_session = next((row for row in sessions if row["session_id"] == session_id), sessions[0])
+        governance_state = self.ensure_governance_state(selected_workspace["workspace_id"])
         return {
             "account": self._read_json(self.account_path, DEFAULT_ACCOUNT),
             "workspaces": workspaces,
@@ -315,6 +500,7 @@ class VeridexStore:
             "messages": self.load_messages(selected_workspace["workspace_id"], selected_session["session_id"]),
             "files": self.list_files(selected_workspace["workspace_id"], selected_session["session_id"]),
             "rooms": rooms_payload(),
+            "governance_state": governance_state,
         }
 
     def _touch_workspace(self, workspace_id: str) -> None:

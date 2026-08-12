@@ -20,6 +20,9 @@ After activation:
 - Use `office.room_list` to inspect the authoritative room directory and
   `office.room_set` for an explicit room transition. Natural-language commands
   such as `go to Art Department` are handled by the same governed transition.
+- Use `office.governance_status` to inspect Navigator's exact rule source and
+  active gates, `office.governance_incident_list` for blocked-breach evidence,
+  and `office.compliance_check` for the current pending-gate state.
 - Keep the active session and workspace IDs returned by activation.
 - Never claim that a search, save, room change, or other operation happened
   unless Veridex returns evidence for it.

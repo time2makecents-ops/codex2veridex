@@ -6,6 +6,7 @@ const state = {
   messages: [],
   files: [],
   rooms: [],
+  governance: {},
   selectedFiles: new Set(),
   runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
   route: null,
@@ -47,6 +48,7 @@ function applyState(value, preserveRoute = false) {
   state.files = value.files || [];
   state.rooms = value.rooms || state.rooms;
   state.runtime = value.runtime || state.runtime;
+  state.governance = value.governance || state.governance;
   if (sessionChanged) state.selectedFiles.clear();
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
@@ -94,6 +96,7 @@ function renderMessages() {
     state.messages.forEach((row) => {
       const article = document.createElement("article");
       article.className = `message ${row.role === "user" ? "user" : "assistant"}`;
+      if (String(row.message_kind || "").startsWith("navigator_")) article.classList.add("navigator-message");
       const role = document.createElement("div");
       role.className = "message-role";
       role.textContent = row.role === "user" ? "You" : (row.speaker || "Veridex");
@@ -116,6 +119,15 @@ function renderMessages() {
         route.className = "message-route";
         route.textContent = `${row.model} · ${row.reasoning_effort || "default"} reasoning · ${row.task_type || "conversation"}`;
         article.append(route);
+      }
+      if (row.incident_id || (Array.isArray(row.gate_ids) && row.gate_ids.length)) {
+        const governanceMeta = document.createElement("div");
+        governanceMeta.className = "message-governance";
+        governanceMeta.textContent = [
+          row.gate_ids?.length ? `Gates: ${row.gate_ids.join(", ")}` : "",
+          row.incident_id ? `Incident: ${row.incident_id}` : "",
+        ].filter(Boolean).join(" · ");
+        article.append(governanceMeta);
       }
       container.append(article);
     });
@@ -178,6 +190,47 @@ function renderRoomControl() {
   selector.disabled = state.sending || state.uploading || state.switchingRoom;
 }
 
+function renderGovernance() {
+  const governance = state.governance || {};
+  const navigator = governance.navigator || {};
+  el("governance-navigator-state").textContent = `${navigator.status || "ACTIVE"} · monitoring every room`;
+  el("governance-source").textContent = governance.registry_path || "Governance registry unavailable";
+  el("governance-snapshot").textContent = governance.registry_version
+    ? `v${governance.registry_version} · SHA-256 ${governance.registry_sha256 || "unavailable"}`
+    : "Unavailable";
+  el("governance-memos").textContent = String(governance.persistent_memo_count || 0);
+  el("governance-incident").textContent = governance.latest_incident?.incident_id || "None";
+
+  const workspaceGates = el("governance-workspace-gates");
+  workspaceGates.replaceChildren();
+  Object.entries(governance.workspace_gates || {}).forEach(([name, enabled]) => {
+    const chip = document.createElement("span");
+    chip.className = `gate-chip ${enabled ? "enabled" : "disabled"}`;
+    chip.textContent = `${name} · ${enabled ? "ON" : "OFF"}`;
+    workspaceGates.append(chip);
+  });
+
+  const hardGates = el("governance-hard-gates");
+  hardGates.replaceChildren();
+  (governance.gates || []).forEach((gate) => {
+    const row = document.createElement("div");
+    const title = document.createElement("strong");
+    const detail = document.createElement("span");
+    title.textContent = `${gate.id} · ${gate.applicability}`;
+    detail.textContent = gate.definition || "";
+    row.append(title, detail);
+    hardGates.append(row);
+  });
+
+  const provenance = el("governance-provenance");
+  provenance.replaceChildren();
+  (governance.provenance || []).forEach((path) => {
+    const row = document.createElement("div");
+    row.textContent = path;
+    provenance.append(row);
+  });
+}
+
 function renderRoute() {
   const status = el("route-status");
   if (state.sending) {
@@ -194,8 +247,9 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  el("route-model").textContent = state.route.provider === "veridex_router"
-    ? "Veridex · deterministic room control"
+  const deterministic = ["veridex_router", "veridex_governance"].includes(state.route.provider);
+  el("route-model").textContent = deterministic
+    ? `Veridex · deterministic ${state.route.task_type.replaceAll("_", " ")}`
     : `Codex CLI · ${state.route.model}`;
   el("route-meta").textContent = `${state.route.reasoning_effort} reasoning · ${state.route.task_type.replaceAll("_", " ")}`;
   el("route-notice").textContent = state.route.notice;
@@ -214,6 +268,7 @@ function render() {
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
   renderRoomControl();
+  renderGovernance();
   renderNavigation();
   renderMessages();
   renderFiles();
@@ -228,7 +283,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
 }
 
 function routeNotice(next) {
-  if (next.provider === "veridex_router") return "Handled by Veridex's governed room router; no model call was needed.";
+  if (["veridex_router", "veridex_governance"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -354,6 +409,16 @@ el("room-selector").addEventListener("change", async (event) => {
     render();
   }
 });
+
+function setGovernancePanel(open) {
+  el("governance-panel").hidden = !open;
+  el("governance-scrim").hidden = !open;
+  el("navigator-status").setAttribute("aria-expanded", String(open));
+}
+
+el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
+el("governance-close").addEventListener("click", () => setGovernancePanel(false));
+el("governance-scrim").addEventListener("click", () => setGovernancePanel(false));
 
 el("message-input").addEventListener("input", (event) => {
   event.target.style.height = "auto";

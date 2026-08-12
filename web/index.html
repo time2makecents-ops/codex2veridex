@@ -56,6 +56,9 @@
               </select>
             </div>
             <div id="access-status" class="access-status read-only"><span class="access-dot"></span><span id="access-label">Read-only computer access</span></div>
+            <button id="navigator-status" class="navigator-status" type="button" aria-expanded="false" aria-controls="governance-panel">
+              <span class="navigator-dot"></span><span>Navigator active · monitoring</span>
+            </button>
           </div>
           <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">
             <div class="route-primary"><span class="route-dot"></span><span id="route-model">Model routing ready</span></div>
@@ -84,6 +87,23 @@
         </footer>
       </main>
     </div>
+    <aside id="governance-panel" class="governance-panel" hidden aria-label="Navigator governance status">
+      <div class="governance-panel-header">
+        <div><div class="eyebrow">Always-present authority</div><h2>Navigator governance</h2></div>
+        <button id="governance-close" type="button" aria-label="Close governance panel">×</button>
+      </div>
+      <dl class="governance-facts">
+        <div><dt>Status</dt><dd id="governance-navigator-state">Active · monitoring</dd></div>
+        <div><dt>Rule source</dt><dd id="governance-source"></dd></div>
+        <div><dt>Snapshot</dt><dd id="governance-snapshot"></dd></div>
+        <div><dt>Persistent workspace memos</dt><dd id="governance-memos">0</dd></div>
+        <div><dt>Latest incident</dt><dd id="governance-incident">None</dd></div>
+      </dl>
+      <div class="governance-section"><h3>Workspace gates</h3><div id="governance-workspace-gates" class="gate-list"></div></div>
+      <div class="governance-section"><h3>Hard gates</h3><div id="governance-hard-gates" class="governance-rule-list"></div></div>
+      <div class="governance-section"><h3>Source provenance</h3><div id="governance-provenance" class="governance-rule-list"></div></div>
+    </aside>
+    <div id="governance-scrim" class="governance-scrim" hidden></div>
     <div id="toast" class="toast" role="status"></div>
     <script src="/app.js" defer></script>
   </body>

@@ -1,0 +1,139 @@
+{
+  "snapshot": {
+    "id": "VERIDEX-STANDALONE-GOVERNANCE",
+    "version": "1.0.0",
+    "status": "active",
+    "created_at": "2026-08-12T00:00:00Z",
+    "hash_algorithm": "sha256",
+    "runtime_dependency_on_office_app": false,
+    "provenance": [
+      "C:\\Office-App\\office_app\\backend\\master_governance_registry_v1_0_0.json",
+      "C:\\Office-App\\01_Architecture\\Veridex_Governance_Guide_v1.0.0.md",
+      "C:\\Office-App\\office_app\\data\\room_policies.json",
+      "C:\\Office-App\\office_app\\data\\personas.json"
+    ]
+  },
+  "navigator": {
+    "id": "NAVIGATOR",
+    "status": "ACTIVE",
+    "always_present": true,
+    "default_visibility": "VISIBLE_STATUS",
+    "transcript_visibility": "INTERVENTIONS_AND_GOVERNANCE_ANSWERS",
+    "purpose": "System governance authority. Enforces rules, prevents drift, and supervises grounded system behavior."
+  },
+  "core_rules": [
+    {"id": "ONE-ACTIVE-ROOM", "text": "Exactly one room is active per session and room changes require an explicit navigation action."},
+    {"id": "NAVIGATOR-AUTHORITY", "text": "Navigator is always present as the governance authority and may block, constrain, or require clarification."},
+    {"id": "TOOL-TRUTH-BOUNDARY", "text": "Claims that something was searched, saved, listed, sent, edited, or executed require file-backed or tool-backed evidence."},
+    {"id": "PERSISTENCE-TRUTH", "text": "The system must not imply durable memory, canon mutation, or product-memory persistence without a verified governed path."},
+    {"id": "NO-UNRELATED-DESTRUCTION", "text": "Local computer authority is limited to the user's requested scope and does not authorize unrelated destructive changes."}
+  ],
+  "workspace_gate_defaults": {
+    "SAVE_GATE": true,
+    "PREFLIGHT": true,
+    "VERIFICATION": true
+  },
+  "gates": [
+    {
+      "id": "SAVE_GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "Persistence requires an explicit SAVE authorization after durability scope is known."
+    },
+    {
+      "id": "PREFLIGHT",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "State-changing and risky requests are classified before execution."
+    },
+    {
+      "id": "VERIFICATION",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "Operational claims must be supported by captured evidence."
+    },
+    {
+      "id": "MODEL-ROUTE-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "Each runtime task class must use its configured governed model and reasoning effort before execution."
+    },
+    {
+      "id": "DESTRUCTIVE-SCOPE-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_broad_destructive_requests",
+      "definition": "Broad destructive computer actions are blocked until the target is narrow, explicit, and within the user's requested scope."
+    },
+    {
+      "id": "GATE-CONFLICT",
+      "version": "v1.0.0",
+      "status": "active",
+      "applicability": "guarded_until_canon_workflow",
+      "definition": "When a candidate conflicts with a canonical artifact, hard stop and require REPLACE, AMEND, or DISCARD before doing anything else.",
+      "source_definition": "Artifact Conflict Gate (GATE-CONFLICT): When an existing canonical artifact exists for a domain and a new candidate replacement artifact is provided, hard stop. Declare conflict and require explicit user choice: REPLACE, AMEND, or DISCARD. Do nothing else until chosen."
+    },
+    {
+      "id": "GATE-LEDGER",
+      "version": "v1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_session_files",
+      "definition": "User-submitted artifacts must enter a numbered ledger before analysis, annotation, inference, or valuation.",
+      "source_definition": "Artifact Ledger Enforcement (GATE-LEDGER): All user-submitted artifacts must be entered into a numbered Artifact Ledger with batch reconciliation before identification, annotation, inference, or valuation. No artifact may be discussed beyond basic acknowledgment until it appears in the reconciled ledger."
+    },
+    {
+      "id": "GATE-PREFLIGHT",
+      "version": "v1.1.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "Tier-aware mutation enforcement requires preflight classification and explicit SAVE before persistence language.",
+      "source_definition": "GATE-PREFLIGHT v1.1.0: Tier-aware mutation enforcement. Requires preflight classification + explicit SAVE before Tier 1 or Tier 3 persistence language; enforces Conflict Gate sequencing for Tier 2 canon mutations."
+    },
+    {
+      "id": "GATE-VERIFY",
+      "version": "v1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_operational_claims",
+      "definition": "Mark unsupported claims Unverified and stop dependent work until exact evidence is supplied.",
+      "source_definition": "Verification Gate (GATE-VERIFY): If an item tier/version/mechanics or stat value is not explicitly canonical, state 'Unverified' and request exact name/version, screenshot/export, or explicit confirmation. Stop dependent analysis until verified."
+    },
+    {
+      "id": "SAVE-SCOPE-DISAMBIGUATION-GATE",
+      "version": "v1.0.0",
+      "status": "active",
+      "applicability": "implemented",
+      "definition": "Choose session-only or persistent scope before a SAVE prompt for governed mutations.",
+      "source_definition": "SAVE-SCOPE-DISAMBIGUATION-GATE v1.0.0: Requires explicit durability scope selection (session-only vs persistent) before any SAVE prompt is issued for Tier 1, Tier 2, or Tier 3 mutations."
+    },
+    {
+      "id": "SAVE-APP-COMMIT-VERIFICATION-GATE",
+      "version": "v1.0.0",
+      "status": "active",
+      "applicability": "implemented_as_local_gov_save_only",
+      "definition": "Local GOV-SAVE and ChatGPT product-memory commit are separate; APP-COMMIT remains unverified unless independently evidenced.",
+      "source_definition": "SAVE-APP-COMMIT-VERIFICATION-GATE v1.0.0: When user selects Persistent SAVE, treat as two-lane transaction: GOV-SAVE (governance persistence) and APP-COMMIT (ChatGPT product Memory commit). After SAVE, report 'SAVE PENDING: GOV-SAVE complete — APP-COMMIT unverified' and request verification (banner or Memory list) before claiming product-level durability. Governance-only Option A permits persistent global enforcement without APP-COMMIT."
+    }
+  ],
+  "runtime_model_policy": {
+    "coding": {"model": "gpt-5.6-sol", "reasoning": "high"},
+    "planning": {"model": "gpt-5.6-sol", "reasoning": "high"},
+    "media": {"model": "gpt-5.6-sol", "reasoning": "high"},
+    "high_stakes": {"model": "gpt-5.6-sol", "reasoning": "xhigh"},
+    "search_synthesis": {"model": "gpt-5.6-terra", "reasoning": "medium"},
+    "conversation": {"model": "gpt-5.6-terra", "reasoning": "medium"},
+    "testing": {"model": "gpt-5.6-luna", "reasoning": "low", "escalate_on_failure_to": {"model": "gpt-5.6-sol", "reasoning": "high"}},
+    "simple": {"model": "gpt-5.6-luna", "reasoning": "low"},
+    "governance": {"model": "deterministic", "reasoning": "none"}
+  },
+  "terminal_development_policy": {
+    "planning_architecture": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true},
+    "coding_diagnosis": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true},
+    "routine_test_execution": {"model": "gpt-5.6-luna", "reasoning": "low", "pause_on_mismatch": true},
+    "failed_test_diagnosis": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true},
+    "final_acceptance_release": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true}
+  }
+}

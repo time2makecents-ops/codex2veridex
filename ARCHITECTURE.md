@@ -15,6 +15,10 @@ veridex_server.py :8765
         |
         +--> veridex_rooms.py --> room registry / explicit navigation
         |
+        +--> veridex_governance.py --> Navigator preflight / postflight gates
+        |       |
+        |       +--> governance/navigator_governance_v1.0.0.json
+        |
         +--> veridex_core.py --> data/workspaces/.../transcript.ndjson
         |
         +--> codex_gateway.py --> authenticated `codex exec`
@@ -46,6 +50,23 @@ use the same validated `VeridexStore.set_room` transition. Only commands with
 explicit navigation intent can change the active room; mentioning another room
 as a topic cannot move the session. The new room and its default persona are
 written to that session's `session.json`.
+
+## Navigator governance
+
+The committed governance snapshot is the standalone runtime authority. Its
+SHA-256 is calculated when loaded and returned through state, HTTP, and MCP
+status surfaces. Office-App paths are provenance only and are never runtime
+dependencies.
+
+Navigator preflight handles governance questions, persistence scope, explicit
+SAVE authorization, unsupported canon mutation, and governed model-route
+validation before Codex runs. Postflight checks operational claims against
+captured Codex command evidence. A violation suppresses the candidate response
+and saves a separate Navigator hard-stop entry.
+
+Each workspace owns `governance_state.json`, `artifact_ledger.ndjson`, `governance_memos.ndjson`, and an
+append-only `governance_incidents.ndjson`. A session may temporarily own
+`pending_governance.json` while waiting for a gate resolution.
 
 ## File and computer access
 

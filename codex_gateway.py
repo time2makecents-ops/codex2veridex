@@ -167,6 +167,35 @@ def extract_agent_text(stdout: str) -> str:
     return messages[-1]
 
 
+def extract_execution_evidence(stdout: str) -> list[Dict[str, Any]]:
+    """Capture bounded tool/command evidence from Codex JSON events."""
+    rows: list[Dict[str, Any]] = []
+    evidence_types = {
+        "command_execution",
+        "computer_action",
+        "file_change",
+        "mcp_tool_call",
+        "tool_call",
+        "web_search",
+    }
+    for event in _json_events(stdout):
+        item = event.get("item")
+        if not isinstance(item, dict) or str(item.get("type") or "") not in evidence_types:
+            continue
+        row = {
+            "type": str(item.get("type") or ""),
+            "status": str(item.get("status") or event.get("type") or "completed"),
+        }
+        for key in ("command", "name", "path", "query"):
+            if item.get(key) not in (None, ""):
+                row[key] = str(item[key])[:2000]
+        output = item.get("aggregated_output") or item.get("output") or item.get("result")
+        if output not in (None, ""):
+            row["output"] = str(output)[:4000]
+        rows.append(row)
+    return rows
+
+
 def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     if _env("VERIDEX_CODEX_ENABLED", "true").lower() not in TRUTHY:
         raise RuntimeError("Codex gateway is disabled")
@@ -235,6 +264,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError(f"Codex CLI failed with exit code {completed.returncode}: {detail}")
 
     text = extract_agent_text(completed.stdout)
+    evidence = extract_execution_evidence(completed.stdout)
     return {
         "ok": True,
         "provider": "codex_cli",
@@ -243,6 +273,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         "task_type": policy.task_type,
         "access_mode": mode,
         "text": text,
+        "evidence": evidence,
         "policy": asdict(policy),
     }
 

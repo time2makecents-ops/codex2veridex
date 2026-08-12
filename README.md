@@ -12,6 +12,7 @@ and does not read from or write to `C:\Office-App`.
 - Multiple workspaces and sessions under one local account.
 - Every new workspace and session starts in the Lobby with the Receptionist.
 - A visible room selector and explicit natural-language room navigation.
+- An always-visible Navigator monitor backed by deterministic hard gates.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - Session-scoped file attachments saved beside each session transcript.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
@@ -60,6 +61,10 @@ data/
   workspaces/
     ws_.../
       workspace.json
+      governance_state.json
+      governance_incidents.ndjson
+      artifact_ledger.ndjson
+      governance_memos.ndjson
       sessions/
         sess_.../
           session.json
@@ -74,6 +79,30 @@ effort, and task class used for that response.
 Use the `+` button beside the composer to add files. Uploaded files are copied
 into the active session's `files/` directory and selected for the next message.
 They remain available in that session and can be selected again later.
+Uploaded files enter the workspace's numbered artifact ledger before analysis.
+
+## Navigator governance
+
+Navigator is active in every room. The header badge opens a panel showing the
+exact rule source, snapshot version and SHA-256 hash, provenance, active gates,
+and latest incident. The standalone runtime reads its rules from:
+
+```text
+C:\codex2veridex\governance\navigator_governance_v1.0.0.json
+```
+
+The snapshot is self-contained; Veridex does not read or modify `C:\Office-App`
+at runtime. Attempted hard-rule breaches are blocked with a separate Navigator
+message and appended to the workspace's `governance_incidents.ndjson` when an
+actual attempted breach needs debugging.
+
+Persistent preferences use a two-step governed flow: choose `persistent`, then
+reply exactly `SAVE`. Veridex records the approved text in the workspace's
+`governance_memos.ndjson` and reports local GOV-SAVE separately from unverified
+ChatGPT product memory.
+
+See [DEVELOPMENT_MODEL_POLICY.md](DEVELOPMENT_MODEL_POLICY.md) for the separate
+personal model-switch protocol used while coding Veridex in this Codex terminal.
 
 ## Rooms
 

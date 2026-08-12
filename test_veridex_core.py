@@ -62,9 +62,11 @@ class VeridexCoreTests(unittest.TestCase):
             session_id = initial["session"]["session_id"]
             saved = store.save_file(workspace_id, session_id, "../notes.txt", b"hello", "text/plain")
             self.assertEqual(saved["name"], "notes.txt")
+            self.assertEqual(saved["artifact_number"], 1)
             self.assertEqual(Path(saved["path"]).read_bytes(), b"hello")
             self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
             self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
+            self.assertEqual(store.list_artifact_ledger(workspace_id)[0]["file_id"], saved["file_id"])
 
     def test_room_transition_is_validated_persisted_and_session_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -79,6 +81,29 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(store.find_session(second["session_id"])["active_room"], "lobby")
             with self.assertRaises(ValueError):
                 store.set_room(workspace_id, first_session_id, "imaginary_room")
+
+    def test_governance_state_pending_and_incidents_are_workspace_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            state = store.ensure_governance_state(workspace_id)
+            self.assertTrue(state["navigator_always_present"])
+            self.assertTrue(state["gates"]["PREFLIGHT"])
+            store.set_pending_governance(workspace_id, session_id, {"kind": "durability_scope"})
+            self.assertEqual(store.pending_governance(workspace_id, session_id)["kind"], "durability_scope")
+            incident = store.append_governance_incident(
+                workspace_id,
+                session_id,
+                gate_ids=["GATE-CONFLICT"],
+                attempted_action="replace canon",
+                reason="unsupported",
+            )
+            self.assertEqual(store.list_governance_incidents(workspace_id)[0]["incident_id"], incident["incident_id"])
+            memo = store.append_governance_memo(workspace_id, session_id, "Remember concise answers")
+            self.assertEqual(store.list_governance_memos(workspace_id)[0]["memo_id"], memo["memo_id"])
+            self.assertEqual(memo["app_commit"], "unverified")
 
 
 if __name__ == "__main__":

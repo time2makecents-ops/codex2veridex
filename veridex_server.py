@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
-from codex_gateway import access_mode, invoke_codex
+from codex_gateway import access_mode, invoke_codex, select_model
 from veridex_core import VeridexStore, classify_task, transcript_context
+from veridex_governance import GovernanceRegistry, intervention_text
 from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
 
 
@@ -38,6 +39,7 @@ load_env(ROOT / ".env.local")
 DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
 STORE = VeridexStore(DATA_ROOT)
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
+GOVERNANCE = GovernanceRegistry(ROOT / "governance" / "navigator_governance_v1.0.0.json")
 
 
 def runtime_status() -> Dict[str, Any]:
@@ -49,8 +51,23 @@ def runtime_status() -> Dict[str, Any]:
     }
 
 
+def governance_status(workspace_id: str, session_id: str = "") -> Dict[str, Any]:
+    state = STORE.ensure_governance_state(workspace_id)
+    pending = STORE.pending_governance(workspace_id, session_id) if session_id else {}
+    incidents = STORE.list_governance_incidents(workspace_id, limit=1)
+    status = GOVERNANCE.status(dict(state.get("gates") or {}), pending)
+    status["latest_incident"] = incidents[-1] if incidents else None
+    status["persistent_memo_count"] = len(STORE.list_governance_memos(workspace_id))
+    return status
+
+
 def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
-    return {**value, "runtime": runtime_status()}
+    workspace = value.get("workspace") if isinstance(value.get("workspace"), dict) else {}
+    session = value.get("session") if isinstance(value.get("session"), dict) else {}
+    workspace_id = str(workspace.get("workspace_id") or "")
+    session_id = str(session.get("session_id") or "")
+    governance = governance_status(workspace_id, session_id) if workspace_id else {}
+    return {**value, "runtime": runtime_status(), "governance": governance}
 
 
 def local_chat_response(
@@ -62,16 +79,19 @@ def local_chat_response(
     task_type: str,
     **extra: Any,
 ) -> Dict[str, Any]:
+    message_metadata = extra.pop("message_metadata", {})
+    response_provider = str(extra.pop("response_provider", "veridex_router"))
     assistant_message = STORE.append_message(
         workspace_id,
         session_id,
         "assistant",
         text,
         speaker=speaker,
-        provider="veridex_router",
+        provider=response_provider,
         model="deterministic",
         reasoning_effort="none",
         task_type=task_type,
+        **(message_metadata if isinstance(message_metadata, dict) else {}),
     )
     return {
         "ok": True,
@@ -79,7 +99,7 @@ def local_chat_response(
         "session_id": session_id,
         "user_message": user_message,
         "message": assistant_message,
-        "provider": "veridex_router",
+        "provider": response_provider,
         "model": "deterministic",
         "reasoning_effort": "none",
         "task_type": task_type,
@@ -87,6 +107,63 @@ def local_chat_response(
         **runtime_status(),
         **extra,
     }
+
+
+def navigator_intervention_response(
+    workspace_id: str,
+    session_id: str,
+    user_message: Dict[str, Any],
+    result: Dict[str, Any],
+    attempted_action: str,
+    *,
+    evidence: Any = None,
+) -> Dict[str, Any]:
+    incident = None
+    if result.get("incident"):
+        incident = STORE.append_governance_incident(
+            workspace_id,
+            session_id,
+            gate_ids=result.get("gate_ids") or [],
+            attempted_action=attempted_action,
+            reason=str(result.get("reason") or ""),
+            evidence=evidence,
+        )
+    pending = result.get("pending") if isinstance(result.get("pending"), dict) else {}
+    if pending:
+        STORE.set_pending_governance(workspace_id, session_id, pending)
+    incident_id = str((incident or {}).get("incident_id") or "")
+    return local_chat_response(
+        workspace_id,
+        session_id,
+        user_message,
+        intervention_text(result, incident_id),
+        "Navigator",
+        "governance_intervention",
+        response_provider="veridex_governance",
+        governance=governance_status(workspace_id, session_id),
+        navigator_activation={
+            "activated": True,
+            "visibility": "VISIBLE",
+            "mode": "intervention",
+            "reason": result.get("reason"),
+        },
+        gate_ids=result.get("gate_ids") or [],
+        blocked=True,
+        requirements=result.get("requirements") or [],
+        incident_id=incident_id,
+        message_metadata={
+            "message_kind": "navigator_intervention",
+            "navigator_activation": {
+                "activated": True,
+                "visibility": "VISIBLE",
+                "mode": "intervention",
+            },
+            "gate_ids": result.get("gate_ids") or [],
+            "blocked": True,
+            "requirements": result.get("requirements") or [],
+            "incident_id": incident_id,
+        },
+    )
 
 
 def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,7 +215,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     room_title = str(room["title"] if room else "Lobby")
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
     public_attachments = [
-        {key: row[key] for key in ("file_id", "name", "content_type", "size") if key in row}
+        {key: row[key] for key in ("file_id", "artifact_number", "name", "content_type", "size") if key in row}
         for row in attachments
     ]
     user_message = STORE.append_message(
@@ -149,7 +226,90 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         speaker="You",
         attachments=public_attachments,
     )
-    room_route = route_room_request(user_prompt) if not attachments else None
+    workspace_governance = STORE.ensure_governance_state(workspace_id)
+    active_gates = dict(workspace_governance.get("gates") or {})
+    pending = STORE.pending_governance(workspace_id, session_id)
+    preflight = GOVERNANCE.preflight(user_prompt, active_gates, pending)
+    if not preflight.get("allowed"):
+        return navigator_intervention_response(
+            workspace_id,
+            session_id,
+            user_message,
+            preflight,
+            user_prompt,
+        )
+    if preflight.get("resolved_pending"):
+        STORE.clear_pending_governance(workspace_id, session_id)
+        resolution = preflight.get("resolution") if isinstance(preflight.get("resolution"), dict) else {}
+        if resolution.get("save_authorized"):
+            memo = STORE.append_governance_memo(
+                workspace_id,
+                session_id,
+                str(pending.get("original_request") or user_prompt),
+            )
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                "SAVE PENDING: GOV-SAVE complete — APP-COMMIT unverified. The workspace-local memo is durable; no ChatGPT product-memory claim is being made.",
+                "Navigator",
+                "governance_save",
+                response_provider="veridex_governance",
+                governance=governance_status(workspace_id, session_id),
+                memo=memo,
+                message_metadata={
+                    "message_kind": "navigator_governance_answer",
+                    "navigator_activation": {
+                        "activated": True,
+                        "visibility": "VISIBLE",
+                        "mode": "governance_save",
+                    },
+                    "gate_ids": ["SAVE_GATE", "SAVE-APP-COMMIT-VERIFICATION-GATE"],
+                    "memo_id": memo["memo_id"],
+                },
+            )
+        if resolution.get("cancelled"):
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                "Persistent save cancelled. Nothing was added to the workspace governance memo store.",
+                "Navigator",
+                "governance_save_cancelled",
+                response_provider="veridex_governance",
+                governance=governance_status(workspace_id, session_id),
+                message_metadata={
+                    "message_kind": "navigator_governance_answer",
+                    "navigator_activation": {
+                        "activated": True,
+                        "visibility": "VISIBLE",
+                        "mode": "governance_save_cancelled",
+                    },
+                    "gate_ids": ["SAVE_GATE"],
+                },
+            )
+    if GOVERNANCE.is_governance_question(user_prompt, active_persona):
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            GOVERNANCE.governance_answer(active_gates),
+            "Navigator",
+            "governance",
+            response_provider="veridex_governance",
+            governance=governance_status(workspace_id, session_id),
+            message_metadata={
+                "message_kind": "navigator_governance_answer",
+                "navigator_activation": {
+                    "activated": True,
+                    "visibility": "VISIBLE",
+                    "mode": "governance_answer",
+                },
+                "gate_ids": GOVERNANCE.status(active_gates).get("active_gate_ids", []),
+            },
+        )
+    governed_prompt = str(preflight.get("effective_text") or user_prompt)
+    room_route = route_room_request(governed_prompt) if not attachments else None
     if room_route and room_route["action"] == "directory":
         return local_chat_response(
             workspace_id,
@@ -192,7 +352,18 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             rooms=rooms_payload(),
             attachments=public_attachments,
         )
-    task_type = classify_task(" ".join([user_prompt, *[str(row.get("name") or "") for row in attachments]]))
+    task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
+    policy = select_model(task_type)
+    route_check = GOVERNANCE.validate_model_route(task_type, policy.model, policy.reasoning_effort)
+    if not route_check.get("allowed"):
+        route_block = {
+            "allowed": False,
+            "gate_ids": route_check.get("gate_ids") or ["MODEL-ROUTE-GATE"],
+            "reason": f"The selected route {policy.model}/{policy.reasoning_effort} is below or different from the governed route.",
+            "requirements": [f"Use {route_check.get('expected', {}).get('model')} with {route_check.get('expected', {}).get('reasoning')} reasoning."],
+            "incident": True,
+        }
+        return navigator_intervention_response(workspace_id, session_id, user_message, route_block, governed_prompt)
     context = transcript_context(previous)
     context["attached_files"] = [
         {
@@ -206,6 +377,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     ]
     context["computer_access"] = runtime_status()
     context["available_rooms"] = rooms_payload()
+    context["governance"] = governance_status(workspace_id, session_id)
+    context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
     result = invoke_codex(
         {
             "task_type": task_type,
@@ -217,11 +390,22 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "Attached files are saved locally and their exact paths are supplied in governed context. "
                 "Use the governed context for continuity, but do not claim actions that were not performed."
             ),
-            "user_prompt": user_prompt,
+            "user_prompt": governed_prompt,
             "context": context,
             "attachment_paths": [row["path"] for row in attachments],
         }
     )
+    evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
+    postflight = GOVERNANCE.postflight(str(result.get("text") or ""), evidence)
+    if not postflight.get("allowed"):
+        return navigator_intervention_response(
+            workspace_id,
+            session_id,
+            user_message,
+            postflight,
+            governed_prompt,
+            evidence={"candidate_response": result.get("text"), "execution_evidence": evidence},
+        )
     assistant_message = STORE.append_message(
         workspace_id,
         session_id,
@@ -232,6 +416,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         model=result["model"],
         reasoning_effort=result["reasoning_effort"],
         task_type=result["task_type"],
+        message_kind="room_persona_response",
+        governance_checked=True,
+        execution_evidence=evidence,
     )
     return {
         "ok": True,
@@ -245,6 +432,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "task_type": result["task_type"],
         "fallback_used": False,
         "attachments": public_attachments,
+        "governance": governance_status(workspace_id, session_id),
         **runtime_status(),
     }
 
@@ -256,6 +444,9 @@ TOOLS = [
     {"name": "office.transcript_get", "description": "Read a session transcript."},
     {"name": "office.room_list", "description": "List available governed rooms and personas."},
     {"name": "office.room_set", "description": "Explicitly change the active room for one session."},
+    {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
+    {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
+    {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
 ]
 
 
@@ -342,6 +533,13 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+            elif parsed.path == "/api/governance":
+                workspace_id = str(query.get("workspace_id", [""])[0])
+                session_id = str(query.get("session_id", [""])[0])
+                self._json({"governance": governance_status(workspace_id, session_id)})
+            elif parsed.path == "/api/governance/incidents":
+                workspace_id = str(query.get("workspace_id", [""])[0])
+                self._json({"incidents": STORE.list_governance_incidents(workspace_id)})
             elif parsed.path == "/tools":
                 if not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
@@ -431,6 +629,28 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = {"rooms": rooms_payload()}
         elif tool == "office.room_set":
             value = room_change_response(args)
+        elif tool == "office.governance_status":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id) if session_id else None
+            workspace_id = str(args.get("workspace_id") or (session or {}).get("workspace_id") or "")
+            value = governance_status(workspace_id, session_id)
+        elif tool == "office.governance_incident_list":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id) if session_id else None
+            workspace_id = str(args.get("workspace_id") or (session or {}).get("workspace_id") or "")
+            value = {"incidents": STORE.list_governance_incidents(workspace_id)}
+        elif tool == "office.compliance_check":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id) if session_id else None
+            workspace_id = str(args.get("workspace_id") or (session or {}).get("workspace_id") or "")
+            status = governance_status(workspace_id, session_id)
+            value = {
+                "compliant": not bool(status.get("pending")),
+                "navigator_status": status.get("navigator", {}).get("status"),
+                "active_gate_ids": status.get("active_gate_ids"),
+                "pending": status.get("pending"),
+                "registry_sha256": status.get("registry_sha256"),
+            }
         else:
             raise ValueError(f"Unknown tool: {tool}")
         return {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}], "structuredContent": value}
