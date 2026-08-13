@@ -58,6 +58,18 @@ def classify_task(text: str) -> str:
         return "conversation"
     if re.search(r"\b(legal|law|medical|diagnos|financial|investment|security audit|vulnerabilit)\w*\b", value):
         return "high_stakes"
+    if re.search(
+        r"\b(?:find|locate|search|open|inspect)\b.{0,80}\b(?:local|computer|drive|desktop|folder|directory|path|files?)\b|"
+        r"\b(?:files?|folders?|directories|paths?|desktop|drive)\b.{0,80}\b(?:find|locate|search|open|inspect)\b|"
+        r"\.(?:txt|md|pdf|docx?|xlsx?|csv|json|py|js|ts|tsx|html|css)\b",
+        value,
+    ):
+        return "coding"
+    if re.search(
+        r"\b(search|research|latest|current|look up|find online|web|google|social media|upcoming shows?|concert dates?)\w*\b",
+        value,
+    ):
+        return "search_synthesis"
     if re.search(r"\b(code|coding|python|javascript|typescript|react|api|function|class|bug|debug|refactor|compile|repository|git|sql|html|css)\w*\b", value):
         return "coding"
     if re.search(r"\b(architect|architecture|plan|planning|roadmap|design a system|technical design)\w*\b", value):
@@ -68,11 +80,6 @@ def classify_task(text: str) -> str:
         return "media"
     if re.search(r"\b(test|testing|verify|validation|smoke check|quality assurance|qa)\w*\b", value):
         return "testing"
-    if re.search(
-        r"\b(search|research|latest|current|look up|find online|web|google|social media|upcoming shows?|concert dates?)\w*\b",
-        value,
-    ):
-        return "search_synthesis"
     simple = re.sub(r"[^a-z0-9 ]", "", value).strip()
     if simple in {"hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "yes", "no", "good morning", "good night"}:
         return "simple"

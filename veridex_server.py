@@ -16,6 +16,7 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
 from codex_gateway import access_mode, invoke_codex, select_model
+from gemini_gateway import gemini_enabled, invoke_gemini
 from google_chrome_search import GoogleChromeSearchError, continues_google_search, search_google, wants_google_search
 from request_control import ActiveRequestRegistry, RequestCancelled
 from veridex_core import VeridexStore, classify_task, transcript_context
@@ -25,6 +26,34 @@ from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_
 
 ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
+LOCAL_ROOM_QUERY = re.compile(
+    r"\b(?:where am i|what(?:'s| is) (?:my |the |current |active )?room|current room|active room)\b",
+    re.IGNORECASE,
+)
+LOCAL_PERSONA_QUERY = re.compile(
+    r"\b(?:who (?:are you|is active)|what(?:'s| is) (?:my |the |current |active )?persona|current persona|active persona)\b",
+    re.IGNORECASE,
+)
+LOCAL_ACCESS_QUERY = re.compile(
+    r"\b(?:access mode|computer access|read-only|read only|full computer access|can you write files)\b",
+    re.IGNORECASE,
+)
+LOCAL_FILES_QUERY = re.compile(
+    r"\b(?:what files? (?:are )?(?:attached|uploaded)|list (?:the )?(?:attached|uploaded) files|current files?)\b",
+    re.IGNORECASE,
+)
+LOCAL_STATUS_QUERY = re.compile(
+    r"\b(?:governance status|navigator status|system status|veridex status|room status)\b",
+    re.IGNORECASE,
+)
+CODEX_ONLY_INTENT = re.compile(
+    r"\b(?:code|coding|python|javascript|typescript|react|api|function|class|bug|debug|refactor|compile|"
+    r"repository|repo|git|sql|html|css|file|folder|directory|path|desktop|drive|save|edit|delete|move|"
+    r"run|execute|install|download|upload|image|photo|picture|video|graphic|render|search|research|"
+    r"latest|current|look up|find online|web|google|plan|planning|architecture|roadmap|legal|medical|"
+    r"financial|investment|security audit|vulnerabilit)\w*\b",
+    re.IGNORECASE,
+)
 
 
 def load_env(path: Path) -> None:
@@ -89,6 +118,56 @@ def runtime_status() -> Dict[str, Any]:
         "access_label": "Full computer access" if mode == "full" else "Read-only computer access",
         "can_write_computer": mode == "full",
     }
+
+
+def local_fact_text(
+    prompt: str,
+    active_room: str,
+    room_title: str,
+    active_persona: str,
+    attachments: list[Dict[str, Any]],
+    workspace_id: str,
+    session_id: str,
+) -> str:
+    value = str(prompt or "")
+    if LOCAL_ROOM_QUERY.search(value):
+        return f"You are in {room_title}. {active_persona} is active."
+    if LOCAL_PERSONA_QUERY.search(value):
+        return f"{active_persona} is active in {room_title}."
+    if LOCAL_ACCESS_QUERY.search(value):
+        status = runtime_status()
+        return f"Access mode: {status['access_label']}."
+    if LOCAL_FILES_QUERY.search(value):
+        if not attachments:
+            return "No files are attached to this message."
+        names = ", ".join(str(row.get("name") or "unnamed") for row in attachments)
+        return f"Attached files: {names}."
+    if LOCAL_STATUS_QUERY.search(value):
+        status = runtime_status()
+        governance = governance_status(workspace_id, session_id)
+        gates = ", ".join(governance.get("active_gate_ids") or []) or "none"
+        return f"Room: {room_title}. Persona: {active_persona}. Access: {status['access_label']}. Active governance gates: {gates}."
+    return ""
+
+
+def should_use_gemini_route(
+    *,
+    active_room: str,
+    active_persona: str,
+    task_type: str,
+    prompt: str,
+    attachments: list[Dict[str, Any]],
+    explicit_google_search: bool,
+) -> bool:
+    if active_room != "lobby" or active_persona != "Receptionist":
+        return False
+    if attachments or explicit_google_search:
+        return False
+    if str(task_type or "") not in {"simple", "conversation"}:
+        return False
+    if CODEX_ONLY_INTENT.search(str(prompt or "")):
+        return False
+    return gemini_enabled()
 
 
 def governance_status(workspace_id: str, session_id: str = "") -> Dict[str, Any]:
@@ -548,6 +627,26 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             rooms=rooms_payload(),
             attachments=public_attachments,
         )
+    local_answer = local_fact_text(
+        governed_prompt,
+        active_room,
+        room_title,
+        active_persona,
+        public_attachments,
+        workspace_id,
+        session_id,
+    )
+    if local_answer:
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            local_answer,
+            active_persona,
+            "local_status",
+            attachments=public_attachments,
+            governance=governance_status(workspace_id, session_id),
+        )
     task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
     explicit_google_search = wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous)
     if explicit_google_search:
@@ -575,6 +674,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         for row in attachments
     ]
     context["computer_access"] = runtime_status()
+    context["current_room"] = {
+        "id": active_room,
+        "title": room_title,
+        "active_persona": active_persona,
+    }
     context["available_rooms"] = rooms_payload()
     context["governance"] = governance_status(workspace_id, session_id)
     context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
@@ -636,7 +740,22 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "cancel_event": cancel_event,
     }
     try:
-        result = invoke_codex(codex_request)
+        if should_use_gemini_route(
+            active_room=active_room,
+            active_persona=active_persona,
+            task_type=task_type,
+            prompt=governed_prompt,
+            attachments=public_attachments,
+            explicit_google_search=explicit_google_search,
+        ):
+            try:
+                result = invoke_gemini({**codex_request, "task_type": "lobby_conversation"})
+            except RequestCancelled:
+                raise
+            except Exception:
+                result = invoke_codex(codex_request)
+        else:
+            result = invoke_codex(codex_request)
     except RequestCancelled:
         raise
     except Exception as exc:

@@ -46,7 +46,141 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(invoke.call_args.args[0]["attachment_paths"], [attached["path"]])
             self.assertEqual(invoke.call_args.args[0]["context"]["attached_files"][0]["name"], "service.py")
 
-    def test_new_workspace_prompt_identifies_lobby_not_my_office(self) -> None:
+    def test_lobby_hello_routes_to_gemini_and_persists_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            response = {
+                "ok": True,
+                "provider": "gemini_api",
+                "model": "gemini-2.5-flash",
+                "reasoning_effort": "low",
+                "task_type": "lobby_conversation",
+                "text": "Hello. How can I help?",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=True
+            ), patch.object(veridex_server, "invoke_gemini", return_value=response) as gemini, patch.object(
+                veridex_server, "invoke_codex"
+            ) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "hello"}
+                )
+
+            gemini.assert_called_once()
+            codex.assert_not_called()
+            request = gemini.call_args.args[0]
+            self.assertEqual(request["task_type"], "lobby_conversation")
+            self.assertEqual(request["user_prompt"], "hello")
+            self.assertEqual(result["provider"], "gemini_api")
+            self.assertEqual(result["task_type"], "lobby_conversation")
+            rows = store.load_messages(workspace_id, session_id)
+            self.assertEqual(rows[-1]["provider"], "gemini_api")
+            self.assertEqual(rows[-1]["model"], "gemini-2.5-flash")
+            self.assertEqual(rows[-1]["reasoning_effort"], "low")
+
+    def test_lobby_hello_falls_back_to_codex_when_gemini_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "task_type": "simple",
+                "text": "Hello. How can I help?",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=False
+            ), patch.object(veridex_server, "invoke_gemini") as gemini, patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "hello"}
+                )
+
+            gemini.assert_not_called()
+            codex.assert_called_once()
+            self.assertEqual(result["provider"], "codex_cli")
+            self.assertEqual(result["task_type"], "simple")
+
+    def test_non_lobby_simple_chat_stays_on_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "task_type": "simple",
+                "text": "Hello from Art Department.",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=True
+            ), patch.object(veridex_server, "invoke_gemini") as gemini, patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "hello"}
+                )
+
+            gemini.assert_not_called()
+            codex.assert_called_once()
+            self.assertEqual(result["provider"], "codex_cli")
+
+    def test_lobby_coding_file_search_and_media_requests_stay_on_codex(self) -> None:
+        cases = [
+            ("coding", "write Python code to parse a CSV", "coding"),
+            ("file", "find my local budget.xlsx file", "coding"),
+            ("search", "look up the latest Python release", "search_synthesis"),
+            ("media", "create an image of a neon logo", "media"),
+        ]
+        for label, text, expected_task_type in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                store = VeridexStore(Path(temporary))
+                initial = store.ensure_default()
+                workspace_id = initial["workspace"]["workspace_id"]
+                session_id = initial["session"]["session_id"]
+                response = {
+                    "ok": True,
+                    "provider": "codex_cli",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                    "task_type": expected_task_type,
+                    "text": "Handled by Codex.",
+                    "evidence": [],
+                }
+                with patch.object(veridex_server, "STORE", store), patch.object(
+                    veridex_server, "gemini_enabled", return_value=True
+                ), patch.object(veridex_server, "invoke_gemini") as gemini, patch.object(
+                    veridex_server, "invoke_codex", return_value=response
+                ) as codex:
+                    result = veridex_server.chat_response(
+                        {"workspace_id": workspace_id, "session_id": session_id, "text": text}
+                    )
+
+                gemini.assert_not_called()
+                codex.assert_called_once()
+                self.assertEqual(codex.call_args.args[0]["task_type"], expected_task_type)
+                if label == "media":
+                    self.assertEqual(result["provider"], "veridex_governance")
+                    self.assertIn("FILE-ARTIFACT-VERIFICATION-GATE", result["gate_ids"])
+                else:
+                    self.assertEqual(result["provider"], "codex_cli")
+
+    def test_current_room_question_is_deterministic_without_models(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = VeridexStore(Path(temporary))
             workspace = store.create_workspace("Fresh workspace")
@@ -60,14 +194,17 @@ class VeridexServerTests(unittest.TestCase):
                 "text": "You’re in the Lobby.",
             }
             with patch.object(veridex_server, "STORE", store), patch.object(
-                veridex_server, "invoke_codex", return_value=response
-            ) as invoke:
-                veridex_server.chat_response(
+                veridex_server, "invoke_gemini"
+            ) as gemini, patch.object(veridex_server, "invoke_codex") as codex:
+                result = veridex_server.chat_response(
                     {"workspace_id": workspace["workspace_id"], "session_id": session["session_id"], "text": "Where am I?"}
                 )
-            prompt = invoke.call_args.args[0]["system_prompt"]
-            self.assertIn("active room is Lobby", prompt)
-            self.assertNotIn("My Office", prompt)
+            gemini.assert_not_called()
+            codex.assert_not_called()
+            self.assertEqual(result["provider"], "veridex_router")
+            self.assertEqual(result["task_type"], "local_status")
+            self.assertIn("Lobby", result["message"]["text"])
+            self.assertNotIn("My Office", result["message"]["text"])
 
     def test_explicit_room_navigation_changes_state_without_calling_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -222,7 +359,9 @@ class VeridexServerTests(unittest.TestCase):
                 "text": "I saved the file.",
                 "evidence": [],
             }
-            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "invoke_codex", return_value=response):
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=False
+            ), patch.object(veridex_server, "invoke_codex", return_value=response):
                 result = veridex_server.chat_response(
                     {"workspace_id": workspace_id, "session_id": session_id, "text": "Tell me what happened"}
                 )
@@ -462,6 +601,8 @@ class VeridexServerTests(unittest.TestCase):
                 "text": "Explain this slowly",
             }
             with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=False
+            ), patch.object(
                 veridex_server,
                 "invoke_codex",
                 side_effect=veridex_server.RequestCancelled("stopped"),
@@ -489,6 +630,8 @@ class VeridexServerTests(unittest.TestCase):
                 "text": "Create a quick summary",
             }
             with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=False
+            ), patch.object(
                 veridex_server,
                 "invoke_codex",
                 side_effect=RuntimeError("Codex CLI could not be started: [WinError 206]"),
