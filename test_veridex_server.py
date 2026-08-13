@@ -476,6 +476,59 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[-1]["message_kind"], "system_notice")
 
+    def test_run_chat_request_saves_visible_failure_response_after_codex_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            payload = {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "request_id": "req_failure_test",
+                "text": "Create a quick summary",
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server,
+                "invoke_codex",
+                side_effect=RuntimeError("Codex CLI could not be started: [WinError 206]"),
+            ):
+                result = veridex_server.run_chat_request(payload)
+
+            self.assertFalse(result["ok"])
+            self.assertTrue(result["failed"])
+            self.assertEqual(result["request_id"], "req_failure_test")
+            self.assertFalse(veridex_server.ACTIVE_REQUESTS.is_active("req_failure_test"))
+            self.assertIn("Codex request failed", result["message"]["text"])
+            self.assertIn("WinError 206", result["message"]["text"])
+            messages = store.load_messages(workspace_id, session_id)
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0]["role"], "user")
+            self.assertEqual(messages[-1]["speaker"], "System")
+            self.assertEqual(messages[-1]["message_kind"], "request_failed")
+            self.assertTrue(messages[-1]["failed"])
+            self.assertEqual(messages[-1]["request_id"], "req_failure_test")
+
+    def test_run_chat_request_does_not_persist_failure_for_invalid_empty_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store):
+                with self.assertRaises(ValueError):
+                    veridex_server.run_chat_request(
+                        {
+                            "workspace_id": workspace_id,
+                            "session_id": session_id,
+                            "request_id": "req_invalid_test",
+                            "text": "",
+                        }
+                    )
+
+            self.assertFalse(veridex_server.ACTIVE_REQUESTS.is_active("req_invalid_test"))
+            self.assertEqual(store.load_messages(workspace_id, session_id), [])
+
     def test_explicit_google_failure_does_not_substitute_or_call_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = VeridexStore(Path(temporary))

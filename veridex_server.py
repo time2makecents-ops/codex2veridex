@@ -305,6 +305,41 @@ def request_cancelled_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+def request_failed_response(payload: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
+    user_message = payload.get("_persisted_user_message")
+    if not isinstance(user_message, dict):
+        raise exc
+    workspace_id = str(payload.get("workspace_id") or user_message.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or user_message.get("session_id") or "").strip()
+    request_id = str(payload.get("request_id") or user_message.get("request_id") or "").strip()
+    if not workspace_id or not session_id:
+        session = STORE.find_session(session_id)
+        workspace_id = workspace_id or str(session["workspace_id"])
+    detail = " ".join(str(exc).split())
+    if len(detail) > 700:
+        detail = detail[:686].rstrip() + " ... [trimmed]"
+    text = f"Codex request failed before a response could be completed. Error: {detail}"
+    result = local_chat_response(
+        workspace_id,
+        session_id,
+        user_message,
+        text,
+        "System",
+        "request_failed",
+        response_provider="veridex_router",
+        failed=True,
+        request_id=request_id,
+        message_metadata={
+            "message_kind": "request_failed",
+            "failed": True,
+            "request_id": request_id,
+            "error": detail,
+        },
+    )
+    result["ok"] = False
+    return result
+
+
 def run_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     request = dict(payload)
     request_id = str(request.get("request_id") or f"req_{uuid.uuid4().hex[:12]}").strip()
@@ -316,6 +351,8 @@ def run_chat_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         result = chat_response(request)
     except RequestCancelled:
         result = request_cancelled_response(request)
+    except Exception as exc:
+        result = request_failed_response(request, exc)
     finally:
         ACTIVE_REQUESTS.finish(request_id)
     result["request_id"] = request_id
