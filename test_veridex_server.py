@@ -206,6 +206,90 @@ class VeridexServerTests(unittest.TestCase):
             self.assertIn("Lobby", result["message"]["text"])
             self.assertNotIn("My Office", result["message"]["text"])
 
+    def test_nancy_can_check_gmail_without_calling_models(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            messages = [
+                {
+                    "id": "msg_1",
+                    "threadId": "thr_1",
+                    "from": "James Willis <time2makecents@gmail.com>",
+                    "subject": "Project update",
+                    "date": "Fri, 14 Aug 2026 10:00:00 -0700",
+                    "snippet": "Latest status",
+                }
+            ]
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "search", return_value=messages
+            ) as search, patch.object(veridex_server, "invoke_gemini") as gemini, patch.object(
+                veridex_server, "invoke_codex"
+            ) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "Nance, check my email"}
+                )
+
+            search.assert_called_once_with("in:inbox", max_results=10)
+            gemini.assert_not_called()
+            codex.assert_not_called()
+            self.assertEqual(result["provider"], "veridex_gmail_router")
+            self.assertEqual(result["task_type"], "gmail_search")
+            self.assertEqual(result["message"]["speaker"], "Nancy")
+            self.assertIn("Found 1 Gmail message", result["message"]["text"])
+            self.assertIn("Project update", result["message"]["text"])
+
+    def test_nancy_email_send_request_creates_pending_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "send"
+            ) as send:
+                result = veridex_server.chat_response(
+                    {
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "text": "Nance send email to test@example.com subject Hello body Checking in",
+                    }
+                )
+
+            send.assert_not_called()
+            self.assertEqual(result["provider"], "veridex_gmail_router")
+            self.assertEqual(result["task_type"], "gmail_send_confirmation")
+            self.assertIn("Review and confirm", result["message"]["text"])
+            pending = store.pending_email(workspace_id, session_id)
+            self.assertEqual(pending["to"], ["test@example.com"])
+            self.assertEqual(pending["subject"], "Hello")
+            self.assertEqual(pending["body"], "Checking in")
+
+    def test_nancy_confirm_send_uses_pending_email_and_clears_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_pending_email(
+                workspace_id,
+                session_id,
+                {"to": ["test@example.com"], "subject": "Hello", "body": "Checking in"},
+            )
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "send", return_value={"id": "sent_1", "threadId": "thr_1"}
+            ) as send:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "confirm send"}
+                )
+
+            send.assert_called_once_with(["test@example.com"], "Hello", "Checking in")
+            self.assertEqual(result["provider"], "veridex_gmail_router")
+            self.assertEqual(result["task_type"], "gmail_send")
+            self.assertIn("sent", result["message"]["text"].lower())
+            self.assertEqual(store.pending_email(workspace_id, session_id), {})
+
     def test_explicit_room_navigation_changes_state_without_calling_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = VeridexStore(Path(temporary))

@@ -142,6 +142,9 @@ class VeridexStore:
     def pending_governance_path(self, workspace_id: str, session_id: str) -> Path:
         return self.session_dir(workspace_id, session_id) / "pending_governance.json"
 
+    def pending_email_path(self, workspace_id: str, session_id: str) -> Path:
+        return self.session_dir(workspace_id, session_id) / "pending_email.json"
+
     def ensure_default(self) -> Dict[str, Any]:
         with self._lock:
             if not self.account_path.exists():
@@ -280,6 +283,24 @@ class VeridexStore:
 
     def clear_pending_governance(self, workspace_id: str, session_id: str) -> None:
         path = self.pending_governance_path(workspace_id, session_id)
+        if path.exists():
+            path.unlink()
+
+    def pending_email(self, workspace_id: str, session_id: str) -> Dict[str, Any]:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        value = self._read_json(self.pending_email_path(workspace_id, session_id), {})
+        return value if isinstance(value, dict) else {}
+
+    def set_pending_email(self, workspace_id: str, session_id: str, value: Dict[str, Any]) -> None:
+        session = self.find_session(session_id)
+        if session.get("workspace_id") != workspace_id:
+            raise KeyError("Session does not belong to workspace")
+        self._write_json(self.pending_email_path(workspace_id, session_id), dict(value))
+
+    def clear_pending_email(self, workspace_id: str, session_id: str) -> None:
+        path = self.pending_email_path(workspace_id, session_id)
         if path.exists():
             path.unlink()
 

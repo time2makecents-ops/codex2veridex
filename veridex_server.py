@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
+from gmail_gateway import GmailGateway, GmailGatewayError
 from google_chrome_search import GoogleChromeSearchError, continues_google_search, search_google, wants_google_search
 from request_control import ActiveRequestRegistry, RequestCancelled
 from veridex_core import VeridexStore, classify_task, transcript_context
@@ -54,6 +55,22 @@ CODEX_ONLY_INTENT = re.compile(
     r"financial|investment|security audit|vulnerabilit)\w*\b",
     re.IGNORECASE,
 )
+EMAIL_ADDRESS_RE = re.compile(r"[\w.!#$%&'*+/=?^`{|}~-]+@[\w.-]+\.[A-Za-z]{2,}")
+GMAIL_CHECK_RE = re.compile(
+    r"\b(?:nance|nancy)\b.{0,80}\b(?:email|gmail|inbox|mail|messages?)\b|"
+    r"\b(?:check|read|show|search|scan|look at)\b.{0,80}\b(?:email|gmail|inbox|mail|messages?)\b|"
+    r"\b(?:email|gmail|inbox|mail)\b.{0,80}\b(?:check|read|show|search|scan)\b",
+    re.IGNORECASE,
+)
+GMAIL_SEND_RE = re.compile(
+    r"\b(?:nance|nancy)?[,\s]*(?:please\s+)?(?:send|compose)\s+(?:an\s+)?email\s+to\s+"
+    r"(?P<to>.+?)\s+subject\s+(?P<subject>.+?)\s+body\s+(?P<body>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+GMAIL_CONFIRM_RE = re.compile(
+    r"\b(?:confirm send|send it|yes send|go ahead and send|send that email|confirm and send)\b",
+    re.IGNORECASE,
+)
 
 
 def load_env(path: Path) -> None:
@@ -72,6 +89,7 @@ def load_env(path: Path) -> None:
 load_env(ROOT / ".env.local")
 DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
 STORE = VeridexStore(DATA_ROOT)
+GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 GOVERNANCE = GovernanceRegistry(ROOT / "governance" / "navigator_governance_v1.0.0.json")
 ACTIVE_REQUESTS = ActiveRequestRegistry()
@@ -226,6 +244,154 @@ def local_chat_response(
         **runtime_status(),
         **extra,
     }
+
+
+def parse_email_send_request(prompt: str) -> Dict[str, Any]:
+    match = GMAIL_SEND_RE.search(str(prompt or ""))
+    if not match:
+        return {}
+    recipients = EMAIL_ADDRESS_RE.findall(match.group("to"))
+    if not recipients:
+        return {}
+    return {
+        "to": recipients,
+        "subject": " ".join(match.group("subject").split()),
+        "body": match.group("body").strip(),
+    }
+
+
+def gmail_query_from_prompt(prompt: str) -> str:
+    value = str(prompt or "").lower()
+    if re.search(r"\b(?:unread|new)\b", value):
+        return "in:inbox is:unread"
+    if re.search(r"\b(?:sent mail|sent email|sent messages?)\b", value):
+        return "in:sent"
+    return "in:inbox"
+
+
+def wants_gmail_route(prompt: str, workspace_id: str, session_id: str) -> bool:
+    if parse_email_send_request(prompt):
+        return True
+    if GMAIL_CONFIRM_RE.search(str(prompt or "")) and STORE.pending_email(workspace_id, session_id):
+        return True
+    return bool(GMAIL_CHECK_RE.search(str(prompt or "")))
+
+
+def gmail_messages_text(messages: list[Dict[str, Any]]) -> str:
+    count = len(messages)
+    noun = "message" if count == 1 else "messages"
+    if not messages:
+        return "No Gmail messages matched that request."
+    lines = [f"Found {count} Gmail {noun}."]
+    for message in messages[:10]:
+        subject = str(message.get("subject") or "(no subject)")
+        sender = str(message.get("from") or "Unknown sender")
+        date = str(message.get("date") or "").strip()
+        snippet = str(message.get("snippet") or "").strip()
+        line = f"- {subject} from {sender}"
+        if date:
+            line += f" ({date})"
+        lines.append(line)
+        if snippet:
+            lines.append(f"  {snippet}")
+    return "\n".join(lines)
+
+
+def gmail_chat_response(
+    workspace_id: str,
+    session_id: str,
+    user_message: Dict[str, Any],
+    prompt: str,
+) -> Dict[str, Any]:
+    if GMAIL_CONFIRM_RE.search(str(prompt or "")):
+        pending = STORE.pending_email(workspace_id, session_id)
+        if not pending:
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                "Nancy has no pending email to send.",
+                "Nancy",
+                "gmail_send_unavailable",
+                response_provider="veridex_gmail_router",
+            )
+        try:
+            result = GMAIL.send(
+                [str(value) for value in pending.get("to", [])],
+                str(pending.get("subject") or ""),
+                str(pending.get("body") or ""),
+            )
+        except GmailGatewayError as exc:
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Gmail send could not be completed: {exc}",
+                "Nancy",
+                "gmail_unavailable",
+                response_provider="veridex_gmail_router",
+            )
+        STORE.clear_pending_email(workspace_id, session_id)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            f"Email sent to {', '.join(str(value) for value in pending.get('to', []))}.",
+            "Nancy",
+            "gmail_send",
+            response_provider="veridex_gmail_router",
+            message_metadata={
+                "message_kind": "gmail_send",
+                "gmail": {"provider": "gmail_api", "status": "sent", "message_id": result.get("id")},
+            },
+        )
+
+    draft = parse_email_send_request(prompt)
+    if draft:
+        STORE.set_pending_email(workspace_id, session_id, draft)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            (
+                "Review and confirm before Nancy sends this email.\n"
+                f"To: {', '.join(draft['to'])}\n"
+                f"Subject: {draft['subject']}\n"
+                f"Body: {draft['body']}\n\n"
+                "Reply `confirm send` to send it."
+            ),
+            "Nancy",
+            "gmail_send_confirmation",
+            response_provider="veridex_gmail_router",
+            message_metadata={"message_kind": "gmail_send_confirmation"},
+        )
+
+    query = gmail_query_from_prompt(prompt)
+    try:
+        messages = GMAIL.search(query, max_results=10)
+    except GmailGatewayError as exc:
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            f"Gmail could not be checked: {exc}",
+            "Nancy",
+            "gmail_unavailable",
+            response_provider="veridex_gmail_router",
+        )
+    return local_chat_response(
+        workspace_id,
+        session_id,
+        user_message,
+        gmail_messages_text(messages),
+        "Nancy",
+        "gmail_search",
+        response_provider="veridex_gmail_router",
+        message_metadata={
+            "message_kind": "gmail_search",
+            "gmail": {"provider": "gmail_api", "query": query, "result_count": len(messages)},
+        },
+    )
 
 
 def navigator_intervention_response(
@@ -647,6 +813,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             attachments=public_attachments,
             governance=governance_status(workspace_id, session_id),
         )
+    if not attachments and wants_gmail_route(governed_prompt, workspace_id, session_id):
+        return gmail_chat_response(workspace_id, session_id, user_message, governed_prompt)
     task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
     explicit_google_search = wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous)
     if explicit_google_search:
@@ -944,6 +1112,9 @@ TOOLS = [
     {"name": "office.transcript_get", "description": "Read a session transcript."},
     {"name": "office.room_list", "description": "List available governed rooms and personas."},
     {"name": "office.room_set", "description": "Explicitly change the active room for one session."},
+    {"name": "office.gmail_status", "description": "Check whether the reused Office-App Gmail integration is connected."},
+    {"name": "office.gmail_search", "description": "Search Gmail metadata using the connected veridexcorp@gmail.com account."},
+    {"name": "office.gmail_send", "description": "Send Gmail only when confirm=true; otherwise return a confirmation requirement."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
@@ -1155,6 +1326,27 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = {"rooms": rooms_payload()}
         elif tool == "office.room_set":
             value = room_change_response(args)
+        elif tool == "office.gmail_status":
+            value = GMAIL.connection_status()
+        elif tool == "office.gmail_search":
+            value = {
+                "query": str(args.get("query") or "in:inbox"),
+                "messages": GMAIL.search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
+            }
+        elif tool == "office.gmail_send":
+            recipients = EMAIL_ADDRESS_RE.findall(" ".join(str(value) for value in args.get("to", []))) if isinstance(args.get("to"), list) else EMAIL_ADDRESS_RE.findall(str(args.get("to") or ""))
+            subject = str(args.get("subject") or "")
+            body = str(args.get("body") or "")
+            if not args.get("confirm"):
+                value = {
+                    "status": "confirmation_required",
+                    "to": recipients,
+                    "subject": subject,
+                    "body": body,
+                }
+            else:
+                sent = GMAIL.send(recipients, subject, body)
+                value = {"status": "sent", "to": recipients, "subject": subject, "message_id": sent.get("id")}
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None
