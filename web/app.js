@@ -1,3 +1,11 @@
+const AUTO_READ_STORAGE_KEY = "veridex.readAutomatically";
+const DELIVERY_POLL_INTERVAL_MS = 15_000;
+const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+const savedAutoRead = (() => {
+  try { return window.localStorage.getItem(AUTO_READ_STORAGE_KEY) === "true"; }
+  catch { return false; }
+})();
+
 const state = {
   workspace: null,
   session: null,
@@ -6,15 +14,32 @@ const state = {
   messages: [],
   files: [],
   rooms: [],
+  contacts: [],
+  contactSync: { completed: false },
+  deliveryAlerts: [],
   governance: {},
   selectedFiles: new Set(),
+  emailAttachments: [],
   runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
   route: null,
   sending: false,
   stopping: false,
   activeRequestId: null,
   uploading: false,
+  uploadTarget: "",
   switchingRoom: false,
+  autoRead: savedAutoRead,
+  bootstrapped: false,
+  speakingMessageId: null,
+  recognition: null,
+  listening: false,
+  dictationBase: "",
+  dictationFinal: "",
+  syncingContacts: false,
+  checkingDelivery: false,
+  deliveryErrorShown: false,
+  recipientSuggestionIndex: -1,
+  emailRetryFailureId: "",
 };
 
 const el = (id) => document.getElementById(id);
@@ -41,7 +66,13 @@ function savedRoute(messages) {
 }
 
 function applyState(value, preserveRoute = false) {
+  const priorMessageIds = new Set(state.messages.map((message) => message.message_id).filter(Boolean));
+  const wasBootstrapped = state.bootstrapped;
   const sessionChanged = state.session?.session_id && state.session.session_id !== value.session?.session_id;
+  if (sessionChanged && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    state.speakingMessageId = null;
+  }
   state.workspace = value.workspace;
   state.session = value.session;
   state.workspaces = value.workspaces || [];
@@ -51,10 +82,148 @@ function applyState(value, preserveRoute = false) {
   state.rooms = value.rooms || state.rooms;
   state.runtime = value.runtime || state.runtime;
   state.governance = value.governance || state.governance;
-  if (sessionChanged) state.selectedFiles.clear();
+  if (sessionChanged) {
+    state.selectedFiles.clear();
+    state.emailAttachments = [];
+    state.deliveryAlerts = [];
+  }
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
   render();
+  state.bootstrapped = true;
+  if (wasBootstrapped && !sessionChanged && state.autoRead) {
+    const newestReply = [...state.messages].reverse().find(
+      (message) => message.role === "assistant" && message.message_id && !priorMessageIds.has(message.message_id),
+    );
+    if (newestReply) window.setTimeout(() => speakMessage(newestReply), 0);
+  }
+  if (wasBootstrapped && sessionChanged && state.session?.active_room === "my_office") {
+    window.setTimeout(checkDeliveryFailures, 0);
+  }
+}
+
+function speechTextForMessage(row) {
+  const gmail = row.gmail || {};
+  if (row.message_kind === "gmail_search" && Array.isArray(gmail.messages) && gmail.messages.length) {
+    return gmail.messages.map((message, index) => [
+      gmail.messages.length > 1 ? `Email ${index + 1}.` : "",
+      `From ${message.from || "unknown sender"}.`,
+      `Subject: ${message.subject || "no subject"}.`,
+      message.snippet || "",
+    ].filter(Boolean).join(" ")).join(" ");
+  }
+  if (row.message_kind === "gmail_send_confirmation" && gmail.draft) {
+    const attachments = Array.isArray(gmail.draft.attachments) && gmail.draft.attachments.length
+      ? ` Attachments: ${gmail.draft.attachments.map((file) => file.name).join(", ")}.`
+      : "";
+    return [
+      "Review this email before sending.",
+      `To ${(gmail.draft.to || []).join(", ")}.`,
+      `Subject: ${gmail.draft.subject || "no subject"}.`,
+      gmail.draft.body || "",
+      attachments,
+    ].filter(Boolean).join(" ");
+  }
+  return String(row.text || "")
+    .replace(/https?:\/\/\S+/g, "link")
+    .replace(/[*_`#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stopSpeech() {
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  state.speakingMessageId = null;
+  render();
+}
+
+function speakMessage(row) {
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    showError("Read aloud is not supported by this browser.");
+    return;
+  }
+  const messageId = row.message_id || "current";
+  if (state.speakingMessageId === messageId) {
+    stopSpeech();
+    return;
+  }
+  const text = speechTextForMessage(row);
+  if (!text) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  utterance.onend = utterance.onerror = () => {
+    if (state.speakingMessageId === messageId) {
+      state.speakingMessageId = null;
+      render();
+    }
+  };
+  state.speakingMessageId = messageId;
+  render();
+  window.speechSynthesis.speak(utterance);
+}
+
+function updateDictationText(interim = "") {
+  const input = el("message-input");
+  input.value = [state.dictationBase, state.dictationFinal, interim]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function ensureRecognition() {
+  if (state.recognition || !SpeechRecognitionApi) return state.recognition;
+  const recognition = new SpeechRecognitionApi();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = navigator.language || "en-US";
+  recognition.onstart = () => {
+    state.listening = true;
+    render();
+  };
+  recognition.onresult = (event) => {
+    let interim = "";
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const transcript = event.results[index][0]?.transcript || "";
+      if (event.results[index].isFinal) state.dictationFinal += `${transcript.trim()} `;
+      else interim += transcript;
+    }
+    updateDictationText(interim);
+  };
+  recognition.onerror = (event) => {
+    if (event.error !== "aborted" && event.error !== "no-speech") {
+      const detail = event.error === "not-allowed"
+        ? "Microphone permission was denied. Allow microphone access in the browser and try again."
+        : `Dictation stopped: ${event.error}.`;
+      showError(detail);
+    }
+  };
+  recognition.onend = () => {
+    state.listening = false;
+    updateDictationText();
+    render();
+    el("message-input").focus();
+  };
+  state.recognition = recognition;
+  return recognition;
+}
+
+function toggleDictation() {
+  if (!SpeechRecognitionApi) {
+    showError("Microphone dictation is not supported by this browser. Use Chrome or Edge.");
+    return;
+  }
+  const recognition = ensureRecognition();
+  if (state.listening) {
+    recognition.stop();
+    return;
+  }
+  state.dictationBase = el("message-input").value.trim();
+  state.dictationFinal = "";
+  try { recognition.start(); }
+  catch (error) { showError(error.message || "Dictation could not start."); }
 }
 
 function navButton(row, active, label, onClick) {
@@ -65,6 +234,500 @@ function navButton(row, active, label, onClick) {
   button.title = label;
   button.addEventListener("click", onClick);
   return button;
+}
+
+function emailAddress(value) {
+  const text = String(value || "").trim();
+  const bracketed = text.match(/<([^<>\s]+@[^<>\s]+)>/);
+  const plain = text.match(/[\w.!#$%&'*+/=?^`{|}~-]+@[\w.-]+\.[A-Za-z]{2,}/);
+  return (bracketed?.[1] || plain?.[0] || "").trim();
+}
+
+function readableEmailDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Date unavailable";
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return parsed.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function renderEmailAttachments() {
+  const list = el("email-file-list");
+  list.replaceChildren();
+  if (state.uploading && state.uploadTarget === "email") {
+    const uploading = document.createElement("span");
+    uploading.className = "email-file-uploading";
+    uploading.textContent = "Saving attachment…";
+    list.append(uploading);
+  }
+  state.emailAttachments.forEach((file) => {
+    const chip = document.createElement("span");
+    chip.className = "email-file-chip";
+    const name = document.createElement("span");
+    name.textContent = `${file.name} · ${formatBytes(file.size || 0)}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${file.name}`);
+    remove.title = `Remove ${file.name}`;
+    remove.textContent = "×";
+    remove.disabled = state.uploading;
+    remove.addEventListener("click", () => {
+      state.emailAttachments = state.emailAttachments.filter((row) => row.file_id !== file.file_id);
+      renderEmailAttachments();
+    });
+    chip.append(name, remove);
+    list.append(chip);
+  });
+}
+
+function openEmailComposer(draft = {}) {
+  const dialog = el("email-compose-dialog");
+  el("email-to").value = Array.isArray(draft.to) ? draft.to.join(", ") : (draft.to || "");
+  el("email-subject").value = draft.subject || "";
+  el("email-body").value = draft.body || "";
+  state.emailAttachments = Array.isArray(draft.attachments) ? draft.attachments.map((file) => ({ ...file })) : [];
+  state.emailRetryFailureId = draft.failure_id || draft.retry_failure_id || "";
+  renderEmailAttachments();
+  if (!dialog.open) dialog.showModal();
+  loadContacts().then((result) => {
+    if (!result.sync?.completed) syncContacts();
+  }).catch(() => { /* Nancy will show a Gmail connection error when the user opens the address book. */ });
+  window.setTimeout(() => (el("email-to").value ? el("email-body") : el("email-to")).focus(), 0);
+}
+
+function closeEmailComposer({ clearAttachments = true } = {}) {
+  const dialog = el("email-compose-dialog");
+  if (dialog.open) dialog.close();
+  el("email-recipient-suggestions").hidden = true;
+  if (clearAttachments) {
+    state.emailAttachments = [];
+    state.emailRetryFailureId = "";
+    renderEmailAttachments();
+  }
+}
+
+async function loadContacts() {
+  const result = await api("/api/contacts");
+  state.contacts = result.contacts || [];
+  state.contactSync = result.sync || state.contactSync;
+  renderContacts();
+  renderRecipientSuggestions();
+  return result;
+}
+
+function contactLabel(contact) {
+  return contact.name ? `${contact.name} <${contact.email}>` : contact.email;
+}
+
+function showContactForm(contact = {}) {
+  el("contact-form").hidden = false;
+  el("contact-form-title").textContent = contact.contact_id ? "Edit contact" : "Add contact";
+  el("contact-id").value = contact.contact_id || "";
+  el("contact-name").value = contact.name || "";
+  el("contact-email").value = contact.email || "";
+  el("contact-phone").value = contact.phone || "";
+  el("contact-company").value = contact.company || "";
+  el("contact-notes").value = contact.notes || "";
+  el(contact.email ? "contact-name" : "contact-email").focus();
+  renderContacts();
+}
+
+function hideContactForm() {
+  el("contact-form").hidden = true;
+  el("contact-id").value = "";
+  renderContacts();
+}
+
+function renderContacts() {
+  const list = el("contact-list");
+  if (!list) return;
+  const query = String(el("contact-search").value || "").trim().toLowerCase();
+  const contacts = state.contacts.filter((contact) => [
+    contact.name, contact.email, contact.company, contact.notes,
+  ].some((value) => String(value || "").toLowerCase().includes(query)));
+  list.replaceChildren();
+  if (!contacts.length) {
+    const empty = document.createElement("div");
+    empty.className = "contact-empty";
+    empty.textContent = state.contactSync.completed
+      ? "No contacts match this search."
+      : "Sent-mail contacts have not been synced yet.";
+    list.append(empty);
+    return;
+  }
+  const selectedId = el("contact-id").value;
+  contacts.forEach((contact) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `contact-row${selectedId === contact.contact_id ? " active" : ""}`;
+    const name = document.createElement("strong");
+    name.textContent = contact.name || contact.email;
+    const address = document.createElement("span");
+    address.textContent = [contact.email, contact.company, contact.phone].filter(Boolean).join(" · ");
+    const count = document.createElement("small");
+    count.textContent = `${Number(contact.email_count || 0)} sent`;
+    button.append(name, address, count);
+    button.addEventListener("click", () => showContactForm(contact));
+    list.append(button);
+  });
+}
+
+async function syncContacts() {
+  if (state.syncingContacts) return;
+  state.syncingContacts = true;
+  el("contact-sync").disabled = true;
+  el("contact-sync-status").textContent = "Nancy is reading the 500 most recent Sent messages...";
+  try {
+    const result = await api("/api/contacts/sync", { method: "POST", body: "{}" });
+    state.contacts = result.contacts || [];
+    state.contactSync = result.sync || { completed: true };
+    el("contact-sync-status").textContent = `Scanned ${result.messages_scanned || 0} messages and added ${result.contact_events_added || 0} new contact records.`;
+    renderContacts();
+  } catch (error) {
+    el("contact-sync-status").textContent = "Sent-mail sync could not be completed.";
+    showError(error.message || String(error));
+  } finally {
+    state.syncingContacts = false;
+    el("contact-sync").disabled = false;
+  }
+}
+
+async function openAddressBook() {
+  const dialog = el("address-book-dialog");
+  if (!dialog.open) dialog.showModal();
+  el("contact-sync-status").textContent = "Loading contacts...";
+  try {
+    await loadContacts();
+    el("contact-sync-status").textContent = state.contactSync.completed
+      ? `Last Sent-mail sync: ${readableEmailDate(state.contactSync.updated_at)}`
+      : "Sent-mail contacts will be imported now.";
+    if (!state.contactSync.completed) await syncContacts();
+  } catch (error) {
+    el("contact-sync-status").textContent = "Contacts could not be loaded.";
+    showError(error.message || String(error));
+  }
+  el("contact-search").focus();
+}
+
+function closeAddressBook() {
+  hideContactForm();
+  if (el("address-book-dialog").open) el("address-book-dialog").close();
+}
+
+function recipientFragment() {
+  return String(el("email-to").value || "").split(",").pop().trim().toLowerCase();
+}
+
+function recipientSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function recipientEditDistance(left, right) {
+  const source = recipientSearchText(left);
+  const target = recipientSearchText(right);
+  if (source === target) return 0;
+  if (!source.length) return target.length;
+  if (!target.length) return source.length;
+  const matrix = Array.from({ length: source.length + 1 }, (_, row) => {
+    const values = new Array(target.length + 1).fill(0);
+    values[0] = row;
+    return values;
+  });
+  for (let column = 0; column <= target.length; column += 1) matrix[0][column] = column;
+  for (let row = 1; row <= source.length; row += 1) {
+    for (let column = 1; column <= target.length; column += 1) {
+      const cost = source[row - 1] === target[column - 1] ? 0 : 1;
+      matrix[row][column] = Math.min(
+        matrix[row - 1][column] + 1,
+        matrix[row][column - 1] + 1,
+        matrix[row - 1][column - 1] + cost,
+      );
+      if (
+        row > 1 && column > 1
+        && source[row - 1] === target[column - 2]
+        && source[row - 2] === target[column - 1]
+      ) {
+        matrix[row][column] = Math.min(matrix[row][column], matrix[row - 2][column - 2] + cost);
+      }
+    }
+  }
+  return matrix[source.length][target.length];
+}
+
+function recipientMatchScore(contact, fragment) {
+  const query = recipientSearchText(fragment);
+  if (!query) return null;
+  const email = recipientSearchText(contact.email);
+  const localPart = email.split("@")[0];
+  const candidates = [email, localPart, contact.name, contact.company]
+    .map(recipientSearchText)
+    .filter(Boolean);
+  let best = Number.POSITIVE_INFINITY;
+  candidates.forEach((candidate) => {
+    if (candidate === query) best = Math.min(best, 0);
+    else if (candidate.startsWith(query)) best = Math.min(best, 0.05 + ((candidate.length - query.length) / 1000));
+    else if (candidate.includes(query)) best = Math.min(best, 0.15 + (candidate.indexOf(query) / 1000));
+    else {
+      const distance = recipientEditDistance(query, candidate);
+      const allowed = query.length < 6 ? 1 : query.length < 12 ? 2 : query.length < 24 ? 3 : 4;
+      if (distance <= allowed || distance / Math.max(query.length, candidate.length) <= 0.22) {
+        best = Math.min(best, 1 + (distance / Math.max(query.length, candidate.length)));
+      }
+    }
+  });
+  return Number.isFinite(best) ? best : null;
+}
+
+function matchingRecipientContacts() {
+  const fragment = recipientFragment();
+  if (!fragment) return [];
+  const selected = new Set(
+    String(el("email-to").value || "").split(",").slice(0, -1)
+      .map(emailAddress).filter(Boolean).map((value) => value.toLowerCase()),
+  );
+  return state.contacts
+    .filter((contact) => !selected.has(String(contact.email || "").toLowerCase()))
+    .map((contact) => ({ contact, score: recipientMatchScore(contact, fragment) }))
+    .filter((match) => match.score !== null)
+    .sort((left, right) => left.score - right.score
+      || Number(right.contact.email_count || 0) - Number(left.contact.email_count || 0)
+      || String(left.contact.email || "").localeCompare(String(right.contact.email || "")))
+    .slice(0, 8)
+    .map((match) => match.contact);
+}
+
+function chooseRecipient(contact) {
+  const input = el("email-to");
+  const parts = String(input.value || "").split(",");
+  parts[parts.length - 1] = contactLabel(contact);
+  input.value = parts.map((value) => value.trim()).filter(Boolean).join(", ");
+  state.recipientSuggestionIndex = -1;
+  renderRecipientSuggestions();
+  input.focus();
+}
+
+function renderRecipientSuggestions() {
+  const container = el("email-recipient-suggestions");
+  if (!container) return;
+  const contacts = matchingRecipientContacts();
+  container.replaceChildren();
+  container.hidden = !contacts.length || document.activeElement !== el("email-to");
+  contacts.forEach((contact, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.role = "option";
+    button.setAttribute("aria-selected", index === state.recipientSuggestionIndex ? "true" : "false");
+    button.className = `recipient-suggestion${index === state.recipientSuggestionIndex ? " active" : ""}`;
+    const name = document.createElement("strong");
+    name.textContent = contact.name || contact.email;
+    const detail = document.createElement("span");
+    detail.textContent = [contact.email, contact.company].filter(Boolean).join(" · ");
+    button.append(name, detail);
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => chooseRecipient(contact));
+    container.append(button);
+  });
+}
+
+function renderDeliveryAlerts() {
+  const container = el("delivery-alerts");
+  if (!container) return;
+  const visible = state.session?.active_room === "my_office" && state.deliveryAlerts.length;
+  container.hidden = !visible;
+  container.replaceChildren();
+  if (!visible) return;
+  state.deliveryAlerts.forEach((alert) => {
+    const card = document.createElement("article");
+    card.className = "delivery-alert";
+    const copy = document.createElement("div");
+    copy.className = "delivery-alert-copy";
+    const title = document.createElement("strong");
+    title.textContent = `Delivery failed: ${alert.recipient || "unknown recipient"}`;
+    const detail = document.createElement("span");
+    detail.textContent = `${alert.subject || "(unknown subject)"} · ${alert.diagnostic || "The message was returned."}`;
+    copy.append(title, detail);
+    const actions = document.createElement("div");
+    actions.className = "delivery-alert-actions";
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => resolveDeliveryAlert(alert.failure_id));
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "primary-action";
+    retry.textContent = "Fix and resend";
+    retry.addEventListener("click", () => {
+      openEmailComposer(alert.retry || {});
+      if (alert.retry?.unavailable_attachments?.length) {
+        showError(`Reattach unavailable files: ${alert.retry.unavailable_attachments.join(", ")}`);
+      }
+    });
+    actions.append(dismiss, retry);
+    card.append(copy, actions);
+    container.append(card);
+  });
+}
+
+async function resolveDeliveryAlert(failureId) {
+  try {
+    const result = await api("/api/mail/alerts/resolve", {
+      method: "POST",
+      body: JSON.stringify({
+        failure_id: failureId,
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+      }),
+    });
+    state.deliveryAlerts = result.alerts || [];
+    renderDeliveryAlerts();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+async function checkDeliveryFailures() {
+  if (state.checkingDelivery || state.session?.active_room !== "my_office") return;
+  state.checkingDelivery = true;
+  try {
+    const result = await api("/api/mail/check-delivery", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+      }),
+    });
+    state.deliveryAlerts = result.alerts || [];
+    state.deliveryErrorShown = false;
+    if (result.new_failure_count) {
+      await loadState(state.workspace.workspace_id, state.session.session_id, true);
+      showError(result.new_failure_count === 1 ? "Nancy found a returned email." : `Nancy found ${result.new_failure_count} returned emails.`);
+    }
+    renderDeliveryAlerts();
+  } catch (error) {
+    if (!state.deliveryErrorShown) {
+      state.deliveryErrorShown = true;
+      showError(`Nancy could not check returned mail: ${error.message || String(error)}`);
+    }
+  } finally {
+    state.checkingDelivery = false;
+  }
+}
+
+function gmailCard(message) {
+  const card = document.createElement("section");
+  card.className = "email-card";
+  const top = document.createElement("div");
+  top.className = "email-card-top";
+  const sender = document.createElement("strong");
+  sender.className = "email-sender";
+  sender.textContent = message.from || "Unknown sender";
+  const date = document.createElement("time");
+  date.className = "email-date";
+  date.textContent = readableEmailDate(message.date);
+  const subject = document.createElement("h3");
+  subject.textContent = message.subject || "(no subject)";
+  const snippet = document.createElement("p");
+  snippet.textContent = message.snippet || "No preview available.";
+  const actions = document.createElement("div");
+  actions.className = "email-card-actions";
+  const reply = document.createElement("button");
+  reply.type = "button";
+  reply.textContent = "Reply";
+  reply.addEventListener("click", () => openEmailComposer({
+    to: emailAddress(message.from),
+    subject: /^re:/i.test(message.subject || "") ? message.subject : `Re: ${message.subject || ""}`,
+  }));
+  const open = document.createElement("a");
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.href = `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(message.threadId || message.id || "")}`;
+  open.textContent = "Open in Gmail";
+  actions.append(reply, open);
+  top.append(sender, date);
+  card.append(top, subject, snippet, actions);
+  return card;
+}
+
+function renderGmailMessage(row, article, body) {
+  const gmail = row.gmail || {};
+  if (row.message_kind === "gmail_search" && Array.isArray(gmail.messages)) {
+    article.classList.add("email-result");
+    const count = gmail.messages.length;
+    body.textContent = count === 1 ? "Here is the email you asked for." : `Here are ${count} emails.`;
+    const list = document.createElement("div");
+    list.className = "email-card-list";
+    gmail.messages.forEach((message) => list.append(gmailCard(message)));
+    article.append(list);
+    return true;
+  }
+  if (row.message_kind === "gmail_search") {
+    article.classList.add("email-result", "legacy-email-result");
+    const original = body.textContent;
+    body.textContent = "Earlier Gmail result from the previous list format.";
+    const details = document.createElement("details");
+    details.className = "legacy-email-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "View original email list";
+    const content = document.createElement("div");
+    content.textContent = original;
+    details.append(summary, content);
+    article.append(details);
+    return true;
+  }
+  if (row.message_kind === "gmail_send_confirmation" && gmail.draft) {
+    article.classList.add("email-result");
+    body.textContent = "Review this email before Nancy sends it.";
+    const review = document.createElement("section");
+    review.className = "email-review";
+    const heading = document.createElement("div");
+    heading.className = "email-review-heading";
+    const title = document.createElement("strong");
+    title.textContent = "Ready to send";
+    const stateLabel = document.createElement("span");
+    stateLabel.textContent = "Waiting for your confirmation";
+    heading.append(title, stateLabel);
+    const facts = document.createElement("dl");
+    const fields = [
+      ["To", (gmail.draft.to || []).join(", ")],
+      ["Subject", gmail.draft.subject || "(no subject)"],
+      ["Message", gmail.draft.body || ""],
+    ];
+    if (Array.isArray(gmail.draft.attachments) && gmail.draft.attachments.length) {
+      fields.push([
+        "Attachments",
+        gmail.draft.attachments.map((file) => `${file.name} · ${formatBytes(file.size || 0)}`).join("\n"),
+      ]);
+    }
+    fields.forEach(([label, value]) => {
+      const group = document.createElement("div");
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.textContent = label;
+      detail.textContent = value;
+      group.append(term, detail);
+      facts.append(group);
+    });
+    const actions = document.createElement("div");
+    actions.className = "email-review-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "secondary-action";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => openEmailComposer(gmail.draft));
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "primary-action";
+    send.textContent = "Send email";
+    send.addEventListener("click", () => sendMessage("confirm send", { attachments: [] }));
+    actions.append(edit, send);
+    review.append(heading, facts, actions);
+    article.append(review);
+    return true;
+  }
+  return false;
 }
 
 function renderNavigation() {
@@ -106,6 +769,7 @@ function renderMessages() {
       body.className = "message-body";
       body.textContent = row.text || "";
       article.append(role, body);
+      renderGmailMessage(row, article, body);
       if (Array.isArray(row.attachments) && row.attachments.length) {
         const attachments = document.createElement("div");
         attachments.className = "message-attachments";
@@ -150,6 +814,20 @@ function renderMessages() {
           artifacts.append(item);
         });
         article.append(artifacts);
+      }
+      if (row.role === "assistant" && row.text) {
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+        const read = document.createElement("button");
+        const isSpeaking = state.speakingMessageId === (row.message_id || "current");
+        read.type = "button";
+        read.className = `read-message${isSpeaking ? " speaking" : ""}`;
+        read.textContent = isSpeaking ? "Stop" : "Read";
+        read.disabled = !("speechSynthesis" in window);
+        read.setAttribute("aria-label", `${isSpeaking ? "Stop reading" : "Read aloud"} message from ${row.speaker || "Veridex"}`);
+        read.addEventListener("click", () => speakMessage(row));
+        actions.append(read);
+        article.append(actions);
       }
       if (row.model) {
         const route = document.createElement("div");
@@ -227,6 +905,17 @@ function renderRoomControl() {
   selector.disabled = state.sending || state.uploading || state.switchingRoom;
 }
 
+function renderEmailTools() {
+  const actions = el("email-actions");
+  actions.hidden = state.session?.active_room !== "my_office";
+  el("address-book").disabled = state.sending || state.uploading;
+  el("compose-email").disabled = state.sending || state.uploading;
+  el("email-attach-button").disabled = state.sending || state.uploading;
+  el("email-compose-form").querySelector('[type="submit"]').disabled = state.sending || state.uploading;
+  renderEmailAttachments();
+  renderDeliveryAlerts();
+}
+
 function renderGovernance() {
   const governance = state.governance || {};
   const navigator = governance.navigator || {};
@@ -286,7 +975,7 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  const deterministic = ["veridex_router", "veridex_governance", "veridex_google_router"].includes(state.route.provider);
+  const deterministic = ["veridex_router", "veridex_governance", "veridex_google_router", "veridex_gmail_router"].includes(state.route.provider);
   el("route-model").textContent = deterministic
     ? `Veridex · deterministic ${state.route.task_type.replaceAll("_", " ")}`
     : `Codex CLI · ${state.route.model}`;
@@ -321,7 +1010,20 @@ function render() {
   }
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
+  const canRead = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+  const autoRead = el("auto-read");
+  autoRead.checked = state.autoRead;
+  autoRead.disabled = !canRead;
+  const voiceInput = el("voice-input");
+  voiceInput.disabled = state.sending || state.uploading || !SpeechRecognitionApi;
+  voiceInput.classList.toggle("listening", state.listening);
+  voiceInput.setAttribute("aria-pressed", String(state.listening));
+  voiceInput.setAttribute("aria-label", state.listening ? "Stop dictation" : "Dictate a message");
+  voiceInput.title = SpeechRecognitionApi
+    ? (state.listening ? "Stop dictation" : "Dictate a message")
+    : "Dictation requires Chrome or Edge";
   renderRoomControl();
+  renderEmailTools();
   renderGovernance();
   renderNavigation();
   renderMessages();
@@ -334,10 +1036,19 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
   if (workspaceId) query.set("workspace_id", workspaceId);
   if (sessionId) query.set("session_id", sessionId);
   applyState(await api(`/api/state?${query}`), preserveRoute);
+  if (state.session?.active_room === "my_office") {
+    const alertQuery = new URLSearchParams({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+    });
+    const result = await api(`/api/mail/alerts?${alertQuery}`);
+    state.deliveryAlerts = result.alerts || [];
+    renderDeliveryAlerts();
+  }
 }
 
 function routeNotice(next) {
-  if (["veridex_router", "veridex_governance", "veridex_google_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
+  if (["veridex_router", "veridex_governance", "veridex_google_router", "veridex_gmail_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -348,8 +1059,16 @@ function routeNotice(next) {
   return `Continuing with ${next.model} · ${next.reasoning_effort} reasoning.`;
 }
 
-async function sendMessage(text) {
-  const selectedAttachments = state.files.filter((file) => state.selectedFiles.has(file.file_id));
+async function sendMessage(text, { attachments, emailDraft } = {}) {
+  if (state.listening && state.recognition) {
+    state.dictationBase = "";
+    state.dictationFinal = "";
+    state.recognition.abort();
+  }
+  const usesChatSelection = attachments === undefined;
+  const selectedAttachments = usesChatSelection
+    ? state.files.filter((file) => state.selectedFiles.has(file.file_id))
+    : attachments;
   state.sending = true;
   state.stopping = false;
   state.activeRequestId = globalThis.crypto?.randomUUID?.() || `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -360,6 +1079,7 @@ async function sendMessage(text) {
     attachments: selectedAttachments,
   });
   render();
+  let succeeded = false;
   try {
     const result = await api("/api/chat", {
       method: "POST",
@@ -369,6 +1089,7 @@ async function sendMessage(text) {
         text,
         request_id: state.activeRequestId,
         attachment_ids: selectedAttachments.map((file) => file.file_id),
+        email_draft: emailDraft,
       }),
     });
     const nextRoute = {
@@ -381,8 +1102,12 @@ async function sendMessage(text) {
       ? `Room changed: ${result.room_transition.room_title} · ${result.room_transition.active_persona}.`
       : routeNotice(nextRoute);
     state.route = nextRoute;
-    state.selectedFiles.clear();
+    if (usesChatSelection) state.selectedFiles.clear();
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
+    if (result.task_type === "gmail_send" && state.session?.active_room === "my_office") {
+      window.setTimeout(checkDeliveryFailures, 5_000);
+    }
+    succeeded = true;
   } catch (error) {
     showError(error.message || String(error));
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
@@ -391,8 +1116,9 @@ async function sendMessage(text) {
     state.stopping = false;
     state.activeRequestId = null;
     render();
-    el("message-input").focus();
+    if (!el("email-compose-dialog").open) el("message-input").focus();
   }
+  return succeeded;
 }
 
 async function stopMessage() {
@@ -437,12 +1163,119 @@ el("send-button").addEventListener("click", () => {
   else el("composer").requestSubmit();
 });
 
-async function uploadFiles(fileList) {
-  if (!state.workspace || !state.session) return;
+el("auto-read").addEventListener("change", (event) => {
+  state.autoRead = event.target.checked;
+  try { window.localStorage.setItem(AUTO_READ_STORAGE_KEY, String(state.autoRead)); }
+  catch { /* Browser storage is optional; keep the setting for this tab. */ }
+  if (!state.autoRead && state.speakingMessageId) stopSpeech();
+});
+el("voice-input").addEventListener("click", toggleDictation);
+
+el("compose-email").addEventListener("click", () => openEmailComposer());
+el("address-book").addEventListener("click", openAddressBook);
+el("email-compose-close").addEventListener("click", closeEmailComposer);
+el("email-compose-cancel").addEventListener("click", closeEmailComposer);
+el("email-compose-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeEmailComposer();
+});
+el("address-book-close").addEventListener("click", closeAddressBook);
+el("address-book-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAddressBook();
+});
+el("contact-search").addEventListener("input", renderContacts);
+el("contact-sync").addEventListener("click", syncContacts);
+el("contact-new").addEventListener("click", () => showContactForm());
+el("contact-form-cancel").addEventListener("click", hideContactForm);
+el("contact-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const result = await api("/api/contacts/save", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_id: el("contact-id").value,
+        name: el("contact-name").value.trim(),
+        email: el("contact-email").value.trim(),
+        phone: el("contact-phone").value.trim(),
+        company: el("contact-company").value.trim(),
+        notes: el("contact-notes").value.trim(),
+      }),
+    });
+    state.contacts = result.contacts || state.contacts;
+    hideContactForm();
+    el("contact-sync-status").textContent = `Saved ${result.contact?.name || result.contact?.email}.`;
+  } catch (error) { showError(error.message || String(error)); }
+});
+el("email-to").addEventListener("focus", renderRecipientSuggestions);
+el("email-to").addEventListener("input", () => {
+  state.recipientSuggestionIndex = -1;
+  renderRecipientSuggestions();
+});
+el("email-to").addEventListener("blur", () => window.setTimeout(() => {
+  el("email-recipient-suggestions").hidden = true;
+}, 100));
+el("email-to").addEventListener("keydown", (event) => {
+  const contacts = matchingRecipientContacts();
+  if (!contacts.length) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    state.recipientSuggestionIndex = (state.recipientSuggestionIndex + delta + contacts.length) % contacts.length;
+    renderRecipientSuggestions();
+  } else if (event.key === "Enter" && state.recipientSuggestionIndex >= 0) {
+    event.preventDefault();
+    chooseRecipient(contacts[state.recipientSuggestionIndex]);
+  } else if (event.key === "Escape") {
+    el("email-recipient-suggestions").hidden = true;
+  }
+});
+el("email-compose-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.sending || state.uploading) return;
+  const to = el("email-to").value.trim();
+  const subject = el("email-subject").value.trim();
+  const body = el("email-body").value.trim();
+  if (!to || !subject || !body) return;
+  const attachments = state.emailAttachments.map((file) => ({ ...file }));
+  const sentToReview = await sendMessage(
+    `Nancy, compose email to ${to}\nSubject: ${subject}\nBody:\n${body}`,
+    {
+      attachments,
+      emailDraft: {
+        to,
+        subject,
+        body,
+        attachment_ids: attachments.map((file) => file.file_id),
+        retry_failure_id: state.emailRetryFailureId,
+      },
+    },
+  );
+  if (sentToReview) closeEmailComposer();
+});
+
+const EMAIL_ATTACHMENT_LIMIT_BYTES = 20 * 1024 * 1024;
+
+async function uploadFiles(fileList, target = "chat") {
+  const files = [...fileList].filter((file) => file instanceof File);
+  if (!state.workspace || !state.session || !files.length) return;
+  if (state.sending || state.uploading) {
+    showError("Wait for the current request or upload to finish.");
+    return;
+  }
+  if (target === "email") {
+    const currentSize = state.emailAttachments.reduce((total, file) => total + Number(file.size || 0), 0);
+    const addedSize = files.reduce((total, file) => total + Number(file.size || 0), 0);
+    if (currentSize + addedSize > EMAIL_ATTACHMENT_LIMIT_BYTES) {
+      showError("Email attachments must total 20 MB or less.");
+      return;
+    }
+  }
   state.uploading = true;
+  state.uploadTarget = target;
   render();
   try {
-    for (const file of fileList) {
+    for (const file of files) {
       const query = new URLSearchParams({
         workspace_id: state.workspace.workspace_id,
         session_id: state.session.session_id,
@@ -454,19 +1287,63 @@ async function uploadFiles(fileList) {
         body: file,
       });
       state.files = result.files || state.files;
-      if (result.file?.file_id) state.selectedFiles.add(result.file.file_id);
+      if (result.file?.file_id) {
+        if (target === "email") state.emailAttachments.push(result.file);
+        else state.selectedFiles.add(result.file.file_id);
+      }
     }
   } catch (error) {
     showError(error.message || String(error));
   } finally {
     state.uploading = false;
-    el("file-input").value = "";
+    state.uploadTarget = "";
+    el(target === "email" ? "email-file-input" : "file-input").value = "";
     render();
   }
 }
 
 el("attach-button").addEventListener("click", () => el("file-input").click());
-el("file-input").addEventListener("change", (event) => uploadFiles([...event.target.files]));
+el("file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "chat"));
+el("email-attach-button").addEventListener("click", () => el("email-file-input").click());
+el("email-file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "email"));
+
+function isFileDrag(event) {
+  return Array.from(event.dataTransfer?.types || []).includes("Files");
+}
+
+function bindFileDrop(target, uploadTarget, setActive) {
+  let dragDepth = 0;
+  target.addEventListener("dragenter", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth += 1;
+    setActive(true);
+  });
+  target.addEventListener("dragover", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  target.addEventListener("dragleave", (event) => {
+    if (!isFileDrag(event)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) setActive(false);
+  });
+  target.addEventListener("drop", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    setActive(false);
+    uploadFiles(event.dataTransfer.files, uploadTarget);
+  });
+}
+
+bindFileDrop(el("chat-panel"), "chat", (active) => {
+  el("chat-drop-overlay").hidden = !active;
+});
+bindFileDrop(el("email-drop-zone"), "email", (active) => {
+  el("email-drop-zone").classList.toggle("drag-active", active);
+});
 
 el("room-selector").addEventListener("change", async (event) => {
   const roomId = event.target.value;
@@ -485,6 +1362,7 @@ el("room-selector").addEventListener("change", async (event) => {
     applyState(result, true);
     state.route = result.route;
     state.route.notice = `Room changed: ${result.room_transition.room_title} · ${result.room_transition.active_persona}.`;
+    if (state.session?.active_room === "my_office") window.setTimeout(checkDeliveryFailures, 0);
   } catch (error) {
     showError(error.message || String(error));
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
@@ -539,4 +1417,10 @@ el("new-session").addEventListener("click", async () => {
   } catch (error) { showError(error.message || String(error)); }
 });
 
-api("/api/bootstrap").then(applyState).catch((error) => showError(error.message || String(error)));
+api("/api/bootstrap").then((value) => {
+  applyState(value);
+  if (state.session?.active_room === "my_office") window.setTimeout(checkDeliveryFailures, 0);
+}).catch((error) => showError(error.message || String(error)));
+window.setInterval(() => {
+  if (state.session?.active_room === "my_office") checkDeliveryFailures();
+}, DELIVERY_POLL_INTERVAL_MS);

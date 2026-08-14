@@ -67,6 +67,11 @@ GMAIL_SEND_RE = re.compile(
     r"(?P<to>.+?)\s+subject\s+(?P<subject>.+?)\s+body\s+(?P<body>.+?)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
+GMAIL_STRUCTURED_SEND_RE = re.compile(
+    r"\b(?:nance|nancy)?[,\s]*(?:please\s+)?(?:send|compose)\s+(?:an\s+)?email\s+to\s+"
+    r"(?P<to>[^\r\n]+)\r?\nsubject:\s*(?P<subject>[^\r\n]+)\r?\nbody:\s*\r?\n(?P<body>.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 GMAIL_CONFIRM_RE = re.compile(
     r"\b(?:confirm send|send it|yes send|go ahead and send|send that email|confirm and send)\b",
     re.IGNORECASE,
@@ -91,6 +96,7 @@ DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve
 STORE = VeridexStore(DATA_ROOT)
 GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
+MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
 GOVERNANCE = GovernanceRegistry(ROOT / "governance" / "navigator_governance_v1.0.0.json")
 ACTIVE_REQUESTS = ActiveRequestRegistry()
 
@@ -207,6 +213,93 @@ def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
     return {**value, "runtime": runtime_status(), "governance": governance}
 
 
+def public_delivery_alert(
+    row: Dict[str, Any],
+    workspace_id: str = "",
+    session_id: str = "",
+) -> Dict[str, Any]:
+    original_to = row.get("to") if isinstance(row.get("to"), list) else []
+    failed_recipient = str(row.get("recipient") or "").strip()
+    retry_to = [failed_recipient] if failed_recipient else [str(value) for value in original_to]
+    attachments: list[Dict[str, Any]] = []
+    unavailable: list[str] = []
+    stored = row.get("attachments") if isinstance(row.get("attachments"), list) else []
+    if stored and str(row.get("workspace_id") or "") == workspace_id and str(row.get("session_id") or "") == session_id:
+        available_ids = {
+            str(value.get("file_id") or ""): value
+            for value in STORE.list_files(workspace_id, session_id)
+        }
+        for attachment in stored:
+            file_id = str((attachment or {}).get("file_id") or "")
+            if file_id and file_id in available_ids:
+                attachments.append(public_file(available_ids[file_id]))
+            else:
+                unavailable.append(str((attachment or {}).get("name") or "attachment"))
+    else:
+        unavailable.extend(str((attachment or {}).get("name") or "attachment") for attachment in stored)
+    return {
+        "failure_id": str(row.get("failure_id") or ""),
+        "recipient": failed_recipient,
+        "subject": str(row.get("subject") or "(unknown subject)"),
+        "diagnostic": str(row.get("diagnostic") or "The recipient's mail system returned the message."),
+        "status_code": str(row.get("status_code") or ""),
+        "detected_at": str(row.get("detected_at") or ""),
+        "retry": {
+            "failure_id": str(row.get("failure_id") or ""),
+            "to": retry_to,
+            "subject": str(row.get("subject") or ""),
+            "body": str(row.get("body") or ""),
+            "attachments": attachments,
+            "unavailable_attachments": unavailable,
+        },
+    }
+
+
+def delivery_alerts(workspace_id: str = "", session_id: str = "") -> list[Dict[str, Any]]:
+    return [
+        public_delivery_alert(row, workspace_id, session_id)
+        for row in GMAIL.list_delivery_failures()
+    ]
+
+
+def check_delivery_alerts(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    session = STORE.find_session(session_id)
+    if str(session.get("workspace_id") or "") != workspace_id:
+        raise KeyError("Session does not belong to workspace")
+    result = GMAIL.check_delivery_failures()
+    alerts = GMAIL.list_delivery_failures()
+    if str(session.get("active_room") or "") == "my_office":
+        for row in alerts:
+            if str(row.get("notified_session_id") or ""):
+                continue
+            public = public_delivery_alert(row, workspace_id, session_id)
+            recipient = public["recipient"] or "an unknown recipient"
+            text = (
+                f"Delivery failed for {recipient}: {public['subject']}. "
+                f"{public['diagnostic']} Correct the address and resend when ready."
+            )
+            STORE.append_message(
+                workspace_id,
+                session_id,
+                "assistant",
+                text,
+                speaker="Nancy",
+                provider="veridex_gmail_router",
+                model="deterministic",
+                reasoning_effort="none",
+                task_type="gmail_delivery_failure",
+                message_kind="gmail_delivery_failure",
+                gmail={"provider": "gmail_api", "status": "failed", "delivery_failure": public},
+            )
+            GMAIL.mark_failure_notified(str(row.get("failure_id") or ""), session_id)
+    return {
+        "ok": True,
+        "new_failure_count": len(result.get("new_failures") or []),
+        "alerts": delivery_alerts(workspace_id, session_id),
+        "messages": STORE.load_messages(workspace_id, session_id),
+    }
+
+
 def local_chat_response(
     workspace_id: str,
     session_id: str,
@@ -247,7 +340,8 @@ def local_chat_response(
 
 
 def parse_email_send_request(prompt: str) -> Dict[str, Any]:
-    match = GMAIL_SEND_RE.search(str(prompt or ""))
+    value = str(prompt or "")
+    match = GMAIL_STRUCTURED_SEND_RE.search(value) or GMAIL_SEND_RE.search(value)
     if not match:
         return {}
     recipients = EMAIL_ADDRESS_RE.findall(match.group("to"))
@@ -260,6 +354,35 @@ def parse_email_send_request(prompt: str) -> Dict[str, Any]:
     }
 
 
+def normalize_email_draft(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    raw_to = value.get("to")
+    recipients = EMAIL_ADDRESS_RE.findall(
+        " ".join(str(item) for item in raw_to) if isinstance(raw_to, list) else str(raw_to or "")
+    )
+    subject = " ".join(str(value.get("subject") or "").split())
+    body = str(value.get("body") or "").strip()
+    if not recipients or not subject or not body:
+        raise ValueError("email draft requires a recipient, subject, and message")
+    attachment_ids = value.get("attachment_ids") if isinstance(value.get("attachment_ids"), list) else []
+    return {
+        "to": recipients,
+        "subject": subject,
+        "body": body,
+        "attachment_ids": list(dict.fromkeys(str(file_id) for file_id in attachment_ids if str(file_id).strip())),
+        "retry_failure_id": str(value.get("retry_failure_id") or "").strip(),
+    }
+
+
+def validate_email_attachments(attachments: list[Dict[str, Any]]) -> None:
+    total = sum(max(0, int(row.get("size") or 0)) for row in attachments)
+    if total > MAX_GMAIL_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"email attachments exceed the {MAX_GMAIL_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+        )
+
+
 def gmail_query_from_prompt(prompt: str) -> str:
     value = str(prompt or "").lower()
     if re.search(r"\b(?:unread|new)\b", value):
@@ -267,6 +390,23 @@ def gmail_query_from_prompt(prompt: str) -> str:
     if re.search(r"\b(?:sent mail|sent email|sent messages?)\b", value):
         return "in:sent"
     return "in:inbox"
+
+
+def gmail_result_limit(prompt: str) -> int:
+    value = str(prompt or "").lower()
+    if re.search(r"\b(?:newest|latest|most recent|last received)\b", value):
+        requested = re.search(r"\b(?:newest|latest|last)\s+(\d{1,2})\s+(?:emails?|messages?)\b", value)
+        return max(1, min(int(requested.group(1)), 10)) if requested else 1
+    requested = re.search(r"\b(?:show|check|read|get)\s+(?:me\s+)?(?:the\s+)?(?:last\s+)?(\d{1,2})\s+(?:emails?|messages?)\b", value)
+    return max(1, min(int(requested.group(1)), 10)) if requested else 5
+
+
+def gmail_message_metadata(messages: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    fields = ("id", "threadId", "from", "subject", "date", "snippet")
+    return [
+        {key: str(message.get(key) or "")[:1000] for key in fields}
+        for message in messages[:10]
+    ]
 
 
 def wants_gmail_route(prompt: str, workspace_id: str, session_id: str) -> bool:
@@ -302,6 +442,9 @@ def gmail_chat_response(
     session_id: str,
     user_message: Dict[str, Any],
     prompt: str,
+    *,
+    draft_override: Optional[Dict[str, Any]] = None,
+    attachments: Optional[list[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if GMAIL_CONFIRM_RE.search(str(prompt or "")):
         pending = STORE.pending_email(workspace_id, session_id)
@@ -315,13 +458,32 @@ def gmail_chat_response(
                 "gmail_send_unavailable",
                 response_provider="veridex_gmail_router",
             )
+        pending_ids = [str(file_id) for file_id in pending.get("attachment_ids", []) if str(file_id).strip()]
+        pending_attachments = STORE.resolve_files(workspace_id, session_id, pending_ids)
+        if len(pending_attachments) != len(set(pending_ids)):
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                "Gmail send could not be completed because an attached file is no longer available. Edit the draft and attach it again.",
+                "Nancy",
+                "gmail_unavailable",
+                response_provider="veridex_gmail_router",
+            )
         try:
-            result = GMAIL.send(
+            validate_email_attachments(pending_attachments)
+            send_args = (
                 [str(value) for value in pending.get("to", [])],
                 str(pending.get("subject") or ""),
                 str(pending.get("body") or ""),
             )
-        except GmailGatewayError as exc:
+            send_context = {"workspace_id": workspace_id, "session_id": session_id}
+            result = (
+                GMAIL.send(*send_args, pending_attachments, context=send_context)
+                if pending_attachments
+                else GMAIL.send(*send_args, context=send_context)
+            )
+        except (GmailGatewayError, ValueError) as exc:
             return local_chat_response(
                 workspace_id,
                 session_id,
@@ -331,24 +493,44 @@ def gmail_chat_response(
                 "gmail_unavailable",
                 response_provider="veridex_gmail_router",
             )
+        retry_failure_id = str(pending.get("retry_failure_id") or "").strip()
+        if retry_failure_id:
+            GMAIL.resolve_delivery_failure(retry_failure_id)
         STORE.clear_pending_email(workspace_id, session_id)
         return local_chat_response(
             workspace_id,
             session_id,
             user_message,
-            f"Email sent to {', '.join(str(value) for value in pending.get('to', []))}.",
+            (
+                f"Gmail accepted the email for delivery to {', '.join(str(value) for value in pending.get('to', []))}."
+                + (f" {result['journal_warning']}" if result.get("journal_warning") else "")
+            ),
             "Nancy",
             "gmail_send",
             response_provider="veridex_gmail_router",
             message_metadata={
                 "message_kind": "gmail_send",
-                "gmail": {"provider": "gmail_api", "status": "sent", "message_id": result.get("id")},
+                "gmail": {
+                    "provider": "gmail_api",
+                    "status": "sent",
+                    "message_id": result.get("id"),
+                    "to": [str(value) for value in pending.get("to", [])],
+                    "subject": str(pending.get("subject") or ""),
+                    "attachments": [public_file(row) for row in pending_attachments],
+                },
             },
         )
 
-    draft = parse_email_send_request(prompt)
+    draft = dict(draft_override or parse_email_send_request(prompt))
     if draft:
+        resolved_attachments = list(attachments or [])
+        validate_email_attachments(resolved_attachments)
+        draft["attachment_ids"] = [str(row.get("file_id") or "") for row in resolved_attachments]
+        draft["attachments"] = [public_file(row) for row in resolved_attachments]
         STORE.set_pending_email(workspace_id, session_id, draft)
+        attachment_text = ""
+        if draft["attachments"]:
+            attachment_text = "\nAttachments: " + ", ".join(str(row.get("name") or "file") for row in draft["attachments"])
         return local_chat_response(
             workspace_id,
             session_id,
@@ -357,18 +539,23 @@ def gmail_chat_response(
                 "Review and confirm before Nancy sends this email.\n"
                 f"To: {', '.join(draft['to'])}\n"
                 f"Subject: {draft['subject']}\n"
-                f"Body: {draft['body']}\n\n"
+                f"Body: {draft['body']}"
+                f"{attachment_text}\n\n"
                 "Reply `confirm send` to send it."
             ),
             "Nancy",
             "gmail_send_confirmation",
             response_provider="veridex_gmail_router",
-            message_metadata={"message_kind": "gmail_send_confirmation"},
+            message_metadata={
+                "message_kind": "gmail_send_confirmation",
+                "gmail": {"provider": "gmail_api", "status": "pending_confirmation", "draft": draft},
+            },
         )
 
     query = gmail_query_from_prompt(prompt)
+    result_limit = gmail_result_limit(prompt)
     try:
-        messages = GMAIL.search(query, max_results=10)
+        messages = GMAIL.search(query, max_results=result_limit)
     except GmailGatewayError as exc:
         return local_chat_response(
             workspace_id,
@@ -389,7 +576,13 @@ def gmail_chat_response(
         response_provider="veridex_gmail_router",
         message_metadata={
             "message_kind": "gmail_search",
-            "gmail": {"provider": "gmail_api", "query": query, "result_count": len(messages)},
+            "gmail": {
+                "provider": "gmail_api",
+                "query": query,
+                "result_count": len(messages),
+                "requested_limit": result_limit,
+                "messages": gmail_message_metadata(messages),
+            },
         },
     )
 
@@ -644,13 +837,28 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("session_id is required")
     session = STORE.find_session(session_id)
     workspace_id = workspace_id or str(session["workspace_id"])
-    attachment_ids = payload.get("attachment_ids") if isinstance(payload.get("attachment_ids"), list) else []
+    structured_email_draft = normalize_email_draft(payload.get("email_draft"))
+    attachment_ids = (
+        structured_email_draft.get("attachment_ids", [])
+        if structured_email_draft
+        else payload.get("attachment_ids") if isinstance(payload.get("attachment_ids"), list) else []
+    )
     attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
-    if not text and not attachments:
+    if len(attachments) != len(set(str(file_id) for file_id in attachment_ids)):
+        raise ValueError("one or more attached files are unavailable in this session")
+    if structured_email_draft:
+        validate_email_attachments(attachments)
+    if not text and not attachments and not structured_email_draft:
         raise ValueError("text or an attached file is required")
-    user_prompt = text or "Review the attached file or files and summarize what is important."
+    user_prompt = text or (
+        f"Nancy, compose email to {', '.join(structured_email_draft['to'])}"
+        if structured_email_draft
+        else "Review the attached file or files and summarize what is important."
+    )
     active_room = str(session.get("active_room") or "lobby")
     active_persona = str(session.get("active_persona") or "Receptionist")
+    if structured_email_draft and (active_room != "my_office" or active_persona != "Nancy"):
+        raise ValueError("structured email drafts are available only with Nancy in My Office")
     room = room_by_id(active_room) or room_by_id("lobby")
     room_title = str(room["title"] if room else "Lobby")
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
@@ -813,8 +1021,25 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             attachments=public_attachments,
             governance=governance_status(workspace_id, session_id),
         )
-    if not attachments and wants_gmail_route(governed_prompt, workspace_id, session_id):
-        return gmail_chat_response(workspace_id, session_id, user_message, governed_prompt)
+    if structured_email_draft:
+        return gmail_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            governed_prompt,
+            draft_override=structured_email_draft,
+            attachments=attachments,
+        )
+    if wants_gmail_route(governed_prompt, workspace_id, session_id) and (
+        not attachments or bool(parse_email_send_request(governed_prompt))
+    ):
+        return gmail_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            governed_prompt,
+            attachments=attachments,
+        )
     task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
     explicit_google_search = wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous)
     if explicit_google_search:
@@ -1112,9 +1337,13 @@ TOOLS = [
     {"name": "office.transcript_get", "description": "Read a session transcript."},
     {"name": "office.room_list", "description": "List available governed rooms and personas."},
     {"name": "office.room_set", "description": "Explicitly change the active room for one session."},
-    {"name": "office.gmail_status", "description": "Check whether the reused Office-App Gmail integration is connected."},
+    {"name": "office.gmail_status", "description": "Check whether Veridex's local Gmail integration is connected."},
     {"name": "office.gmail_search", "description": "Search Gmail metadata using the connected veridexcorp@gmail.com account."},
-    {"name": "office.gmail_send", "description": "Send Gmail only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.gmail_send", "description": "Send Gmail, including session attachments when provided, only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.contact_list", "description": "List or search Nancy's local Gmail address book."},
+    {"name": "office.contact_save", "description": "Create or update one local address-book contact."},
+    {"name": "office.contact_sync", "description": "Import recipients from the 500 most recent Sent messages."},
+    {"name": "office.gmail_delivery_check", "description": "Check returned Gmail delivery failures and create Nancy alerts."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
@@ -1204,6 +1433,15 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+            elif parsed.path == "/api/contacts":
+                self._json({
+                    "contacts": GMAIL.list_contacts(str(query.get("q", [""])[0])),
+                    "sync": GMAIL.contact_sync_status(),
+                })
+            elif parsed.path == "/api/mail/alerts":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                self._json({"alerts": delivery_alerts(workspace_id, session_id)})
             elif parsed.path == "/api/files/content":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
@@ -1258,7 +1496,29 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"file": saved, "files": STORE.list_files(workspace_id, session_id)}, HTTPStatus.CREATED)
                 return
             payload = self._body()
-            if parsed.path == "/api/workspaces":
+            if parsed.path == "/api/contacts/save":
+                self._json({"contact": GMAIL.save_contact(payload), "contacts": GMAIL.list_contacts()})
+            elif parsed.path == "/api/contacts/sync":
+                self._json(GMAIL.sync_contacts(max_messages=500))
+            elif parsed.path == "/api/mail/check-delivery":
+                self._json(
+                    check_delivery_alerts(
+                        str(payload.get("workspace_id") or ""),
+                        str(payload.get("session_id") or ""),
+                    )
+                )
+            elif parsed.path == "/api/mail/alerts/resolve":
+                GMAIL.resolve_delivery_failure(str(payload.get("failure_id") or ""))
+                self._json(
+                    {
+                        "ok": True,
+                        "alerts": delivery_alerts(
+                            str(payload.get("workspace_id") or ""),
+                            str(payload.get("session_id") or ""),
+                        ),
+                    }
+                )
+            elif parsed.path == "/api/workspaces":
                 workspace = STORE.create_workspace(str(payload.get("label") or "Workspace"))
                 session = STORE.create_session(workspace["workspace_id"], "New session")
                 self._json(state_response(STORE.bootstrap(workspace["workspace_id"], session["session_id"])), HTTPStatus.CREATED)
@@ -1333,20 +1593,55 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 "query": str(args.get("query") or "in:inbox"),
                 "messages": GMAIL.search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
             }
+        elif tool == "office.contact_list":
+            value = {"contacts": GMAIL.list_contacts(str(args.get("query") or ""))}
+        elif tool == "office.contact_save":
+            value = {"contact": GMAIL.save_contact(args)}
+        elif tool == "office.contact_sync":
+            value = GMAIL.sync_contacts(max_messages=500)
+        elif tool == "office.gmail_delivery_check":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            value = check_delivery_alerts(str(session.get("workspace_id") or ""), session_id)
         elif tool == "office.gmail_send":
             recipients = EMAIL_ADDRESS_RE.findall(" ".join(str(value) for value in args.get("to", []))) if isinstance(args.get("to"), list) else EMAIL_ADDRESS_RE.findall(str(args.get("to") or ""))
             subject = str(args.get("subject") or "")
             body = str(args.get("body") or "")
+            attachment_ids = args.get("attachment_ids") if isinstance(args.get("attachment_ids"), list) else []
+            resolved_attachments: list[Dict[str, Any]] = []
+            if attachment_ids:
+                session_id = str(args.get("session_id") or "")
+                session = STORE.find_session(session_id)
+                workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+                resolved_attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
+                if len(resolved_attachments) != len(set(str(file_id) for file_id in attachment_ids)):
+                    raise ValueError("one or more email attachments are unavailable in this session")
+                validate_email_attachments(resolved_attachments)
             if not args.get("confirm"):
                 value = {
                     "status": "confirmation_required",
                     "to": recipients,
                     "subject": subject,
                     "body": body,
+                    "attachments": [public_file(row) for row in resolved_attachments],
                 }
             else:
-                sent = GMAIL.send(recipients, subject, body)
-                value = {"status": "sent", "to": recipients, "subject": subject, "message_id": sent.get("id")}
+                send_context = {
+                    "workspace_id": str(args.get("workspace_id") or ""),
+                    "session_id": str(args.get("session_id") or ""),
+                }
+                sent = (
+                    GMAIL.send(recipients, subject, body, resolved_attachments, context=send_context)
+                    if resolved_attachments
+                    else GMAIL.send(recipients, subject, body, context=send_context)
+                )
+                value = {
+                    "status": "sent",
+                    "to": recipients,
+                    "subject": subject,
+                    "message_id": sent.get("id"),
+                    "attachments": [public_file(row) for row in resolved_attachments],
+                }
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None

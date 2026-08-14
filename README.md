@@ -34,7 +34,21 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 .\veridex.ps1 status
 .\veridex.ps1 restart
 .\veridex.ps1 stop
+.\veridex.ps1 gmail-connect
+.\veridex.ps1 gmail-status
 ```
+
+## Voice controls
+
+Every assistant reply has a **Read** button that toggles to **Stop** while the
+browser reads it aloud. Select **Read automatically** to speak only new replies;
+the checkbox preference is remembered in that browser without replaying old
+transcript history after reload.
+
+The microphone button beside the message box dictates into the current draft.
+Chrome or Edge will request microphone permission the first time it is used.
+Veridex stores only the resulting text in the transcript and does not save the
+microphone audio.
 
 To let Veridex use Codex's normal local shell tools across the computer, start
 it explicitly in full-access mode:
@@ -124,6 +138,23 @@ ChatGPT product memory.
 
 See [DEVELOPMENT_MODEL_POLICY.md](DEVELOPMENT_MODEL_POLICY.md) for the separate
 personal model-switch protocol used while coding Veridex in this Codex terminal.
+
+## Gmail for Nancy
+
+Nancy uses a Veridex-owned Gmail OAuth connection and encrypted token store
+beneath `data/integrations/`. Veridex does not read another application's token
+database at runtime. Configure the OAuth client values in the ignored
+`.env.local`, then connect the account once:
+
+```powershell
+.\veridex.ps1 gmail-connect
+.\veridex.ps1 restart
+.\veridex.ps1 gmail-status
+```
+
+The browser authorization must use the account configured by
+`VERIDEX_GOOGLE_ACCOUNT`. Passwords and OAuth tokens are never written to the
+repository or returned in chat responses.
 
 ## Rooms
 

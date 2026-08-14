@@ -44,7 +44,10 @@
         </div>
       </aside>
 
-      <main class="chat-panel">
+      <main id="chat-panel" class="chat-panel">
+        <div id="chat-drop-overlay" class="chat-drop-overlay" hidden aria-hidden="true">
+          <div><strong>Drop files to attach</strong><span>They will be included with your next message.</span></div>
+        </div>
         <header class="chat-header">
           <div>
             <div class="eyebrow" id="workspace-name">Workspace</div>
@@ -77,16 +80,84 @@
 
         <footer class="composer-wrap">
           <div id="file-tray" class="file-tray" aria-label="Session files"></div>
+          <section id="delivery-alerts" class="delivery-alerts" aria-label="Email delivery alerts" aria-live="polite" hidden></section>
+          <div id="email-actions" class="email-actions" hidden>
+            <span><strong>Nancy Mail</strong><small>Read, reply, and send through your connected Gmail</small></span>
+            <div class="email-action-buttons">
+              <button id="address-book" type="button">Address book</button>
+              <button id="compose-email" type="button">Compose email</button>
+            </div>
+          </div>
           <form id="composer" class="composer">
             <input id="file-input" type="file" multiple hidden />
             <button id="attach-button" class="attach-button" type="button" title="Attach files" aria-label="Attach files">+</button>
-            <textarea id="message-input" rows="1" placeholder="Message Veridex…" aria-label="Message Veridex"></textarea>
+            <button id="voice-input" class="voice-input" type="button" title="Dictate a message" aria-label="Dictate a message" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 0 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-6-4a1 1 0 0 1 2 0v.5a4 4 0 0 0 8 0v-.5a1 1 0 1 1 2 0v.5a6 6 0 0 1-5 5.92V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A6 6 0 0 1 6 12v-.5Z"/></svg>
+            </button>
+            <div class="message-input-stack">
+              <textarea id="message-input" rows="1" placeholder="Message Veridex…" aria-label="Message Veridex"></textarea>
+              <label class="auto-read-control" title="Read new assistant replies aloud">
+                <input id="auto-read" type="checkbox" />
+                <span>Read automatically</span>
+              </label>
+            </div>
             <button id="send-button" type="button" aria-label="Send message" title="Send message">Send</button>
           </form>
           <div id="composer-note" class="composer-note">Codex uses your desktop sign-in · no API key · transcripts stay in this repository</div>
         </footer>
       </main>
     </div>
+    <dialog id="email-compose-dialog" class="email-compose-dialog" aria-labelledby="email-compose-title">
+      <form id="email-compose-form" class="email-compose-form">
+        <header>
+          <div><div class="eyebrow">Nancy Mail</div><h2 id="email-compose-title">Compose email</h2></div>
+          <button id="email-compose-close" class="dialog-close" type="button" aria-label="Close email composer">&times;</button>
+        </header>
+        <label class="recipient-field">To<input id="email-to" name="to" type="text" required autocomplete="off" aria-autocomplete="list" aria-controls="email-recipient-suggestions" placeholder="name@example.com" /><div id="email-recipient-suggestions" class="recipient-suggestions" role="listbox" hidden></div></label>
+        <label>Subject<input id="email-subject" name="subject" type="text" required placeholder="What is this about?" /></label>
+        <label>Message<textarea id="email-body" name="body" rows="8" required placeholder="Write your message"></textarea></label>
+        <input id="email-file-input" type="file" multiple hidden />
+        <section id="email-drop-zone" class="email-attachment-picker" aria-label="Email attachments">
+          <div class="email-attachment-heading">
+            <span><strong>Attachments</strong><small>Drop files here or choose them from your computer.</small></span>
+            <button id="email-attach-button" class="secondary-action" type="button">Attach files</button>
+          </div>
+          <div id="email-file-list" class="email-file-list" aria-live="polite"></div>
+        </section>
+        <footer>
+          <span>Nancy will show a final review before sending.</span>
+          <button id="email-compose-cancel" class="secondary-action" type="button">Cancel</button>
+          <button class="primary-action" type="submit">Review with Nancy</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="address-book-dialog" class="address-book-dialog" aria-labelledby="address-book-title">
+      <section class="address-book-shell">
+        <header>
+          <div><div class="eyebrow">Nancy Mail</div><h2 id="address-book-title">Address book</h2></div>
+          <button id="address-book-close" class="dialog-close" type="button" aria-label="Close address book">&times;</button>
+        </header>
+        <div class="address-book-toolbar">
+          <label><span>Search contacts</span><input id="contact-search" type="search" placeholder="Name, email, company, or notes" /></label>
+          <button id="contact-sync" class="secondary-action" type="button">Sync Sent mail</button>
+          <button id="contact-new" class="primary-action" type="button">Add contact</button>
+        </div>
+        <p id="contact-sync-status" class="contact-sync-status" aria-live="polite"></p>
+        <div class="address-book-content">
+          <div id="contact-list" class="contact-list" aria-label="Contacts"></div>
+          <form id="contact-form" class="contact-form" hidden>
+            <input id="contact-id" type="hidden" />
+            <div class="contact-form-heading"><strong id="contact-form-title">Add contact</strong><button id="contact-form-cancel" type="button">Cancel</button></div>
+            <label>Name<input id="contact-name" type="text" maxlength="200" /></label>
+            <label>Email<input id="contact-email" type="email" required /></label>
+            <label>Phone<input id="contact-phone" type="tel" maxlength="100" /></label>
+            <label>Company<input id="contact-company" type="text" maxlength="200" /></label>
+            <label>Notes<textarea id="contact-notes" rows="5" maxlength="4000"></textarea></label>
+            <button class="primary-action" type="submit">Save contact</button>
+          </form>
+        </div>
+      </section>
+    </dialog>
     <aside id="governance-panel" class="governance-panel" hidden aria-label="Navigator governance status">
       <div class="governance-panel-header">
         <div><div class="eyebrow">Always-present authority</div><h2>Navigator governance</h2></div>

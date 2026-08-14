@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("start", "stop", "restart", "status", "google-profile", "google-status")]
+  [ValidateSet("start", "stop", "restart", "status", "google-profile", "google-status", "gmail-connect", "gmail-status")]
   [string]$Action = "start",
   [switch]$NoBrowser,
   [switch]$FullAccess
@@ -119,5 +119,16 @@ switch ($Action) {
     $Node = (Get-Command node -ErrorAction Stop).Source
     $Bridge = Join-Path $RepoRoot "google_chrome_search.js"
     & $Node $Bridge status
+  }
+  "gmail-connect" {
+    $Python = (Get-Command python -ErrorAction Stop).Source
+    & $Python (Join-Path $RepoRoot "gmail_oauth.py")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host "Restart Veridex to load the refreshed Gmail connection."
+  }
+  "gmail-status" {
+    $Python = (Get-Command python -ErrorAction Stop).Source
+    & $Python -c "import json; from gmail_gateway import GmailGateway; print(json.dumps(GmailGateway().connection_status(), indent=2))"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   }
 }

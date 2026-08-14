@@ -231,7 +231,7 @@ class VeridexServerTests(unittest.TestCase):
                     {"workspace_id": workspace_id, "session_id": session_id, "text": "Nance, check my email"}
                 )
 
-            search.assert_called_once_with("in:inbox", max_results=10)
+            search.assert_called_once_with("in:inbox", max_results=5)
             gemini.assert_not_called()
             codex.assert_not_called()
             self.assertEqual(result["provider"], "veridex_gmail_router")
@@ -239,6 +239,36 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(result["message"]["speaker"], "Nancy")
             self.assertIn("Found 1 Gmail message", result["message"]["text"])
             self.assertIn("Project update", result["message"]["text"])
+            self.assertEqual(result["message"]["gmail"]["messages"][0]["id"], "msg_1")
+            self.assertEqual(result["message"]["gmail"]["requested_limit"], 5)
+
+    def test_nancy_newest_email_returns_one_structured_card(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            messages = [{
+                "id": "msg_latest",
+                "threadId": "thread_latest",
+                "from": "Sender <sender@example.com>",
+                "subject": "Newest message",
+                "date": "Fri, 14 Aug 2026 11:00:00 -0700",
+                "snippet": "The latest update",
+            }]
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "search", return_value=messages
+            ) as search:
+                result = veridex_server.chat_response({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "text": "Nancy, what is my newest email?",
+                })
+
+            search.assert_called_once_with("in:inbox", max_results=1)
+            self.assertEqual(result["message"]["gmail"]["requested_limit"], 1)
+            self.assertEqual(len(result["message"]["gmail"]["messages"]), 1)
+            self.assertEqual(result["message"]["gmail"]["messages"][0]["subject"], "Newest message")
 
     def test_nancy_email_send_request_creates_pending_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -265,6 +295,15 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(pending["to"], ["test@example.com"])
             self.assertEqual(pending["subject"], "Hello")
             self.assertEqual(pending["body"], "Checking in")
+            self.assertEqual(result["message"]["gmail"]["status"], "pending_confirmation")
+
+    def test_nancy_structured_compose_request_preserves_multiline_body(self) -> None:
+        draft = veridex_server.parse_email_send_request(
+            "Nancy, compose email to test@example.com\nSubject: Project body review\nBody:\nFirst line\nSecond line"
+        )
+        self.assertEqual(draft["to"], ["test@example.com"])
+        self.assertEqual(draft["subject"], "Project body review")
+        self.assertEqual(draft["body"], "First line\nSecond line")
 
     def test_nancy_confirm_send_uses_pending_email_and_clears_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -284,11 +323,98 @@ class VeridexServerTests(unittest.TestCase):
                     {"workspace_id": workspace_id, "session_id": session_id, "text": "confirm send"}
                 )
 
-            send.assert_called_once_with(["test@example.com"], "Hello", "Checking in")
+            send.assert_called_once_with(
+                ["test@example.com"],
+                "Hello",
+                "Checking in",
+                context={"workspace_id": workspace_id, "session_id": session_id},
+            )
             self.assertEqual(result["provider"], "veridex_gmail_router")
             self.assertEqual(result["task_type"], "gmail_send")
-            self.assertIn("sent", result["message"]["text"].lower())
+            self.assertIn("accepted", result["message"]["text"].lower())
             self.assertEqual(store.pending_email(workspace_id, session_id), {})
+
+    def test_nancy_structured_email_draft_preserves_and_sends_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "my_office")
+            attached = store.save_file(
+                workspace_id, session_id, "report.txt", b"attachment body", "text/plain"
+            )
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "send"
+            ) as send:
+                review = veridex_server.chat_response({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "text": "Nancy, compose the attached email",
+                    "email_draft": {
+                        "to": "test@example.com",
+                        "subject": "Report",
+                        "body": "Please review.",
+                        "attachment_ids": [attached["file_id"]],
+                    },
+                })
+
+            send.assert_not_called()
+            draft = review["message"]["gmail"]["draft"]
+            self.assertEqual(draft["attachments"][0]["name"], "report.txt")
+            self.assertEqual(store.pending_email(workspace_id, session_id)["attachment_ids"], [attached["file_id"]])
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "send", return_value={"id": "sent_attachment"}
+            ) as send:
+                result = veridex_server.chat_response({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "text": "confirm send",
+                })
+
+            send.assert_called_once()
+            self.assertEqual(send.call_args.args[3][0]["file_id"], attached["file_id"])
+            self.assertEqual(send.call_args.kwargs["context"], {"workspace_id": workspace_id, "session_id": session_id})
+            self.assertEqual(result["message"]["gmail"]["attachments"][0]["name"], "report.txt")
+            self.assertEqual(store.pending_email(workspace_id, session_id), {})
+
+    def test_nancy_delivery_failure_is_persisted_once_and_can_prefill_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "my_office")
+            failure = {
+                "failure_id": "failure_1",
+                "recipient": "mistyped@example.com",
+                "subject": "Hello",
+                "diagnostic": "550 5.1.1 User unknown",
+                "status_code": "5.1.1",
+                "detected_at": "2026-08-14T12:00:00Z",
+                "notified_session_id": "",
+                "resolved_at": "",
+                "to": ["mistyped@example.com"],
+                "body": "Checking in",
+                "attachments": [],
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server.GMAIL, "check_delivery_failures", return_value={"new_failures": [failure]}
+            ), patch.object(
+                veridex_server.GMAIL, "list_delivery_failures", return_value=[failure]
+            ), patch.object(veridex_server.GMAIL, "mark_failure_notified") as notified:
+                result = veridex_server.check_delivery_alerts(workspace_id, session_id)
+
+            notified.assert_called_once_with("failure_1", session_id)
+            self.assertEqual(result["new_failure_count"], 1)
+            self.assertEqual(result["alerts"][0]["retry"]["body"], "Checking in")
+            self.assertEqual(result["alerts"][0]["retry"]["failure_id"], "failure_1")
+            messages = store.load_messages(workspace_id, session_id)
+            self.assertEqual(messages[-1]["message_kind"], "gmail_delivery_failure")
+            self.assertIn("mistyped@example.com", messages[-1]["text"])
 
     def test_explicit_room_navigation_changes_state_without_calling_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
