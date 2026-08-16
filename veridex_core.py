@@ -20,6 +20,7 @@ DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
 MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
 GOVERNANCE_REGISTRY_PATH = Path(__file__).resolve().parent / "governance" / "navigator_governance_v1.0.0.json"
 GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+GENERATED_DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 
 
 def utc_now() -> str:
@@ -56,6 +57,8 @@ def classify_task(text: str) -> str:
     value = " ".join(str(text or "").lower().split())
     if not value:
         return "conversation"
+    if re.search(r"\b(resume|curriculum vitae|cover letter|linkedin (?:headline|about)|job application)\b", value):
+        return "resume_generation"
     if re.search(r"\b(legal|law|medical|diagnos|financial|investment|security audit|vulnerabilit)\w*\b", value):
         return "high_stakes"
     if re.search(
@@ -468,14 +471,14 @@ class VeridexStore:
                 raise ValueError("filename is required")
             file_id = _identifier("file")
             stored_name = f"{file_id}__{safe_name}"
-            file_kind = str(kind or ("generated_image" if str(source or "") == "generated" else "upload"))
-            file_scope = str(scope or ("room" if file_kind == "generated_image" else "session"))
+            file_kind = str(kind or ("generated_file" if str(source or "") == "generated" else "upload"))
+            file_scope = str(scope or ("room" if file_kind.startswith("generated_") else "session"))
             file_scope_ref = str(
                 scope_ref
                 or (session.get("active_room") if file_scope == "room" else session_id)
                 or ("lobby" if file_scope == "room" else session_id)
             )
-            if file_kind == "generated_image":
+            if file_kind.startswith("generated_"):
                 path = self.generated_files_dir(workspace_id, file_scope_ref) / stored_name
             else:
                 path = self.files_dir(workspace_id, session_id) / stored_name
@@ -567,6 +570,37 @@ class VeridexStore:
             return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
         return False
 
+    @classmethod
+    def _valid_generated_file(cls, path: Path) -> bool:
+        """Validate supported generated media and document containers by content."""
+        candidate = Path(path)
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            return False
+        if candidate.suffix.lower() in GENERATED_IMAGE_EXTENSIONS:
+            return cls._valid_generated_image(candidate)
+        suffix = candidate.suffix.lower()
+        if suffix not in GENERATED_DOCUMENT_EXTENSIONS:
+            return False
+        with candidate.open("rb") as stream:
+            header = stream.read(8)
+        if suffix == ".pdf":
+            return header.startswith(b"%PDF-")
+        if suffix == ".docx":
+            if not header.startswith(b"PK"):
+                return False
+            try:
+                import zipfile
+                with zipfile.ZipFile(candidate) as archive:
+                    names = set(archive.namelist())
+                return "[Content_Types].xml" in names and "word/document.xml" in names
+            except (OSError, zipfile.BadZipFile):
+                return False
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return False
+        return bool(text.strip())
+
     def import_generated_file(
         self,
         workspace_id: str,
@@ -575,12 +609,13 @@ class VeridexStore:
         display_name: str = "",
     ) -> Dict[str, Any]:
         candidate = Path(source_path).resolve()
-        if not self._valid_generated_image(candidate):
-            raise ValueError(f"Generated image is missing, empty, unsupported, or invalid: {candidate}")
+        if not self._valid_generated_file(candidate):
+            raise ValueError(f"Generated file is missing, empty, unsupported, or invalid: {candidate}")
         content = candidate.read_bytes()
         sha256 = hashlib.sha256(content).hexdigest()
+        file_kind = "generated_image" if candidate.suffix.lower() in GENERATED_IMAGE_EXTENSIONS else "generated_document"
         for existing in self.list_files(workspace_id, session_id):
-            if str(existing.get("sha256") or "") == sha256 and str(existing.get("kind") or "") == "generated_image":
+            if str(existing.get("sha256") or "") == sha256 and str(existing.get("kind") or "") == file_kind:
                 return existing
         session = self.find_session(session_id)
         active_room = str(session.get("active_room") or "lobby")
@@ -593,7 +628,7 @@ class VeridexStore:
             mimetypes.guess_type(name)[0] or "application/octet-stream",
             source="generated",
             source_path=str(candidate),
-            kind="generated_image",
+            kind=file_kind,
             scope="room",
             scope_ref=active_room,
             description=f"Generated in {active_room}. Source staging file: {candidate}",
@@ -617,7 +652,7 @@ class VeridexStore:
             return []
         imported: List[Dict[str, Any]] = []
         for candidate in sorted(candidate_root.rglob("*")):
-            if not self._valid_generated_image(candidate):
+            if not self._valid_generated_file(candidate):
                 continue
             imported.append(self.import_generated_file(workspace_id, session_id, candidate))
         return imported
@@ -640,7 +675,7 @@ class VeridexStore:
             file_id = str(row.get("file_id") or "")
             if not file_id or file_id in known:
                 continue
-            if str(row.get("kind") or "") != "generated_image":
+            if str(row.get("kind") or "") not in {"generated_image", "generated_document"}:
                 continue
             if str(row.get("source") or "") != "generated":
                 continue
@@ -649,7 +684,7 @@ class VeridexStore:
             if str(row.get("uploaded_by_session_id") or "") != session_id:
                 continue
             path = Path(str(row.get("path") or ""))
-            if not self._valid_generated_image(path):
+            if not self._valid_generated_file(path):
                 continue
             content = path.read_bytes()
             sha256 = hashlib.sha256(content).hexdigest()
@@ -666,7 +701,7 @@ class VeridexStore:
                 continue
             if str(ledger.get("path") or "") != str(path.resolve()):
                 continue
-            if str(ledger.get("kind") or "") != "generated_image":
+            if str(ledger.get("kind") or "") not in {"generated_image", "generated_document"}:
                 continue
             if str(ledger.get("scope") or "") != "room" or str(ledger.get("scope_ref") or "") != str(room_id or ""):
                 continue

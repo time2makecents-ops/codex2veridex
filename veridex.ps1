@@ -65,7 +65,11 @@ function Start-Veridex {
     }
   }
   New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
-  $Python = (Get-Command python -ErrorAction Stop).Source
+  $EnvironmentPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+  if (-not (Test-Path -LiteralPath $EnvironmentPython)) {
+    Write-Warning "Resume Studio document support is not installed. Run .\scripts\setup.ps1 for DOCX and PDF exports."
+  }
+  $Python = if (Test-Path -LiteralPath $EnvironmentPython) { $EnvironmentPython } else { (Get-Command python -ErrorAction Stop).Source }
   $Server = Join-Path $RepoRoot "veridex_server.py"
   $PreviousAccessMode = $env:VERIDEX_CODEX_ACCESS_MODE
   $env:VERIDEX_CODEX_ACCESS_MODE = $RequestedAccessMode

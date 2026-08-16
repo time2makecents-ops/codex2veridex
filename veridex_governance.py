@@ -46,9 +46,9 @@ ACTION_CLAIM = re.compile(
 )
 FILE_CREATION_CLAIM = re.compile(
     r"(?:^|[.!?]\s+)(?:successfully\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
-    r"\b(?:file|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif)\b|"
+    r"\b(?:file|document|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|txt)\b|"
     r"\b(?:i|we)\s+(?:have\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
-    r"\b(?:file|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif)\b|"
+    r"\b(?:file|document|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|txt)\b|"
     r"\b(?:image|illustration|picture|photo|graphic|artwork|bitmap|file)\s+(?:was|has been)\s+"
     r"(?:created|generated|rendered|exported|saved|produced)\b",
     re.IGNORECASE,
@@ -63,6 +63,13 @@ MEDIA_CREATION_REQUEST = re.compile(
 MEDIA_FILE_REFERENCE = re.compile(r"\.(?:png|jpe?g|webp|gif)\b", re.IGNORECASE)
 MEDIA_TRANSFORM_INTENT = re.compile(
     r"\b(?:take|edit|change|modify|alter|transform|update|add|remove|replace|crop|resize|enhance|put|place|have|make)\b",
+    re.IGNORECASE,
+)
+DOCUMENT_CREATION_REQUEST = re.compile(
+    r"\b(?:create|generate|make|render|produce|export|save|write)\b.{0,120}"
+    r"\b(?:document|resume|cover letter|file|pdf|docx?|word document|text file)\b|"
+    r"\b(?:document|resume|cover letter|pdf|docx?|word document|text file)\b.{0,120}"
+    r"\b(?:create|generate|make|render|produce|export|save|write)\b",
     re.IGNORECASE,
 )
 MONTHS = {
@@ -265,10 +272,9 @@ class GovernanceRegistry:
     @staticmethod
     def requires_file_artifact(request_text: str, task_type: str) -> bool:
         text = str(request_text or "")
-        return str(task_type or "") == "media" and bool(
-            MEDIA_CREATION_REQUEST.search(text)
-            or (MEDIA_FILE_REFERENCE.search(text) and MEDIA_TRANSFORM_INTENT.search(text))
-        )
+        if str(task_type or "") == "media":
+            return bool(MEDIA_CREATION_REQUEST.search(text) or (MEDIA_FILE_REFERENCE.search(text) and MEDIA_TRANSFORM_INTENT.search(text)))
+        return bool(DOCUMENT_CREATION_REQUEST.search(text))
 
     def postflight(
         self,

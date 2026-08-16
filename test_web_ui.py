@@ -123,6 +123,24 @@ class WebUiTests(unittest.TestCase):
         self.assertIn(".slice(0, 4)", script)
         self.assertIn(".room-file-document-preview", styles)
 
+    def test_hr_resume_studio_guided_workflow_is_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="resume-actions"', html)
+        self.assertIn('id="resume-studio-dialog"', html)
+        self.assertIn('data-resume-step="profile"', html)
+        self.assertIn('id="resume-profile-save"', html)
+        self.assertIn('id="resume-export"', html)
+        self.assertIn("function openResumeStudio", script)
+        self.assertIn('api("/api/resume/draft"', script)
+        self.assertIn('api("/api/resume/export"', script)
+        self.assertIn("function resolveResumeClaim", script)
+        self.assertIn("Review with Nancy", script)
+        self.assertIn(".resume-studio-dialog", styles)
+        self.assertIn(".resume-draft-layout", styles)
+
 
 if __name__ == "__main__":
     unittest.main()

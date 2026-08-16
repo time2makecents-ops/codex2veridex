@@ -1,0 +1,16 @@
+{
+  "id": "technical_projects",
+  "name": "Technical + Projects",
+  "description": "Prioritizes technical skills, systems, and project evidence while staying ATS-safe.",
+  "best_for": "Engineering, IT, data, and technical roles",
+  "resume_types": ["private"],
+  "accent": "273A64",
+  "body_font": "Arial",
+  "body_size": 9.2,
+  "heading_size": 10.4,
+  "name_size": 17,
+  "margin_top": 0.52,
+  "margin_bottom": 0.52,
+  "margin_left": 0.58,
+  "margin_right": 0.58
+}

@@ -1,0 +1,16 @@
+{
+  "id": "early_career",
+  "name": "Early Career",
+  "description": "Balances education, projects, volunteering, and transferable experience.",
+  "best_for": "Students, graduates, and career starters",
+  "resume_types": ["private"],
+  "accent": "346247",
+  "body_font": "Arial",
+  "body_size": 9.6,
+  "heading_size": 10.6,
+  "name_size": 17,
+  "margin_top": 0.62,
+  "margin_bottom": 0.62,
+  "margin_left": 0.68,
+  "margin_right": 0.68
+}

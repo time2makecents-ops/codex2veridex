@@ -21,6 +21,8 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertEqual((planning.model, planning.reasoning_effort), ("gpt-5.6-sol", "high"))
         deep_search = codex_gateway.select_model("search_deep")
         self.assertEqual((deep_search.model, deep_search.reasoning_effort), ("gpt-5.6-sol", "high"))
+        resume = codex_gateway.select_model("resume_generation")
+        self.assertEqual((resume.model, resume.reasoning_effort), ("gpt-5.6-sol", "high"))
 
     def test_selects_lower_cost_plan_models_for_general_and_simple_chat(self) -> None:
         conversation = codex_gateway.select_model("conversation")

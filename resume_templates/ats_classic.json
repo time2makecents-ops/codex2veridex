@@ -1,0 +1,16 @@
+{
+  "id": "ats_classic",
+  "name": "ATS Classic",
+  "description": "A crisp single-column layout for broad private-sector use.",
+  "best_for": "Most applications and career levels",
+  "resume_types": ["private"],
+  "accent": "1C4D36",
+  "body_font": "Arial",
+  "body_size": 9.5,
+  "heading_size": 10.5,
+  "name_size": 17,
+  "margin_top": 0.55,
+  "margin_bottom": 0.55,
+  "margin_left": 0.62,
+  "margin_right": 0.62
+}

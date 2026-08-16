@@ -50,6 +50,20 @@ const state = {
   deliveryErrorShown: false,
   recipientSuggestionIndex: -1,
   emailRetryFailureId: "",
+  resume: {
+    loaded: false,
+    loading: false,
+    busy: false,
+    step: "profile",
+    profile: null,
+    templates: [],
+    projects: [],
+    draft: null,
+    review: null,
+    analysis: null,
+    currentProjectId: "",
+    route: null,
+  },
 };
 
 const el = (id) => document.getElementById(id);
@@ -106,6 +120,11 @@ function applyState(value, preserveRoute = false) {
     state.roomFiles = [];
     state.roomFilesRoomId = "";
     state.selectedRoomFileId = "";
+    state.resume.loaded = false;
+    state.resume.profile = null;
+    state.resume.projects = [];
+    state.resume.draft = null;
+    state.resume.review = null;
   }
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
@@ -1296,6 +1315,553 @@ function closeRoomFileLibrary() {
   if (dialog.open) dialog.close();
 }
 
+function setResumeStatus(text) {
+  el("resume-studio-status").textContent = text || "";
+}
+
+function splitResumeList(value) {
+  return String(value || "").split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function resumeProfileFromForm() {
+  const prior = state.resume.profile || {};
+  return {
+    ...prior,
+    contact: {
+      name: el("resume-name").value.trim(),
+      email: el("resume-email").value.trim(),
+      phone: el("resume-phone").value.trim(),
+      location: el("resume-location").value.trim(),
+      links: splitResumeList(el("resume-links").value),
+    },
+    target_title: el("resume-target-title").value.trim(),
+    summary: el("resume-summary").value.trim(),
+    skills: splitResumeList(el("resume-skills").value),
+    career_history: el("resume-career-history").value.trim(),
+    education_notes: el("resume-education").value.trim(),
+    federal: {
+      citizenship: el("resume-citizenship").value.trim(),
+      clearance: el("resume-clearance").value.trim(),
+      veterans_preference: el("resume-veterans").value.trim(),
+      special_hiring_authority: el("resume-authority").value.trim(),
+    },
+  };
+}
+
+function fillResumeProfile(profile, { preserveExisting = false } = {}) {
+  const contact = profile?.contact || {};
+  const set = (id, value) => {
+    if (!preserveExisting || !el(id).value.trim()) el(id).value = value || "";
+  };
+  set("resume-name", contact.name);
+  set("resume-email", contact.email);
+  set("resume-phone", contact.phone);
+  set("resume-location", contact.location);
+  set("resume-links", (contact.links || []).join(", "));
+  set("resume-target-title", profile?.target_title);
+  set("resume-summary", profile?.summary);
+  set("resume-skills", (profile?.skills || []).join(", "));
+  set("resume-career-history", profile?.career_history);
+  set("resume-education", profile?.education_notes);
+  set("resume-citizenship", profile?.federal?.citizenship);
+  set("resume-clearance", profile?.federal?.clearance);
+  set("resume-veterans", profile?.federal?.veterans_preference);
+  set("resume-authority", profile?.federal?.special_hiring_authority);
+  el("resume-profile-version").textContent = profile?.saved
+    ? `Saved profile v${profile.profile_version || 1}`
+    : "Not saved";
+}
+
+function renderResumeImportFiles() {
+  const select = el("resume-import-file");
+  const selected = select.value;
+  select.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose PDF, DOCX, or text";
+  select.append(placeholder);
+  state.files.filter((file) => /\.(pdf|docx|txt|md)$/i.test(file.name || "")).forEach((file) => {
+    const option = document.createElement("option");
+    option.value = file.file_id;
+    option.textContent = `${file.name} · Artifact #${file.artifact_number || "?"}`;
+    select.append(option);
+  });
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+function renderResumeTemplates() {
+  const select = el("resume-template");
+  const selected = select.value;
+  const type = el("resume-type").value;
+  select.replaceChildren();
+  state.resume.templates.filter((template) => (template.resume_types || []).includes(type)).forEach((template) => {
+    const option = document.createElement("option");
+    option.value = template.id;
+    option.textContent = `${template.name} — ${template.best_for}`;
+    select.append(option);
+  });
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+  else if (type === "federal") select.value = "federal";
+}
+
+function renderResumeProjects() {
+  const select = el("resume-project-select");
+  const selected = state.resume.currentProjectId || select.value;
+  select.replaceChildren();
+  const fresh = document.createElement("option");
+  fresh.value = "";
+  fresh.textContent = "New project";
+  select.append(fresh);
+  state.resume.projects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = project.project_id;
+    option.textContent = project.name || "Resume project";
+    select.append(option);
+  });
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
+}
+
+async function loadResumeProject() {
+  const projectId = el("resume-project-select").value;
+  const project = state.resume.projects.find((row) => row.project_id === projectId);
+  if (!project) {
+    state.resume.currentProjectId = "";
+    state.resume.draft = null;
+    state.resume.review = null;
+    state.resume.analysis = null;
+    ["resume-job-title", "resume-company", "resume-job-description", "resume-job-url", "resume-instructions"].forEach((id) => { el(id).value = ""; });
+    el("resume-type").value = "private";
+    renderResumeTemplates();
+    setResumeStatus("New application project");
+    renderResumeStudio();
+    return;
+  }
+  state.resume.currentProjectId = project.project_id;
+  el("resume-job-title").value = project.target_job?.title || "";
+  el("resume-company").value = project.target_job?.company || "";
+  el("resume-job-description").value = project.target_job?.description || "";
+  el("resume-job-url").value = project.target_job?.url || "";
+  el("resume-type").value = project.resume_type || "private";
+  renderResumeTemplates();
+  el("resume-template").value = project.template_id || (project.resume_type === "federal" ? "federal" : "ats_classic");
+  state.resume.draft = project.draft || null;
+  state.resume.review = project.review || null;
+  if (state.resume.draft) {
+    try { await refreshResumeReview(); }
+    catch (error) { showError(error.message || String(error)); }
+  }
+  setResumeStatus(`Loaded ${project.name || "resume project"}`);
+  setResumeStep(state.resume.draft ? "draft" : "target");
+  renderResumeStudio();
+}
+
+function setResumeStep(step) {
+  state.resume.step = step;
+  document.querySelectorAll("[data-resume-step]").forEach((button) => button.classList.toggle("active", button.dataset.resumeStep === step));
+  document.querySelectorAll(".resume-step").forEach((section) => section.classList.toggle("active", section.id === `resume-step-${step}`));
+}
+
+function renderResumeAnalysis() {
+  const panel = el("resume-analysis");
+  panel.replaceChildren();
+  const heading = document.createElement("strong");
+  heading.textContent = "Match analysis";
+  panel.append(heading);
+  const analysis = state.resume.analysis;
+  if (!analysis) {
+    const copy = document.createElement("p");
+    copy.textContent = "Add a job description, then analyze it against your profile.";
+    panel.append(copy);
+    return;
+  }
+  const facts = document.createElement("dl");
+  const rows = [
+    ["Keyword coverage", `${analysis.coverage_percent || 0}%`],
+    ["Matched", (analysis.matched_keywords || []).join(", ") || "None yet"],
+    ["Missing or unsupported", (analysis.missing_keywords || []).slice(0, 15).join(", ") || "None"],
+  ];
+  rows.forEach(([label, value]) => {
+    const wrapper = document.createElement("div");
+    const term = document.createElement("dt");
+    const detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = value;
+    wrapper.append(term, detail);
+    facts.append(wrapper);
+  });
+  panel.append(facts);
+  const keywords = document.createElement("div");
+  keywords.className = "resume-keywords";
+  (analysis.keywords || []).slice(0, 20).forEach((keyword) => {
+    const chip = document.createElement("span");
+    chip.textContent = keyword;
+    keywords.append(chip);
+  });
+  panel.append(keywords);
+}
+
+function renderResumeReview() {
+  const review = state.resume.review;
+  const preview = el("resume-preview");
+  preview.textContent = review?.ats_preview || "Generate a draft to see the parser-readable resume.";
+  const ready = el("resume-ready-state");
+  ready.textContent = !review ? "Not reviewed" : review.ready_to_export ? "Ready to export" : "Needs review";
+  const list = el("resume-review");
+  list.replaceChildren();
+  if (!review) {
+    const empty = document.createElement("p");
+    empty.textContent = "Generate a draft to run deterministic quality checks.";
+    list.append(empty);
+  } else {
+    const wrapper = document.createElement("div");
+    wrapper.className = "resume-review-list";
+    const warnings = review.warnings || [];
+    if (!warnings.length) {
+      const item = document.createElement("div");
+      item.className = "resume-review-item good";
+      item.innerHTML = '<span class="resume-review-dot"></span><span>Required sections and claim checks passed.</span>';
+      wrapper.append(item);
+    }
+    warnings.forEach((warning) => {
+      const item = document.createElement("div");
+      item.className = `resume-review-item ${warning.severity || "warning"}`;
+      const dot = document.createElement("span");
+      dot.className = "resume-review-dot";
+      const copy = document.createElement("span");
+      copy.textContent = warning.message;
+      item.append(dot, copy);
+      wrapper.append(item);
+    });
+    list.append(wrapper);
+  }
+
+  const claims = state.resume.draft?.unconfirmed_claims || [];
+  el("resume-claim-count").textContent = String(claims.length);
+  const claimList = el("resume-claims");
+  claimList.replaceChildren();
+  if (!claims.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No unconfirmed claims.";
+    claimList.append(empty);
+  } else {
+    const wrapper = document.createElement("div");
+    wrapper.className = "resume-claim-list";
+    claims.forEach((claim) => {
+      const item = document.createElement("div");
+      item.className = "resume-claim";
+      const text = document.createElement("p");
+      text.textContent = claim.text;
+      const reason = document.createElement("small");
+      reason.textContent = claim.reason || "Confirm this is accurate before export.";
+      const actions = document.createElement("div");
+      actions.className = "resume-claim-actions";
+      const confirmed = document.createElement("button");
+      confirmed.type = "button";
+      confirmed.textContent = "I confirm this is true";
+      confirmed.addEventListener("click", () => resolveResumeClaim(claim.claim_id, true));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Remove suggestion";
+      remove.addEventListener("click", () => resolveResumeClaim(claim.claim_id, false));
+      actions.append(confirmed, remove);
+      item.append(text, reason, actions);
+      wrapper.append(item);
+    });
+    claimList.append(wrapper);
+  }
+  renderResumeKit();
+}
+
+function addResumeKitBlock(container, title, copy, actionLabel, action) {
+  if (!copy) return;
+  const block = document.createElement("div");
+  block.className = "resume-kit-block";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const text = document.createElement("p");
+  text.textContent = copy;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = actionLabel || "Copy";
+  button.addEventListener("click", action || (() => navigator.clipboard.writeText(copy)));
+  block.append(heading, text, button);
+  container.append(block);
+}
+
+function renderResumeKit() {
+  const kit = el("resume-kit");
+  kit.replaceChildren();
+  const draft = state.resume.draft;
+  if (!draft) {
+    const empty = document.createElement("p");
+    empty.textContent = "Cover letter, LinkedIn copy, recruiter email, and interview talking points will appear here.";
+    kit.append(empty);
+    return;
+  }
+  addResumeKitBlock(kit, "Cover letter", draft.cover_letter, "Copy", () => navigator.clipboard.writeText(draft.cover_letter || ""));
+  addResumeKitBlock(kit, "LinkedIn", [draft.linkedin_headline, draft.linkedin_about].filter(Boolean).join("\n\n"), "Copy");
+  addResumeKitBlock(kit, "Recruiter email", draft.recruiter_email, "Review with Nancy", () => {
+    openEmailComposer({ subject: draft.recruiter_email_subject || "Introduction", body: draft.recruiter_email || "" });
+  });
+  addResumeKitBlock(kit, "Interview talking points", (draft.interview_talking_points || []).map((item) => `• ${item}`).join("\n"), "Copy");
+  if (!kit.children.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No optional application-kit content was generated.";
+    kit.append(empty);
+  }
+}
+
+function renderResumeStudio() {
+  renderResumeImportFiles();
+  renderResumeTemplates();
+  renderResumeProjects();
+  renderResumeAnalysis();
+  renderResumeReview();
+  const busy = state.resume.busy || state.resume.loading;
+  el("resume-profile-save").disabled = busy;
+  el("resume-import-button").disabled = busy || !el("resume-import-file").value;
+  el("resume-analyze").disabled = busy;
+  el("resume-load-project").disabled = busy;
+  el("resume-fetch-job").disabled = busy || !el("resume-job-url").value.trim();
+  el("resume-generate").disabled = busy;
+  el("resume-save-project").disabled = busy || !state.resume.draft;
+  el("resume-export").disabled = busy || !state.resume.draft || !state.resume.review?.ready_to_export;
+}
+
+async function openResumeStudio() {
+  if (state.session?.active_room !== "hr_department") return;
+  const dialog = el("resume-studio-dialog");
+  if (!dialog.open) dialog.showModal();
+  if (state.resume.loaded || state.resume.loading) {
+    renderResumeStudio();
+    return;
+  }
+  state.resume.loading = true;
+  setResumeStatus("Loading career profile…");
+  try {
+    const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+    const result = await api(`/api/resume?${query}`);
+    state.resume.profile = result.profile;
+    state.resume.templates = result.templates || [];
+    state.resume.projects = result.projects || [];
+    state.resume.loaded = true;
+    fillResumeProfile(result.profile || {});
+    setResumeStatus(result.profile?.saved ? `Career profile v${result.profile.profile_version} loaded` : "Career profile is not saved yet");
+  } catch (error) {
+    showError(error.message || String(error));
+    setResumeStatus("Resume Studio could not load");
+  } finally {
+    state.resume.loading = false;
+    renderResumeStudio();
+  }
+}
+
+function closeResumeStudio() {
+  const dialog = el("resume-studio-dialog");
+  if (dialog.open) dialog.close();
+}
+
+async function saveResumeProfile() {
+  state.resume.busy = true;
+  setResumeStatus("Saving career profile…");
+  renderResumeStudio();
+  try {
+    const profile = resumeProfileFromForm();
+    const result = await api("/api/resume/profile/save", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      profile,
+      expected_version: state.resume.profile?.profile_version || 0,
+      confirm: true,
+    }) });
+    state.resume.profile = result.profile;
+    fillResumeProfile(result.profile);
+    setResumeStatus(`Career profile v${result.profile.profile_version} saved`);
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Profile was not saved"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function importResumeFile() {
+  const fileId = el("resume-import-file").value;
+  if (!fileId) return;
+  state.resume.busy = true;
+  setResumeStatus("Extracting verified resume text…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/import", { method: "POST", body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, file_id: fileId }) });
+    const current = resumeProfileFromForm();
+    const imported = result.profile || {};
+    imported.sources = [...(current.sources || []), ...(imported.sources || [])];
+    fillResumeProfile(imported, { preserveExisting: true });
+    if (result.text && !el("resume-career-history").value.trim()) el("resume-career-history").value = result.text;
+    state.resume.profile = { ...current, sources: imported.sources };
+    setResumeStatus(`Imported ${result.source?.name || "resume"}; review before saving`);
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Import failed"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function analyzeResumeTarget() {
+  state.resume.busy = true;
+  setResumeStatus("Analyzing job requirements…");
+  renderResumeStudio();
+  try {
+    state.resume.analysis = await api("/api/resume/analyze", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      job_description: el("resume-job-description").value,
+      resume_text: [el("resume-summary").value, el("resume-skills").value, el("resume-career-history").value, el("resume-education").value].join("\n"),
+    }) });
+    setResumeStatus("Match analysis complete");
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Analysis failed"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function fetchResumeJobDescription() {
+  const url = el("resume-job-url").value.trim();
+  if (!url) return;
+  state.resume.busy = true;
+  setResumeStatus("Retrieving job description…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/job/fetch", { method: "POST", body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, url }) });
+    el("resume-job-description").value = result.description || "";
+    setResumeStatus("Job description retrieved; review it before generating");
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Paste the job description to continue"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+function resumeTargetJob() {
+  return {
+    title: el("resume-job-title").value.trim(),
+    company: el("resume-company").value.trim(),
+    description: el("resume-job-description").value.trim(),
+    url: el("resume-job-url").value.trim(),
+  };
+}
+
+async function generateResumeDraft() {
+  state.resume.busy = true;
+  setResumeStatus("HR Manager is drafting with high reasoning…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/draft", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      profile: resumeProfileFromForm(),
+      target_job: resumeTargetJob(),
+      resume_type: el("resume-type").value,
+      template_id: el("resume-template").value,
+      instructions: el("resume-instructions").value.trim(),
+    }) });
+    state.resume.draft = result.draft;
+    state.resume.review = result.review;
+    state.resume.route = { model: result.model, reasoning_effort: result.reasoning_effort };
+    setResumeStep("draft");
+    setResumeStatus(`Drafted with ${result.model} · ${result.reasoning_effort} reasoning`);
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Draft generation failed"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function refineResumeDraft() {
+  if (!state.resume.draft) return;
+  const instruction = window.prompt("What should the HR Manager improve?", "Make the language more specific and compelling while preserving every verified fact.")?.trim();
+  if (!instruction) return;
+  state.resume.busy = true;
+  setResumeStatus("HR Manager is refining the draft…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/draft", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      profile: resumeProfileFromForm(),
+      target_job: resumeTargetJob(),
+      resume_type: el("resume-type").value,
+      template_id: el("resume-template").value,
+      current_draft: state.resume.draft,
+      instructions: instruction,
+    }) });
+    state.resume.draft = result.draft;
+    state.resume.review = result.review;
+    setResumeStatus(`Draft refined with ${result.model} · ${result.reasoning_effort} reasoning`);
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Refinement failed"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function refreshResumeReview() {
+  if (!state.resume.draft) return;
+  state.resume.review = await api("/api/resume/review", { method: "POST", body: JSON.stringify({
+    workspace_id: state.workspace.workspace_id,
+    session_id: state.session.session_id,
+    draft: state.resume.draft,
+    job_description: el("resume-job-description").value,
+    resume_type: el("resume-type").value,
+  }) });
+}
+
+async function resolveResumeClaim(claimId, confirmed) {
+  if (!state.resume.draft) return;
+  state.resume.draft.unconfirmed_claims = (state.resume.draft.unconfirmed_claims || []).filter((claim) => claim.claim_id !== claimId);
+  setResumeStatus(confirmed ? "Claim confirmed by you" : "Suggestion removed");
+  try { await refreshResumeReview(); }
+  catch (error) { showError(error.message || String(error)); }
+  renderResumeStudio();
+}
+
+function currentResumeProject() {
+  const target = resumeTargetJob();
+  return {
+    project_id: state.resume.currentProjectId,
+    name: [target.company, target.title].filter(Boolean).join(" — ") || "Resume project",
+    resume_type: el("resume-type").value,
+    template_id: el("resume-template").value,
+    target_job: target,
+    profile_version: state.resume.profile?.profile_version || 0,
+    draft: state.resume.draft,
+    review: state.resume.review,
+  };
+}
+
+async function saveResumeProject() {
+  state.resume.busy = true;
+  setResumeStatus("Saving application project…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/project/save", { method: "POST", body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, project: currentResumeProject(), confirm: true }) });
+    state.resume.currentProjectId = result.project.project_id;
+    state.resume.projects = result.projects || state.resume.projects;
+    setResumeStatus("Application project saved");
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Project was not saved"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+async function exportResumeFiles() {
+  state.resume.busy = true;
+  setResumeStatus("Rendering and verifying DOCX, PDF, and text files…");
+  renderResumeStudio();
+  try {
+    const result = await api("/api/resume/export", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      draft: state.resume.draft,
+      resume_type: el("resume-type").value,
+      template_id: el("resume-template").value,
+      job_description: el("resume-job-description").value,
+      confirm: true,
+    }) });
+    state.resume.review = result.review;
+    await loadState(state.workspace.workspace_id, state.session.session_id, true);
+    setResumeStatus(`${(result.files || []).length} verified files added to HR Department Files`);
+  } catch (error) { showError(error.message || String(error)); setResumeStatus("Export failed"); }
+  finally { state.resume.busy = false; renderResumeStudio(); }
+}
+
+function renderResumeTools() {
+  const isHr = state.session?.active_room === "hr_department";
+  el("resume-actions").hidden = !isHr;
+  el("open-resume-studio").disabled = state.sending || state.uploading || state.switchingRoom;
+  if (!isHr && el("resume-studio-dialog").open) closeResumeStudio();
+}
+
 function renderRoomControl() {
   const selector = el("room-selector");
   selector.replaceChildren();
@@ -1446,6 +2012,7 @@ function render() {
   renderEmailTools();
   renderArtTools();
   renderRoomFileTools();
+  renderResumeTools();
   renderGovernance();
   renderNavigation();
   renderMessages();
@@ -1607,6 +2174,25 @@ el("room-file-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeRoomFileLibrary();
 });
+el("open-resume-studio").addEventListener("click", openResumeStudio);
+el("resume-studio-close").addEventListener("click", closeResumeStudio);
+el("resume-studio-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeResumeStudio();
+});
+document.querySelectorAll("[data-resume-step]").forEach((button) => button.addEventListener("click", () => setResumeStep(button.dataset.resumeStep)));
+el("resume-profile-save").addEventListener("click", saveResumeProfile);
+el("resume-import-file").addEventListener("change", renderResumeStudio);
+el("resume-import-button").addEventListener("click", importResumeFile);
+el("resume-analyze").addEventListener("click", analyzeResumeTarget);
+el("resume-load-project").addEventListener("click", loadResumeProject);
+el("resume-fetch-job").addEventListener("click", fetchResumeJobDescription);
+el("resume-generate").addEventListener("click", generateResumeDraft);
+el("resume-save-project").addEventListener("click", saveResumeProject);
+el("resume-export").addEventListener("click", exportResumeFiles);
+el("resume-type").addEventListener("change", renderResumeTemplates);
+el("resume-job-url").addEventListener("input", renderResumeStudio);
+el("resume-refine-chat").addEventListener("click", refineResumeDraft);
 el("email-compose-close").addEventListener("click", closeEmailComposer);
 el("email-compose-cancel").addEventListener("click", closeEmailComposer);
 el("email-compose-dialog").addEventListener("cancel", (event) => {

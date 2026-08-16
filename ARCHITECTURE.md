@@ -42,7 +42,7 @@ governance boundary without requiring onboarding or account discovery.
 6. The gateway maps that class to a Codex model and reasoning effort.
 7. An ephemeral `codex exec` process receives the governed prompt, room registry,
    recent transcript context, and the launcher's configured access mode.
-8. For generated media, the server validates and imports staged outputs into the
+8. For generated media or documents, the server validates and imports staged outputs into the
    active session, then records path, size, SHA-256, and artifact number.
 9. Navigator postflight rejects unsupported operational, file-creation,
    search-provider, and stale-upcoming claims.
@@ -84,13 +84,21 @@ Browser attachments are saved inside the active session directory, recorded in
 `files.json`, and passed to Codex by verified local path. Image attachments also
 use Codex's native `--image` input flag.
 
-Generated images follow a separate output path. Before invocation, Veridex
+Generated files follow a separate output path. Before invocation, Veridex
 creates `generated_staging/<message-id>/` inside the active session and gives
 that exact directory to Codex. After invocation, Veridex accepts only valid
-PNG, JPEG, GIF, or WebP files from that directory, imports them into canonical
+PNG, JPEG, GIF, WebP, PDF, DOCX, TXT, or Markdown files from that directory, imports them into canonical
 session `files/`, hashes and ledgers them, and exposes them through a
 session/file-ID-validated content endpoint. The transcript stores the canonical
 path rather than relying on Codex's temporary generated-image location.
+
+Resume Studio is a native HR Department subsystem. Workspace career profiles
+and application projects are versioned under `resume_studio/` and persist only
+after explicit UI/tool confirmation. The high-reasoning route returns a
+normalized application document; deterministic renderers create DOCX, PDF, and
+plain-text versions, reopen them, verify readable text and PDF page bounds, and
+then register them as HR room artifacts. Suggested facts remain separate
+unconfirmed claims and block export until the user resolves them.
 
 The launcher has two explicit modes:
 

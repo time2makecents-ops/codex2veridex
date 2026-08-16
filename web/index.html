@@ -96,6 +96,10 @@
             <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
             <button id="open-room-files" type="button">Files</button>
           </div>
+          <div id="resume-actions" class="art-actions resume-actions" hidden>
+            <span><strong>HR Resume Studio</strong><small>Build, tailor, review, and export application materials</small></span>
+            <button id="open-resume-studio" type="button">Resume Studio</button>
+          </div>
           <form id="composer" class="composer">
             <input id="file-input" type="file" multiple hidden />
             <button id="attach-button" class="attach-button" type="button" title="Attach files" aria-label="Attach files">+</button>
@@ -195,6 +199,69 @@
         <div id="room-file-empty" class="art-gallery-empty" hidden>
           <strong>No files in this room yet</strong>
           <span>Files created, downloaded, or added to chat here will appear in this library.</span>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="resume-studio-dialog" class="resume-studio-dialog" aria-labelledby="resume-studio-title">
+      <section class="resume-studio-shell">
+        <header class="resume-studio-header">
+          <div><div class="eyebrow">HR Department</div><h2 id="resume-studio-title">Resume Studio</h2><p>Verified facts in. Tailored application materials out.</p></div>
+          <div class="resume-header-actions"><span id="resume-studio-status" aria-live="polite"></span><button id="resume-studio-close" class="dialog-close" type="button" aria-label="Close Resume Studio">&times;</button></div>
+        </header>
+        <nav class="resume-steps" aria-label="Resume workflow">
+          <button class="active" data-resume-step="profile" type="button"><span>01</span>Career profile</button>
+          <button data-resume-step="target" type="button"><span>02</span>Target job</button>
+          <button data-resume-step="draft" type="button"><span>03</span>Draft + export</button>
+        </nav>
+        <div class="resume-workspace">
+          <section id="resume-step-profile" class="resume-step active">
+            <div class="resume-step-heading"><div><div class="eyebrow">Reusable evidence</div><h3>Career profile</h3><p>Only save facts you want available in future HR sessions.</p></div><button id="resume-profile-save" class="resume-primary" type="button">Save career profile</button></div>
+            <div class="resume-import-strip">
+              <label>Import a session file<select id="resume-import-file"><option value="">Choose PDF, DOCX, or text</option></select></label>
+              <button id="resume-import-button" type="button">Import facts</button>
+              <span id="resume-profile-version">Not saved</span>
+            </div>
+            <div class="resume-form-grid">
+              <label class="wide">Full name<input id="resume-name" type="text" autocomplete="name" /></label>
+              <label>Email<input id="resume-email" type="email" autocomplete="email" /></label>
+              <label>Phone<input id="resume-phone" type="tel" autocomplete="tel" /></label>
+              <label>Location<input id="resume-location" type="text" /></label>
+              <label>Portfolio or LinkedIn<input id="resume-links" type="text" placeholder="Separate multiple links with commas" /></label>
+              <label>Target title<input id="resume-target-title" type="text" /></label>
+              <label class="wide">Professional summary<textarea id="resume-summary" rows="4"></textarea></label>
+              <label class="wide">Skills<input id="resume-skills" type="text" placeholder="Separate skills with commas" /></label>
+              <label class="full">Career history<textarea id="resume-career-history" rows="12" placeholder="Employers, titles, dates, duties, accomplishments, projects, and measurable results"></textarea></label>
+              <label class="full">Education and training<textarea id="resume-education" rows="6" placeholder="Degrees, schools, dates, certifications, licenses, and relevant training"></textarea></label>
+              <details class="resume-federal-fields full"><summary>Federal profile details</summary><div class="resume-form-grid"><label>Citizenship<input id="resume-citizenship" type="text" /></label><label>Security clearance<input id="resume-clearance" type="text" /></label><label>Veterans' preference<input id="resume-veterans" type="text" /></label><label>Hiring authority<input id="resume-authority" type="text" /></label></div></details>
+            </div>
+          </section>
+          <section id="resume-step-target" class="resume-step">
+            <div class="resume-step-heading"><div><div class="eyebrow">One application</div><h3>Target job</h3><p>Tailoring is strongest when the complete job description is included.</p></div><div class="resume-target-actions"><select id="resume-project-select" aria-label="Saved resume projects"><option value="">New project</option></select><button id="resume-load-project" type="button">Load</button><button id="resume-analyze" class="resume-secondary" type="button">Analyze match</button></div></div>
+            <div class="resume-target-layout">
+              <div class="resume-form-grid">
+                <label>Job title<input id="resume-job-title" type="text" /></label>
+                <label>Company<input id="resume-company" type="text" /></label>
+                <div class="resume-url-field full"><label>Job posting URL<input id="resume-job-url" type="url" placeholder="https://…" /></label><button id="resume-fetch-job" type="button">Fetch description</button></div>
+                <label class="full">Job description<textarea id="resume-job-description" rows="16"></textarea></label>
+                <label>Resume type<select id="resume-type"><option value="private">Private-sector</option><option value="federal">Federal</option></select></label>
+                <label>Template<select id="resume-template"></select></label>
+                <label class="full">Special instructions<textarea id="resume-instructions" rows="4" placeholder="Career change context, roles to emphasize, tone, or constraints"></textarea></label>
+              </div>
+              <aside id="resume-analysis" class="resume-analysis"><strong>Match analysis</strong><p>Add a job description, then analyze it against your profile.</p></aside>
+            </div>
+            <footer class="resume-step-footer"><button id="resume-generate" class="resume-primary" type="button">Generate tailored application</button></footer>
+          </section>
+          <section id="resume-step-draft" class="resume-step">
+            <div class="resume-step-heading"><div><div class="eyebrow">Review before export</div><h3>Draft + application kit</h3><p>Resolve every suggested claim before final files are created.</p></div><div class="resume-draft-actions"><button id="resume-save-project" class="resume-secondary" type="button">Save project</button><button id="resume-export" class="resume-primary" type="button">Export files</button></div></div>
+            <div class="resume-draft-layout">
+              <div class="resume-preview-pane"><div class="resume-pane-heading"><strong>ATS text preview</strong><button id="resume-refine-chat" type="button">Refine with HR Manager</button></div><pre id="resume-preview">Generate a draft to see the parser-readable resume.</pre></div>
+              <aside class="resume-inspector">
+                <section><div class="resume-pane-heading"><strong>Quality review</strong><span id="resume-ready-state">Not reviewed</span></div><div id="resume-review"></div></section>
+                <section><div class="resume-pane-heading"><strong>Suggested claims</strong><span id="resume-claim-count">0</span></div><div id="resume-claims"><p>No unconfirmed claims.</p></div></section>
+                <section><div class="resume-pane-heading"><strong>Application kit</strong></div><div id="resume-kit"><p>Cover letter, LinkedIn copy, recruiter email, and interview talking points will appear here.</p></div></section>
+              </aside>
+            </div>
+          </section>
         </div>
       </section>
     </dialog>

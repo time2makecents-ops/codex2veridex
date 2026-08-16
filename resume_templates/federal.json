@@ -1,0 +1,16 @@
+{
+  "id": "federal",
+  "name": "Federal",
+  "description": "A detailed federal format for duties, accomplishments, hours, grades, and eligibility details.",
+  "best_for": "USAJOBS and federal agency applications",
+  "resume_types": ["federal"],
+  "accent": "263E59",
+  "body_font": "Arial",
+  "body_size": 9.3,
+  "heading_size": 10.6,
+  "name_size": 17,
+  "margin_top": 0.58,
+  "margin_bottom": 0.58,
+  "margin_left": 0.65,
+  "margin_right": 0.65
+}

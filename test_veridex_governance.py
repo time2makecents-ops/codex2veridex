@@ -122,6 +122,9 @@ class VeridexGovernanceTests(unittest.TestCase):
             )
         )
 
+    def test_document_export_request_requires_file_artifact(self) -> None:
+        self.assertTrue(self.registry.requires_file_artifact("create a DOCX resume and export it as PDF", "resume_generation"))
+
     def test_explicit_google_requires_dedicated_provider_without_substitution(self) -> None:
         missing = self.registry.postflight(
             "I found a result.",

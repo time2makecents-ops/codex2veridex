@@ -6,10 +6,42 @@ from pathlib import Path
 from unittest.mock import patch
 
 import veridex_server
+from resume_studio import ResumeStudio
 from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_resume_exports_are_verified_hr_room_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "hr_department")
+            studio = ResumeStudio(root, Path(__file__).resolve().parent / "resume_templates")
+            draft = {
+                "contact": {"name": "Jordan Rivera", "email": "jordan@example.com", "phone": "", "location": "Seattle", "links": []},
+                "target_title": "Operations Manager",
+                "summary": "Operations leader with verified team and process experience.",
+                "skills": ["Operations", "Leadership"],
+                "experience": [{"title": "Operations Lead", "employer": "Northwind", "location": "Seattle", "start_date": "2021", "end_date": "Present", "bullets": ["Led service operations for a 12-person team."]}],
+                "education": [{"credential": "B.S. Business", "school": "State University", "location": "", "date": "2020"}],
+                "unconfirmed_claims": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "RESUME", studio):
+                result = veridex_server.save_resume_exports({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "draft": draft,
+                    "resume_type": "private",
+                    "template_id": "ats_classic",
+                })
+            self.assertEqual(len(result["files"]), 3)
+            self.assertTrue(all(row["kind"] == "generated_document" for row in result["files"]))
+            self.assertTrue(all(row["scope_ref"] == "hr_department" for row in result["files"]))
+            self.assertTrue(all(Path(row["path"]).is_file() for row in result["files"]))
+
     def test_room_file_library_rejects_lobby_and_art_department(self) -> None:
         self.assertEqual(veridex_server.room_file_library_id("control_room"), "control_room")
         with self.assertRaises(ValueError):

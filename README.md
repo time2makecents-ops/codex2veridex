@@ -16,6 +16,7 @@ and does not read from or write to `C:\Office-App`.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - Session-scoped file attachments saved beside each session transcript.
 - Generated images verified, ledgered, previewed, and reported with their exact local path and checksum.
+- An HR Resume Studio with saved career profiles, job tailoring, ATS review, private/federal templates, and verified DOCX/PDF/text exports.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
 
@@ -64,7 +65,14 @@ Codex actually search and work with local files; only enable it when you intend
 to give the chat that authority. A normal `restart` returns to read-only mode.
 
 Requirements: Python 3 and a working `codex` command authenticated through the
-Codex desktop app/CLI. The runtime uses Python's standard library only.
+Codex desktop app/CLI. Install the document environment once after cloning or
+pulling a version that changes `requirements.txt`:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+The launcher automatically prefers `.venv\Scripts\python.exe` when present.
 
 ## Storage
 
@@ -110,6 +118,27 @@ into the session's canonical `files/` directory, computes SHA-256, creates a
 numbered artifact-ledger entry, and records the exact canonical path in the
 assistant transcript. The completion is blocked if any of those checks fail.
 Verified images appear directly in the chat with an openable preview.
+
+Generated documents use the same governed staging and ledger boundary. PDF,
+DOCX, TXT, and Markdown files are checked by signature or readable content
+before they can support a file-creation claim.
+
+## HR Resume Studio
+
+Enter **HR Department** and select **Resume Studio**. The guided workflow can:
+
+- build or explicitly save a reusable career profile;
+- import readable PDF, DOCX, TXT, or Markdown resumes already attached to chat;
+- paste or safely fetch a public HTTPS job posting;
+- compare verified experience with job keywords without presenting a fictional universal ATS score;
+- generate private-sector or federal resumes, cover letters, LinkedIn copy,
+  recruiter email, and interview talking points;
+- block final export while suggested facts or metrics remain unconfirmed; and
+- create verified DOCX, PDF, and plain-text files in the HR Department Files library.
+
+Career profiles and application projects persist only after their separate
+**Save career profile** or **Save project** actions. Recruiter emails can be
+opened in Nancy's composer and retain Nancy's normal final-send confirmation.
 
 ## Navigator governance
 
@@ -172,6 +201,7 @@ active room.
 | Coding, debugging | `gpt-5.6-sol` | high |
 | Architecture, planning | `gpt-5.6-sol` | high |
 | Image/video reasoning | `gpt-5.6-sol` | high |
+| Resume drafting and refinement | `gpt-5.6-sol` | high |
 | High-stakes topics | `gpt-5.6-sol` | xhigh |
 | Explicit Google/deep search | `gpt-5.6-sol` | high |
 | General search and chat | `gpt-5.6-terra` | medium |
@@ -240,7 +270,7 @@ uses the default local session if no session ID is configured.
 ## Test
 
 ```powershell
-python -m unittest discover -v
+.venv\Scripts\python.exe -m unittest discover -v
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the governance and persistence

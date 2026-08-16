@@ -1,0 +1,16 @@
+{
+  "id": "executive",
+  "name": "Executive",
+  "description": "Leadership-forward hierarchy with room for strategic impact and scope.",
+  "best_for": "Directors, executives, and senior leaders",
+  "resume_types": ["private"],
+  "accent": "343C47",
+  "body_font": "Arial",
+  "body_size": 9.3,
+  "heading_size": 10.6,
+  "name_size": 18,
+  "margin_top": 0.6,
+  "margin_bottom": 0.58,
+  "margin_left": 0.68,
+  "margin_right": 0.68
+}

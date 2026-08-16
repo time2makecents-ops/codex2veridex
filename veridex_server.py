@@ -1,4 +1,4 @@
-"""Dependency-free local web server for standalone Codex + Veridex chat."""
+"""Local web server for standalone Codex + Veridex chat and document tools."""
 
 from __future__ import annotations
 
@@ -20,6 +20,19 @@ from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
 from google_chrome_search import GoogleChromeSearchError, continues_google_search, search_google, wants_google_search
 from request_control import ActiveRequestRegistry, RequestCancelled
+from resume_studio import (
+    ResumeStudio,
+    export_bundle,
+    extract_file_text,
+    extract_json_object,
+    fetch_job_description,
+    keyword_analysis,
+    normalize_draft,
+    profile_from_text,
+    quality_review,
+    template_by_id,
+    validate_export_bytes,
+)
 from veridex_core import VeridexStore, classify_task, transcript_context
 from veridex_governance import GovernanceRegistry, intervention_text
 from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
@@ -94,6 +107,7 @@ def load_env(path: Path) -> None:
 load_env(ROOT / ".env.local")
 DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
 STORE = VeridexStore(DATA_ROOT)
+RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
 GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
@@ -280,6 +294,141 @@ def public_delivery_alert(
             "unavailable_attachments": unavailable,
         },
     }
+
+
+def resume_context(workspace_id: str, session_id: str, *, require_hr: bool = True) -> Dict[str, Any]:
+    workspace = STORE.get_workspace(str(workspace_id or ""))
+    session = STORE.find_session(str(session_id or ""))
+    if str(session.get("workspace_id") or "") != str(workspace.get("workspace_id") or ""):
+        raise KeyError("Session does not belong to workspace")
+    if require_hr and str(session.get("active_room") or "") != "hr_department":
+        raise ValueError("Resume Studio is available in HR Department.")
+    return {"workspace": workspace, "session": session}
+
+
+def resume_bootstrap(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    resume_context(workspace_id, session_id)
+    return {
+        "profile": RESUME.load_profile(workspace_id),
+        "templates": RESUME.list_templates(),
+        "projects": RESUME.list_projects(workspace_id),
+    }
+
+
+def resume_source_import(workspace_id: str, session_id: str, file_id: str) -> Dict[str, Any]:
+    resume_context(workspace_id, session_id)
+    rows = STORE.resolve_files(workspace_id, session_id, [str(file_id or "")])
+    if not rows:
+        raise KeyError("The selected resume file is unavailable in this session")
+    row = rows[0]
+    text = extract_file_text(Path(str(row.get("path") or "")))
+    source = {
+        "file_id": str(row.get("file_id") or ""),
+        "artifact_number": int(row.get("artifact_number") or 0),
+        "name": str(row.get("name") or ""),
+        "sha256": str(row.get("sha256") or ""),
+        "imported_at": datetime.now().astimezone().isoformat(),
+    }
+    return {"text": text, "profile": profile_from_text(text, source), "source": source}
+
+
+def resume_model_draft(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    resume_context(workspace_id, session_id)
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else RESUME.load_profile(workspace_id)
+    target_job = payload.get("target_job") if isinstance(payload.get("target_job"), dict) else {}
+    if str(target_job.get("url") or "").strip() and not str(target_job.get("description") or "").strip():
+        target_job = {**target_job, "description": fetch_job_description(str(target_job.get("url") or ""))}
+    resume_type = "federal" if payload.get("resume_type") == "federal" else "private"
+    if not str((profile.get("contact") or {}).get("name") or "").strip() and not str(profile.get("career_history") or "").strip():
+        raise ValueError("Add or import career information before generating a resume.")
+    system_prompt = (
+        "You are the HR Manager in Veridex Resume Studio. Produce outstanding, truthful, ATS-readable application materials. "
+        "Return only one valid JSON object, with no markdown or commentary. Never invent an employer, role, date, credential, skill, duty, accomplishment, or metric. "
+        "You may improve phrasing and organization. If a useful metric is missing, put a coaching suggestion in unconfirmed_claims; do not insert the estimate into a resume bullet. "
+        "Every statement in the finished resume must be directly supported by the supplied career profile. Tailor naturally to the job description without keyword stuffing. "
+        "For private resumes prefer concise one- or two-page content. For federal resumes retain detailed duties, hours, grades, eligibility, and accomplishments when supplied. "
+        "The JSON must use this shape: contact{name,email,phone,location,links[]}, target_title, summary, skills[], "
+        "experience[{title,employer,location,start_date,end_date,bullets[]}], education[{credential,school,location,date}], "
+        "certifications[], projects[], awards[], federal_details[], cover_letter, linkedin_headline, linkedin_about, "
+        "recruiter_email_subject, recruiter_email, interview_talking_points[], unconfirmed_claims[{claim_id,text,reason}]."
+    )
+    model_input = {
+        "resume_type": resume_type,
+        "career_profile": profile,
+        "target_job": target_job,
+        "current_draft": payload.get("current_draft") if isinstance(payload.get("current_draft"), dict) else None,
+        "instructions": str(payload.get("instructions") or ""),
+    }
+    result = invoke_codex({
+        "task_type": "resume_generation",
+        "system_prompt": system_prompt,
+        "user_prompt": json.dumps(model_input, ensure_ascii=False),
+        "context": {
+            "current_room": {"id": "hr_department", "title": "HR Department", "active_persona": "HR Manager"},
+            "governance": governance_status(workspace_id, session_id),
+            "artifact_storage_policy": {"owner": "veridex", "rule": "Return structured content only. Veridex owns rendering and export."},
+        },
+        "attachment_paths": [],
+        "artifact_output_dir": "",
+    })
+    draft = normalize_draft(extract_json_object(str(result.get("text") or "")))
+    review = quality_review(draft, str(target_job.get("description") or ""), federal=resume_type == "federal")
+    return {
+        "draft": draft,
+        "review": review,
+        "model": result.get("model"),
+        "reasoning_effort": result.get("reasoning_effort"),
+        "task_type": result.get("task_type"),
+    }
+
+
+def save_resume_exports(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    resume_context(workspace_id, session_id)
+    draft = normalize_draft(payload.get("draft") or {})
+    resume_type = "federal" if payload.get("resume_type") == "federal" else "private"
+    templates = RESUME.list_templates()
+    template_id = str(payload.get("template_id") or ("federal" if resume_type == "federal" else "ats_classic"))
+    template = template_by_id(templates, template_id)
+    if not template:
+        raise ValueError("Unknown resume template")
+    if resume_type not in (template.get("resume_types") or []):
+        raise ValueError("The selected template does not support this resume type")
+    bundle = export_bundle(draft, resume_type=resume_type, template=template)
+    contact_name = str((draft.get("contact") or {}).get("name") or "resume")
+    target_title = str(draft.get("target_title") or "resume")
+    prefix = re.sub(r"[^A-Za-z0-9]+", "_", f"{contact_name}_{target_title}").strip("_")[:90] or "resume"
+    saved: list[Dict[str, Any]] = []
+    verification: list[Dict[str, Any]] = []
+    content_types = {
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pdf": "application/pdf",
+        ".txt": "text/plain; charset=utf-8",
+    }
+    for generic_name, content in bundle.items():
+        suffix = Path(generic_name).suffix.lower()
+        part = re.sub(r"[^A-Za-z0-9]+", "_", Path(generic_name).stem).strip("_")
+        filename = f"{prefix}_{part}{suffix}"
+        facts = validate_export_bytes(generic_name, content)
+        saved_row = STORE.save_file(
+            workspace_id,
+            session_id,
+            filename,
+            content,
+            content_types[suffix],
+            source="generated",
+            kind="generated_document",
+            scope="room",
+            scope_ref="hr_department",
+            description=f"Resume Studio {resume_type} export using {template.get('name')}.",
+            uploaded_by_session_id=session_id,
+        )
+        saved.append(saved_row)
+        verification.append({"file_id": saved_row["file_id"], "name": saved_row["name"], **facts})
+    return {"files": [public_file(row, include_path=True) for row in saved], "verification": verification, "review": quality_review(draft, str(payload.get("job_description") or ""), federal=resume_type == "federal")}
 
 
 def delivery_alerts(workspace_id: str = "", session_id: str = "") -> list[Dict[str, Any]]:
@@ -1102,6 +1251,12 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     context["available_rooms"] = rooms_payload()
     context["governance"] = governance_status(workspace_id, session_id)
     context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
+    if active_room == "hr_department" and task_type == "resume_generation":
+        saved_projects = RESUME.list_projects(workspace_id)
+        context["resume_studio"] = {
+            "saved_profile": RESUME.load_profile(workspace_id),
+            "latest_saved_project": saved_projects[0] if saved_projects else None,
+        }
     context["current_local_date"] = datetime.now().astimezone().date().isoformat()
     context["event_time_scope"] = (
         "upcoming_only"
@@ -1132,15 +1287,16 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         else None
     )
     if artifact_output_dir:
+        artifact_kind = "generated_image" if task_type == "media" else "generated_document"
         context["required_artifact_output_dir"] = str(artifact_output_dir)
         context["artifact_storage_policy"] = {
             "handoff_dir": str(artifact_output_dir),
             "canonical_dir": str(STORE.generated_files_dir(workspace_id, active_room)),
-            "kind": "generated_image",
+            "kind": artifact_kind,
             "scope": "room",
             "scope_ref": active_room,
             "owner": "veridex",
-            "rule": "Write final generated image files to handoff_dir only. Veridex will verify, ledger, and move them to canonical_dir before reporting them to the user.",
+            "rule": "Write final generated files to handoff_dir only. Veridex will validate, ledger, and move them to canonical_dir before reporting them to the user.",
         }
     pre_codex_file_ids = {str(row.get("file_id") or "") for row in STORE.list_files(workspace_id, session_id)}
     codex_request = {
@@ -1152,6 +1308,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "When asked to find local files, use the available shell tools and report only verified paths. "
             "Attached files are saved locally and their exact paths are supplied in governed context. "
             "Use the governed context for continuity, but do not claim actions that were not performed."
+            + (
+                " For resume work, use only facts in attached files, the current request, or Resume Studio's explicitly saved profile/project. "
+                "Never invent employers, dates, credentials, skills, accomplishments, or metrics; label useful missing metrics as questions for the user."
+                if task_type == "resume_generation" else ""
+            )
         ),
         "user_prompt": governed_prompt,
         "context": context,
@@ -1371,6 +1532,15 @@ TOOLS = [
     {"name": "office.contact_save", "description": "Create or update one local address-book contact."},
     {"name": "office.contact_sync", "description": "Import recipients from the 500 most recent Sent messages."},
     {"name": "office.gmail_delivery_check", "description": "Check returned Gmail delivery failures and create Nancy alerts."},
+    {"name": "resume.profile_get", "description": "Read the saved workspace career profile."},
+    {"name": "resume.profile_save", "description": "Save the career profile only when confirm=true."},
+    {"name": "resume.template_list", "description": "List ATS-safe private-sector and federal resume templates."},
+    {"name": "resume.job_analyze", "description": "Compare verified resume text with a target job description."},
+    {"name": "resume.job_fetch", "description": "Retrieve bounded readable text from a public HTTPS job-posting URL."},
+    {"name": "resume.draft", "description": "Create a governed, structured resume and optional application-kit draft."},
+    {"name": "resume.review", "description": "Run deterministic ATS, completeness, claim, and keyword checks."},
+    {"name": "resume.project_save", "description": "Persist a resume project only when confirm=true."},
+    {"name": "resume.export", "description": "Render verified DOCX, PDF, and plain-text resume artifacts."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
@@ -1465,6 +1635,11 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "contacts": GMAIL.list_contacts(str(query.get("q", [""])[0])),
                     "sync": GMAIL.contact_sync_status(),
                 })
+            elif parsed.path == "/api/resume":
+                self._json(resume_bootstrap(
+                    str(query.get("workspace_id", [""])[0]).strip(),
+                    str(query.get("session_id", [""])[0]).strip(),
+                ))
             elif parsed.path == "/api/art/images":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 self._json({
@@ -1542,6 +1717,50 @@ class VeridexHandler(BaseHTTPRequestHandler):
             payload = self._body()
             if parsed.path == "/api/contacts/save":
                 self._json({"contact": GMAIL.save_contact(payload), "contacts": GMAIL.list_contacts()})
+            elif parsed.path == "/api/resume/profile/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                resume_context(workspace_id, session_id)
+                if not payload.get("confirm"):
+                    self._json({"status": "confirmation_required", "message": "Confirm Save Career Profile to persist these facts."})
+                else:
+                    profile = RESUME.save_profile(
+                        workspace_id,
+                        payload.get("profile") if isinstance(payload.get("profile"), dict) else {},
+                        int(payload.get("expected_version")) if payload.get("expected_version") is not None else None,
+                    )
+                    self._json({"status": "saved", "profile": profile})
+            elif parsed.path == "/api/resume/import":
+                self._json(resume_source_import(
+                    str(payload.get("workspace_id") or "").strip(),
+                    str(payload.get("session_id") or "").strip(),
+                    str(payload.get("file_id") or "").strip(),
+                ))
+            elif parsed.path == "/api/resume/analyze":
+                resume_context(str(payload.get("workspace_id") or ""), str(payload.get("session_id") or ""))
+                self._json(keyword_analysis(str(payload.get("job_description") or ""), str(payload.get("resume_text") or "")))
+            elif parsed.path == "/api/resume/job/fetch":
+                resume_context(str(payload.get("workspace_id") or ""), str(payload.get("session_id") or ""))
+                self._json({"url": str(payload.get("url") or ""), "description": fetch_job_description(str(payload.get("url") or ""))})
+            elif parsed.path == "/api/resume/draft":
+                self._json(resume_model_draft(payload))
+            elif parsed.path == "/api/resume/review":
+                resume_context(str(payload.get("workspace_id") or ""), str(payload.get("session_id") or ""))
+                self._json(quality_review(
+                    payload.get("draft") if isinstance(payload.get("draft"), dict) else {},
+                    str(payload.get("job_description") or ""),
+                    federal=payload.get("resume_type") == "federal",
+                ))
+            elif parsed.path == "/api/resume/project/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                resume_context(workspace_id, str(payload.get("session_id") or ""))
+                if not payload.get("confirm"):
+                    self._json({"status": "confirmation_required", "message": "Confirm Save Project to persist this application project."})
+                else:
+                    project = RESUME.save_project(workspace_id, payload.get("project") if isinstance(payload.get("project"), dict) else {})
+                    self._json({"status": "saved", "project": project, "projects": RESUME.list_projects(workspace_id)})
+            elif parsed.path == "/api/resume/export":
+                self._json(save_resume_exports(payload), HTTPStatus.CREATED)
             elif parsed.path == "/api/contacts/delete":
                 self._json({
                     "deleted": GMAIL.delete_contact(str(payload.get("contact_id") or "")),
@@ -1718,6 +1937,46 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "message_id": sent.get("id"),
                     "attachments": [public_file(row) for row in resolved_attachments],
                 }
+        elif tool == "resume.profile_get":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            resume_context(workspace_id, session_id, require_hr=False)
+            value = {"profile": RESUME.load_profile(workspace_id)}
+        elif tool == "resume.profile_save":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            resume_context(workspace_id, session_id)
+            if not args.get("confirm"):
+                value = {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Save Career Profile."}
+            else:
+                value = {"status": "saved", "profile": RESUME.save_profile(workspace_id, args.get("profile") or {}, args.get("expected_version"))}
+        elif tool == "resume.template_list":
+            value = {"templates": RESUME.list_templates()}
+        elif tool == "resume.job_analyze":
+            value = keyword_analysis(str(args.get("job_description") or ""), str(args.get("resume_text") or ""))
+        elif tool == "resume.job_fetch":
+            value = {"url": str(args.get("url") or ""), "description": fetch_job_description(str(args.get("url") or ""))}
+        elif tool == "resume.draft":
+            value = resume_model_draft(args)
+        elif tool == "resume.review":
+            value = quality_review(args.get("draft") or {}, str(args.get("job_description") or ""), federal=args.get("resume_type") == "federal")
+        elif tool == "resume.project_save":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            resume_context(workspace_id, session_id)
+            value = (
+                {"status": "saved", "project": RESUME.save_project(workspace_id, args.get("project") or {})}
+                if args.get("confirm")
+                else {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Save Project."}
+            )
+        elif tool == "resume.export":
+            if not args.get("confirm"):
+                value = {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Export."}
+            else:
+                value = save_resume_exports(args)
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None

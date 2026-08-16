@@ -50,6 +50,7 @@ class VeridexCoreTests(unittest.TestCase):
         self.assertEqual(classify_task("Refactor this Python service"), "coding")
         self.assertEqual(classify_task("Plan the system architecture"), "planning")
         self.assertEqual(classify_task("Run a smoke check of the UI"), "testing")
+        self.assertEqual(classify_task("Tailor my resume for this job"), "resume_generation")
         self.assertEqual(classify_task("hello"), "simple")
         self.assertEqual(
             classify_task("check social media and google for a band called Stella Jones"),

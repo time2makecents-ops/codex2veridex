@@ -64,6 +64,10 @@ def select_model(task_type: str) -> ModelPolicy:
             _env("VERIDEX_CODEX_MEDIA_MODEL", "gpt-5.6-sol"),
             _env("VERIDEX_CODEX_MEDIA_EFFORT", "high"),
         ),
+        "resume_generation": (
+            _env("VERIDEX_CODEX_RESUME_MODEL", "gpt-5.6-sol"),
+            _env("VERIDEX_CODEX_RESUME_EFFORT", "high"),
+        ),
         "high_stakes": (
             _env("VERIDEX_CODEX_HIGH_STAKES_MODEL", "gpt-5.6-sol"),
             _env("VERIDEX_CODEX_HIGH_STAKES_EFFORT", "xhigh"),
@@ -164,6 +168,13 @@ def _compact_context(context: Any, max_chars: int = 12000) -> str:
             "workspace_gates": governance.get("workspace_gates"),
             "latest_incident": governance.get("latest_incident"),
         }
+    if isinstance(context.get("resume_studio"), dict):
+        resume = context["resume_studio"]
+        compact["resume_studio"] = {
+            "saved_profile": resume.get("saved_profile"),
+            "latest_saved_project": resume.get("latest_saved_project"),
+            "rule": "Use only saved or supplied career facts. Never invent resume claims or metrics.",
+        }
     if not compact:
         compact = dict(context)
     encoded = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
@@ -225,13 +236,22 @@ def build_prompt(request: Dict[str, Any], policy: ModelPolicy) -> str:
     artifact_output_dir = str(request.get("artifact_output_dir") or "").strip()
     artifact_instructions = ""
     if artifact_output_dir:
-        artifact_instructions = (
-            "This request requires a generated image file. Use the built-in image generation tool. "
-            f'After generation, copy each final image into this exact directory: "{artifact_output_dir}". '
-            "Use a descriptive filename. Desktop files and files under the default Codex generated-images directory are not Veridex artifacts unless they are copied into that exact directory. "
-            "Do not claim that an image or file was created, generated, rendered, exported, or saved unless the copy command completed. "
-            "If generation or copying is unavailable, state plainly that no verified file was created. "
-        )
+        request_context = request.get("context") if isinstance(request.get("context"), dict) else {}
+        storage_policy = request_context.get("artifact_storage_policy") if isinstance(request_context.get("artifact_storage_policy"), dict) else {}
+        if storage_policy.get("kind") == "generated_image" or policy.task_type == "media":
+            artifact_instructions = (
+                "This request requires a generated image file. Use the built-in image generation tool. "
+                f'After generation, copy each final image into this exact directory: "{artifact_output_dir}". '
+                "Use a descriptive filename. Desktop files and files under the default Codex generated-images directory are not Veridex artifacts unless copied into that exact directory. "
+                "Do not claim that an image or file was created unless the copy command completed. "
+            )
+        else:
+            artifact_instructions = (
+                "This request requires a generated document file. Create the requested final PDF, DOCX, TXT, or Markdown file and place it in this exact directory: "
+                f'"{artifact_output_dir}". Use a descriptive filename. Do not place temporary or source files there. '
+                "Do not claim that a document or file was created, generated, rendered, exported, or saved unless writing the final file completed. "
+            )
+        artifact_instructions += "If generation or copying is unavailable, state plainly that no verified file was created. "
     context = request.get("context") if isinstance(request.get("context"), dict) else {}
     google_search = context.get("google_browser_search") if isinstance(context.get("google_browser_search"), dict) else {}
     compact_context = dict(context)

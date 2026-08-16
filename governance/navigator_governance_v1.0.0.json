@@ -154,6 +154,7 @@
     "coding": {"model": "gpt-5.6-sol", "reasoning": "high"},
     "planning": {"model": "gpt-5.6-sol", "reasoning": "high"},
     "media": {"model": "gpt-5.6-sol", "reasoning": "high"},
+    "resume_generation": {"model": "gpt-5.6-sol", "reasoning": "high"},
     "high_stakes": {"model": "gpt-5.6-sol", "reasoning": "xhigh"},
     "search_synthesis": {"model": "gpt-5.6-terra", "reasoning": "medium"},
     "search_deep": {"model": "gpt-5.6-sol", "reasoning": "high"},
