@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,10 +92,12 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(saved["name"], "notes.txt")
             self.assertEqual(saved["artifact_number"], 1)
             self.assertEqual(Path(saved["path"]).read_bytes(), b"hello")
-            self.assertIn(str(Path(temporary) / "workspaces" / workspace_id / "files" / "uploads" / session_id), saved["path"])
+            upload_root = (Path(temporary) / "workspaces" / workspace_id / "files" / "uploads" / session_id).resolve()
+            self.assertTrue(Path(saved["path"]).resolve().is_relative_to(upload_root))
             self.assertEqual(saved["kind"], "upload")
             self.assertEqual(saved["scope"], "session")
             self.assertEqual(saved["scope_ref"], session_id)
+            self.assertEqual(saved["room_id"], "lobby")
             self.assertEqual(store.resolve_files(workspace_id, session_id, [saved["file_id"]])[0]["name"], "notes.txt")
             self.assertEqual(store.bootstrap(workspace_id, session_id)["files"][0]["size"], 5)
             self.assertEqual(store.list_artifact_ledger(workspace_id)[0]["file_id"], saved["file_id"])
@@ -123,10 +126,10 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(imported[0]["uploaded_by_session_id"], session_id)
             self.assertEqual(len(imported[0]["sha256"]), 64)
             self.assertTrue(Path(imported[0]["path"]).is_file())
-            self.assertIn(
-                str(Path(temporary) / "workspaces" / workspace_id / "files" / "generated" / "art_department"),
-                imported[0]["path"],
-            )
+            generated_root = (
+                Path(temporary) / "workspaces" / workspace_id / "files" / "generated" / "art_department"
+            ).resolve()
+            self.assertTrue(Path(imported[0]["path"]).resolve().is_relative_to(generated_root))
             self.assertNotIn(str(store.files_dir(workspace_id, session_id)), imported[0]["path"])
             resolved = store.resolve_files(workspace_id, session_id, [imported[0]["file_id"]])
             self.assertEqual(resolved[0]["file_id"], imported[0]["file_id"])
@@ -172,6 +175,141 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual([row["file_id"] for row in discovered], [imported["file_id"]])
             self.assertEqual(discovered[0]["kind"], "generated_image")
             self.assertEqual(discovered[0]["scope_ref"], "art_department")
+
+    def test_art_gallery_lists_images_across_sessions_and_links_without_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            source_session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, source_session_id, "art_department")
+            staging = store.prepare_generated_output_dir(workspace_id, source_session_id, "gallery")
+            (staging / "gallery-image.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"gallery-payload")
+            imported = store.import_generated_artifacts(workspace_id, source_session_id, staging)[0]
+
+            target = store.create_session(workspace_id, "Another art chat")
+            target_session_id = target["session_id"]
+            store.set_room(workspace_id, target_session_id, "art_department")
+            gallery = store.list_generated_images(workspace_id, "art_department")
+            linked = store.link_generated_image(
+                workspace_id,
+                target_session_id,
+                imported["file_id"],
+                "art_department",
+            )
+            store.link_generated_image(
+                workspace_id,
+                target_session_id,
+                imported["file_id"],
+                "art_department",
+            )
+
+            self.assertEqual([row["file_id"] for row in gallery], [imported["file_id"]])
+            self.assertEqual(gallery[0]["source_session_id"], source_session_id)
+            self.assertEqual(Path(linked["path"]), Path(imported["path"]))
+            self.assertEqual(len(store.list_files(workspace_id, target_session_id)), 1)
+            self.assertEqual(len(store.list_artifact_ledger(workspace_id)), 1)
+
+            store.set_room(workspace_id, target_session_id, "lobby")
+            with self.assertRaises(ValueError):
+                store.link_generated_image(
+                    workspace_id,
+                    target_session_id,
+                    imported["file_id"],
+                    "art_department",
+                )
+
+    def test_art_gallery_recovers_legacy_image_room_from_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            staging = store.prepare_generated_output_dir(workspace_id, session_id, "legacy")
+            (staging / "legacy.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"legacy-payload")
+            imported = store.import_generated_artifacts(workspace_id, session_id, staging)[0]
+            store.append_message(
+                workspace_id,
+                session_id,
+                "assistant",
+                "Verified legacy image.",
+                generated_artifacts=[{"file_id": imported["file_id"]}],
+            )
+            ledger_path = store.artifact_ledger_path(workspace_id)
+            legacy = store.list_artifact_ledger(workspace_id)[0]
+            for key in ("kind", "scope", "scope_ref", "uploaded_by_session_id"):
+                legacy.pop(key, None)
+            ledger_path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+            gallery = store.list_generated_images(workspace_id, "art_department")
+
+            self.assertEqual([row["file_id"] for row in gallery], [imported["file_id"]])
+            self.assertEqual(gallery[0]["scope_ref"], "art_department")
+
+    def test_room_file_library_spans_sessions_and_preserves_one_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            source_session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, source_session_id, "control_room")
+            saved = store.save_file(
+                workspace_id,
+                source_session_id,
+                "system-report.txt",
+                b"verified report",
+                "text/plain",
+            )
+            other_room = store.create_session(workspace_id, "Finance")
+            store.set_room(workspace_id, other_room["session_id"], "finance_department")
+            store.save_file(
+                workspace_id,
+                other_room["session_id"],
+                "budget.csv",
+                b"amount\n10",
+                "text/csv",
+            )
+            target = store.create_session(workspace_id, "Control follow-up")
+            store.set_room(workspace_id, target["session_id"], "control_room")
+
+            library = store.list_room_files(workspace_id, "control_room")
+            linked = store.link_room_file(
+                workspace_id,
+                target["session_id"],
+                saved["file_id"],
+                "control_room",
+            )
+
+            self.assertEqual([row["file_id"] for row in library], [saved["file_id"]])
+            self.assertEqual(library[0]["source_session_id"], source_session_id)
+            self.assertEqual(Path(linked["path"]), Path(saved["path"]))
+            self.assertEqual(len(store.list_artifact_ledger(workspace_id)), 2)
+            self.assertEqual(len(store.list_files(workspace_id, target["session_id"])), 1)
+
+    def test_room_file_library_recovers_legacy_upload_room_from_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "records_archive")
+            saved = store.save_file(workspace_id, session_id, "legacy.txt", b"legacy", "text/plain")
+            store.append_message(
+                workspace_id,
+                session_id,
+                "user",
+                "Archive this file.",
+                attachments=[{"file_id": saved["file_id"]}],
+            )
+            ledger_path = store.artifact_ledger_path(workspace_id)
+            legacy = store.list_artifact_ledger(workspace_id)[0]
+            legacy.pop("room_id", None)
+            ledger_path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+            library = store.list_room_files(workspace_id, "records_archive")
+
+            self.assertEqual([row["file_id"] for row in library], [saved["file_id"]])
 
     def test_room_transition_is_validated_persisted_and_session_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

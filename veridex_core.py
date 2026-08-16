@@ -500,6 +500,7 @@ class VeridexStore:
                 "kind": file_kind,
                 "scope": file_scope,
                 "scope_ref": file_scope_ref,
+                "room_id": str(session.get("active_room") or "lobby"),
                 "description": str(description or ""),
                 "uploaded_by_session_id": str(uploaded_by_session_id or session_id),
                 "path": str(path.resolve()),
@@ -527,6 +528,7 @@ class VeridexStore:
                     "kind": row["kind"],
                     "scope": row["scope"],
                     "scope_ref": row["scope_ref"],
+                    "room_id": row["room_id"],
                     "description": row["description"],
                     "uploaded_by_session_id": row["uploaded_by_session_id"],
                     "source_path": str(source_path or ""),
@@ -683,6 +685,196 @@ class VeridexStore:
     def resolve_files(self, workspace_id: str, session_id: str, file_ids: Iterable[str]) -> List[Dict[str, Any]]:
         wanted = {str(file_id) for file_id in file_ids if str(file_id).strip()}
         return [row for row in self.list_files(workspace_id, session_id) if str(row.get("file_id")) in wanted]
+
+    def list_room_files(self, workspace_id: str, room_id: str) -> List[Dict[str, Any]]:
+        """List ledgered files associated with one room across workspace sessions."""
+        sessions = self.list_sessions(workspace_id)
+        session_by_id = {str(row.get("session_id") or ""): row for row in sessions}
+        legacy_rooms: Dict[str, str] = {}
+        for session_id in session_by_id:
+            for message in self.load_messages(workspace_id, session_id, limit=1000):
+                message_room = str(message.get("room") or "")
+                for collection_name in ("attachments", "generated_artifacts"):
+                    artifacts = message.get(collection_name)
+                    if not isinstance(artifacts, list):
+                        continue
+                    for artifact in artifacts:
+                        if not isinstance(artifact, dict):
+                            continue
+                        file_id = str(artifact.get("file_id") or "")
+                        if file_id and message_room:
+                            legacy_rooms[file_id] = message_room
+
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for ledger in self.list_artifact_ledger(workspace_id):
+            file_id = str(ledger.get("file_id") or "")
+            if not file_id or file_id in seen:
+                continue
+            artifact_room = (
+                str(ledger.get("room_id") or "")
+                or (
+                    str(ledger.get("scope_ref") or "")
+                    if str(ledger.get("scope") or "") == "room"
+                    else ""
+                )
+                or legacy_rooms.get(file_id, "")
+            )
+            if artifact_room != room_id:
+                continue
+            path = Path(str(ledger.get("path") or ledger.get("storage_path") or ""))
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+            source_session_id = str(
+                ledger.get("session_id") or ledger.get("uploaded_by_session_id") or ""
+            )
+            source_session = session_by_id.get(source_session_id, {})
+            content_type = str(
+                ledger.get("content_type")
+                or ledger.get("mime_type")
+                or mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream"
+            )
+            row = {
+                **ledger,
+                "file_id": file_id,
+                "name": str(ledger.get("name") or path.name),
+                "content_type": content_type,
+                "mime_type": content_type,
+                "size": int(ledger.get("size") or ledger.get("byte_size") or path.stat().st_size),
+                "path": str(path.resolve()),
+                "room_id": room_id,
+                "source_session_id": source_session_id,
+                "source_session_title": str(source_session.get("title") or "Room session"),
+                "created_at": str(ledger.get("created_at") or ledger.get("ledgered_at") or ""),
+            }
+            seen.add(file_id)
+            rows.append(row)
+        return sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("created_at") or row.get("ledgered_at") or ""),
+                int(row.get("artifact_number") or 0),
+            ),
+            reverse=True,
+        )
+
+    def list_generated_images(self, workspace_id: str, room_id: str = "art_department") -> List[Dict[str, Any]]:
+        """List verified generated images for one room across workspace sessions."""
+        rows: List[Dict[str, Any]] = []
+        for row in self.list_room_files(workspace_id, room_id):
+            is_generated = (
+                str(row.get("kind") or "") == "generated_image"
+                or str(row.get("source") or "") == "generated"
+            )
+            if not is_generated or not self._valid_generated_image(Path(str(row.get("path") or ""))):
+                continue
+            rows.append({
+                **row,
+                "source": "generated",
+                "kind": "generated_image",
+                "scope": "room",
+                "scope_ref": room_id,
+            })
+        return rows
+
+    def link_generated_image(
+        self,
+        workspace_id: str,
+        session_id: str,
+        file_id: str,
+        room_id: str = "art_department",
+    ) -> Dict[str, Any]:
+        """Make a room-scoped generated image available to one session without copying it."""
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            if str(session.get("active_room") or "") != room_id:
+                raise ValueError("Generated Art Department images can only be attached from the Art Department.")
+            normalized_file_id = str(file_id or "").strip()
+            image = next(
+                (
+                    row for row in self.list_generated_images(workspace_id, room_id)
+                    if str(row.get("file_id") or "") == normalized_file_id
+                ),
+                None,
+            )
+            if not image:
+                raise KeyError("Unknown Art Department image")
+            existing = next(
+                (
+                    row for row in self.list_files(workspace_id, session_id)
+                    if str(row.get("file_id") or "") == normalized_file_id
+                ),
+                None,
+            )
+            if existing:
+                existing["linked_at"] = utc_now()
+                files = self.list_files(workspace_id, session_id)
+                for index, row in enumerate(files):
+                    if str(row.get("file_id") or "") == normalized_file_id:
+                        files[index] = existing
+                        break
+                self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+                self._touch_session(workspace_id, session_id)
+                return existing
+            linked = {
+                key: value for key, value in image.items()
+                if key not in {"source_session_title"}
+            }
+            linked["linked_from_session_id"] = str(image.get("source_session_id") or "")
+            linked["linked_at"] = utc_now()
+            files = self.list_files(workspace_id, session_id)
+            files.append(linked)
+            self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+            self._touch_session(workspace_id, session_id)
+            return linked
+
+    def link_room_file(
+        self,
+        workspace_id: str,
+        session_id: str,
+        file_id: str,
+        room_id: str,
+    ) -> Dict[str, Any]:
+        """Make a room-associated file available to the active session without copying it."""
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            if str(session.get("active_room") or "") != str(room_id or ""):
+                raise ValueError("Files can only be attached from the currently active room.")
+            normalized_file_id = str(file_id or "").strip()
+            source = next(
+                (
+                    row for row in self.list_room_files(workspace_id, room_id)
+                    if str(row.get("file_id") or "") == normalized_file_id
+                ),
+                None,
+            )
+            if not source:
+                raise KeyError("Unknown room file")
+            files = self.list_files(workspace_id, session_id)
+            existing = next(
+                (row for row in files if str(row.get("file_id") or "") == normalized_file_id),
+                None,
+            )
+            if existing:
+                existing["linked_at"] = utc_now()
+                self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+                self._touch_session(workspace_id, session_id)
+                return existing
+            linked = {
+                key: value for key, value in source.items()
+                if key not in {"source_session_title"}
+            }
+            linked["linked_from_session_id"] = str(source.get("source_session_id") or "")
+            linked["linked_at"] = utc_now()
+            files.append(linked)
+            self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+            self._touch_session(workspace_id, session_id)
+            return linked
 
     def load_messages(self, workspace_id: str, session_id: str, limit: int = 300) -> List[Dict[str, Any]]:
         self.get_workspace(workspace_id)

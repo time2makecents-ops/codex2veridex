@@ -78,12 +78,50 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("function recipientMatchScore", script)
         self.assertIn("chooseRecipient(contact)", script)
         self.assertIn('button.addEventListener("click", () => chooseRecipient(contact))', script)
+        self.assertIn("function emailContact", script)
+        self.assertIn("function deleteContact", script)
+        self.assertIn('api("/api/contacts/delete"', script)
+        self.assertIn("contact-email-action", styles)
+        self.assertIn("contact-delete-action", styles)
         self.assertIn("function checkDeliveryFailures", script)
         self.assertIn("Fix and resend", script)
         self.assertIn("DELIVERY_POLL_INTERVAL_MS = 15_000", script)
         self.assertIn("setTimeout(checkDeliveryFailures, 5_000)", script)
         self.assertIn(".address-book-dialog", styles)
         self.assertIn(".delivery-alert", styles)
+
+    def test_art_department_gallery_is_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="art-actions"', html)
+        self.assertIn('id="open-art-gallery"', html)
+        self.assertIn('id="art-gallery-dialog"', html)
+        self.assertIn("function renderArtTools", script)
+        self.assertIn("function renderArtGallery", script)
+        self.assertIn('api(`/api/art/images?', script)
+        self.assertIn('api("/api/art/images/attach"', script)
+        self.assertIn('state.session?.active_room === "art_department"', script)
+        self.assertIn("Attach to next message", script)
+        self.assertIn(".art-gallery-dialog", styles)
+        self.assertIn(".art-gallery-preview", styles)
+
+    def test_room_file_libraries_and_four_file_tray_are_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="room-file-actions"', html)
+        self.assertIn('id="open-room-files"', html)
+        self.assertIn('id="room-file-dialog"', html)
+        self.assertIn("function renderRoomFileTools", script)
+        self.assertIn("function renderRoomFileLibrary", script)
+        self.assertIn('api(`/api/room/files?', script)
+        self.assertIn('api("/api/room/files/attach"', script)
+        self.assertIn('["lobby", "art_department"].includes(room.id)', script)
+        self.assertIn(".slice(0, 4)", script)
+        self.assertIn(".room-file-document-preview", styles)
 
 
 if __name__ == "__main__":

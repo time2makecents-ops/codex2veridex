@@ -88,6 +88,14 @@
               <button id="compose-email" type="button">Compose email</button>
             </div>
           </div>
+          <div id="art-actions" class="art-actions" hidden>
+            <span><strong>Art Department</strong><small>Browse verified images created across this workspace</small></span>
+            <button id="open-art-gallery" type="button">Images</button>
+          </div>
+          <div id="room-file-actions" class="art-actions room-file-actions" hidden>
+            <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
+            <button id="open-room-files" type="button">Files</button>
+          </div>
           <form id="composer" class="composer">
             <input id="file-input" type="file" multiple hidden />
             <button id="attach-button" class="attach-button" type="button" title="Attach files" aria-label="Attach files">+</button>
@@ -155,6 +163,38 @@
             <label>Notes<textarea id="contact-notes" rows="5" maxlength="4000"></textarea></label>
             <button class="primary-action" type="submit">Save contact</button>
           </form>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="art-gallery-dialog" class="art-gallery-dialog" aria-labelledby="art-gallery-title">
+      <section class="art-gallery-shell">
+        <header>
+          <div><div class="eyebrow">Art Department</div><h2 id="art-gallery-title">Generated images</h2><p id="art-gallery-summary">Verified workspace artwork</p></div>
+          <button id="art-gallery-close" class="dialog-close" type="button" aria-label="Close image gallery">&times;</button>
+        </header>
+        <div id="art-gallery-content" class="art-gallery-content">
+          <div id="art-gallery-grid" class="art-gallery-grid" aria-label="Generated images"></div>
+          <aside id="art-gallery-preview" class="art-gallery-preview" aria-live="polite"></aside>
+        </div>
+        <div id="art-gallery-empty" class="art-gallery-empty" hidden>
+          <strong>No Art Department images yet</strong>
+          <span>Images created here will appear in this gallery after Veridex verifies them.</span>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="room-file-dialog" class="art-gallery-dialog room-file-dialog" aria-labelledby="room-file-title">
+      <section class="art-gallery-shell">
+        <header>
+          <div><div class="eyebrow" id="room-file-eyebrow">Room files</div><h2 id="room-file-title">Files</h2><p id="room-file-summary">Files created or added in this room</p></div>
+          <button id="room-file-close" class="dialog-close" type="button" aria-label="Close file library">&times;</button>
+        </header>
+        <div id="room-file-content" class="art-gallery-content">
+          <div id="room-file-grid" class="art-gallery-grid room-file-grid" aria-label="Room files"></div>
+          <aside id="room-file-preview" class="art-gallery-preview room-file-preview" aria-live="polite"></aside>
+        </div>
+        <div id="room-file-empty" class="art-gallery-empty" hidden>
+          <strong>No files in this room yet</strong>
+          <span>Files created, downloaded, or added to chat here will appear in this library.</span>
         </div>
       </section>
     </dialog>

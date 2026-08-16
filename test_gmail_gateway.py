@@ -163,6 +163,16 @@ class GmailGatewayTests(unittest.TestCase):
         self.assertEqual(updated["contact_id"], saved["contact_id"])
         self.assertEqual(contacts[0]["company"], "Updated Co")
 
+    def test_address_book_deletes_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self._service(temporary)
+            saved = service.save_contact({"name": "Delete Me", "email": "delete@example.com"})
+            deleted = service.delete_contact(saved["contact_id"])
+            contacts = service.list_contacts()
+
+        self.assertEqual(deleted["email"], "delete@example.com")
+        self.assertEqual(contacts, [])
+
     @patch("gmail_gateway.urllib.request.urlopen")
     def test_sent_mail_sync_imports_unique_recipients_and_excludes_self(self, urlopen) -> None:
         urlopen.side_effect = [

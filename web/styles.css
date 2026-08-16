@@ -112,8 +112,8 @@ button { cursor: pointer; }
 .email-card h3 { margin: 8px 0 6px; font: 600 19px/1.25 Georgia, serif; }
 .email-card p { margin: 0; color: #4d5a51; font-size: 13px; line-height: 1.55; }
 .email-card-actions, .email-review-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
-.email-card-actions button, .email-card-actions a, .email-review-actions button, .email-actions button, .email-compose-form button { min-height: 34px; padding: 8px 12px; border: 1px solid var(--line); color: var(--accent-dark); background: var(--paper); font-size: 11px; font-weight: 800; text-decoration: none; transition: transform 120ms ease, border-color 120ms ease, background 120ms ease; }
-.email-card-actions button:hover, .email-card-actions a:hover, .email-review-actions button:hover, .email-actions button:hover, .email-compose-form button:hover { border-color: var(--accent-dark); transform: translateY(-1px); }
+.email-card-actions button, .email-card-actions a, .email-review-actions button, .email-actions button, .art-actions button, .email-compose-form button { min-height: 34px; padding: 8px 12px; border: 1px solid var(--line); color: var(--accent-dark); background: var(--paper); font-size: 11px; font-weight: 800; text-decoration: none; transition: transform 120ms ease, border-color 120ms ease, background 120ms ease; }
+.email-card-actions button:hover, .email-card-actions a:hover, .email-review-actions button:hover, .email-actions button:hover, .art-actions button:hover, .email-compose-form button:hover { border-color: var(--accent-dark); transform: translateY(-1px); }
 .email-review { margin-top: 12px; border: 1px solid #9db4a3; background: #f7fbf7; }
 .email-review-heading { display: flex; justify-content: space-between; gap: 18px; padding: 14px 16px; border-bottom: 1px solid #cdd9d0; }
 .email-review-heading strong { font: 600 18px/1.2 Georgia, serif; }
@@ -126,12 +126,12 @@ button { cursor: pointer; }
 .email-review-actions .primary-action, .email-compose-form .primary-action { border-color: var(--accent-dark); color: white; background: var(--accent-dark); }
 
 .composer-wrap { padding: 16px clamp(24px, 10vw, 150px) 20px; background: linear-gradient(to top, white 75%, rgba(255,255,255,.7)); }
-.email-actions { max-width: 760px; margin: 0 auto 10px; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 0; border-top: 1px solid var(--line); }
-.email-actions[hidden] { display: none; }
-.email-actions span { display: grid; gap: 2px; }
-.email-actions strong { font-size: 11px; }
-.email-actions small { color: var(--muted); font-size: 9px; }
-.email-actions button { flex: 0 0 auto; border-color: var(--accent-dark); background: #edf8ef; }
+.email-actions, .art-actions { max-width: 760px; margin: 0 auto 10px; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 0; border-top: 1px solid var(--line); }
+.email-actions[hidden], .art-actions[hidden] { display: none; }
+.email-actions span, .art-actions span { display: grid; gap: 2px; }
+.email-actions strong, .art-actions strong { font-size: 11px; }
+.email-actions small, .art-actions small { color: var(--muted); font-size: 9px; }
+.email-actions button, .art-actions button { flex: 0 0 auto; border-color: var(--accent-dark); background: #edf8ef; }
 .email-action-buttons { display: flex; gap: 7px; }
 .delivery-alerts { max-width: 760px; margin: 0 auto 10px; display: grid; gap: 8px; }
 .delivery-alerts[hidden] { display: none; }
@@ -163,7 +163,7 @@ button { cursor: pointer; }
 .composer button:disabled { cursor: default; opacity: .45; transform: none; }
 .composer-note { max-width: 760px; margin: 8px auto 0; color: var(--muted); font-size: 10px; text-align: center; }
 .email-compose-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 0; color: var(--ink); background: white; box-shadow: 0 28px 90px rgba(12, 24, 16, .28); animation: dialog-in 180ms ease both; }
-.email-compose-dialog::backdrop, .address-book-dialog::backdrop { background: rgba(14, 23, 17, .46); backdrop-filter: blur(2px); animation: fade-in 160ms ease both; }
+.email-compose-dialog::backdrop, .address-book-dialog::backdrop, .art-gallery-dialog::backdrop { background: rgba(14, 23, 17, .58); backdrop-filter: blur(3px); animation: fade-in 160ms ease both; }
 .email-compose-form { display: grid; gap: 16px; padding: 24px; }
 .email-compose-form header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .email-compose-form h2 { margin: 5px 0 0; font: 500 30px/1.1 Georgia, serif; }
@@ -207,12 +207,19 @@ button { cursor: pointer; }
 .address-book-content { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .9fr); gap: 18px; }
 .contact-list { min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
 .contact-empty { padding: 28px 12px; color: var(--muted); text-align: center; font-size: 12px; }
-.contact-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; padding: 12px; border: 0; border-bottom: 1px solid var(--line); text-align: left; color: var(--ink); background: white; }
+.contact-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 9px 10px 9px 12px; border-bottom: 1px solid var(--line); color: var(--ink); background: white; transition: background 120ms ease; }
 .contact-row:hover, .contact-row.active { background: #f2f7f2; }
+.address-book-dialog .contact-row-main { min-width: 0; min-height: 0; display: grid; gap: 5px; padding: 3px 0; border: 0; text-align: left; color: var(--ink); background: transparent; }
 .contact-row strong, .contact-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .contact-row strong { font-size: 12px; }
 .contact-row span { color: var(--muted); font-size: 10px; }
-.contact-row small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--accent-dark); font-size: 9px; }
+.contact-row-meta { display: grid; justify-items: end; gap: 6px; }
+.contact-row small { color: var(--accent-dark); font-size: 9px; }
+.contact-row-actions { display: flex; gap: 5px; }
+.address-book-dialog .contact-row-actions button { min-height: 28px; padding: 5px 8px; background: white; }
+.address-book-dialog .contact-row-actions .contact-email-action { border-color: #83a68c; color: var(--accent-dark); }
+.address-book-dialog .contact-row-actions .contact-delete-action { border-color: #d8aaa2; color: #8a2d2d; }
+.address-book-dialog .contact-row-actions button:hover { transform: translateY(-1px); }
 .contact-form { align-content: start; display: grid; gap: 11px; padding: 14px; border: 1px solid #b8c9bc; background: #f8faf7; }
 .contact-form[hidden] { display: none; }
 .contact-form-heading { display: flex; justify-content: space-between; align-items: center; }
@@ -220,6 +227,40 @@ button { cursor: pointer; }
 .contact-form-heading button { min-height: 0; padding: 3px; border: 0; background: transparent; }
 .contact-form label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .contact-form textarea { resize: vertical; }
+.art-gallery-dialog { width: min(1180px, calc(100vw - 32px)); height: min(820px, calc(100vh - 32px)); padding: 0; border: 0; color: #eef3ef; background: #111713; box-shadow: 0 32px 100px rgba(4, 10, 6, .55); animation: dialog-in 180ms ease both; }
+.art-gallery-shell { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); padding: 24px; }
+.art-gallery-shell > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid rgba(220, 235, 224, .17); }
+.art-gallery-shell h2 { margin: 5px 0 4px; color: white; font: 500 32px/1.05 Georgia, serif; }
+.art-gallery-shell header p { margin: 0; color: #9faea3; font-size: 10px; }
+.art-gallery-shell .eyebrow { color: #99c9a4; }
+.art-gallery-shell .dialog-close { min-width: 38px; padding: 0; border: 0; color: #aab6ad; background: transparent; font-size: 30px; }
+.art-gallery-content { min-height: 0; display: grid; grid-template-columns: minmax(260px, .72fr) minmax(420px, 1.45fr); gap: 24px; padding-top: 22px; }
+.art-gallery-content[hidden] { display: none; }
+.art-gallery-grid { min-height: 0; align-content: start; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; overflow-y: auto; padding-right: 6px; }
+.art-gallery-thumb { min-width: 0; display: grid; gap: 7px; padding: 0 0 8px; overflow: hidden; border: 1px solid transparent; color: #c8d2ca; background: #1b231d; text-align: left; transition: border-color 130ms ease, transform 130ms ease, background 130ms ease; animation: rise 180ms ease both; }
+.art-gallery-thumb:hover { transform: translateY(-2px); background: #222d25; }
+.art-gallery-thumb.active { border-color: #81ba8d; background: #263329; }
+.art-gallery-thumb img { width: 100%; aspect-ratio: 1 / .78; display: block; object-fit: cover; background: #090d0a; }
+.room-file-type { aspect-ratio: 1 / .78; display: grid; place-items: center; color: #9fd2aa; background: #0c120e; font: 600 22px/1 Georgia, serif; letter-spacing: .08em; }
+.art-gallery-thumb span { padding: 0 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.art-gallery-preview { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 14px; }
+.art-gallery-preview figure { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; margin: 0; overflow: hidden; background: #080c09; }
+.art-gallery-preview figure > img { width: 100%; height: 100%; min-height: 0; object-fit: contain; animation: fade-in 180ms ease both; }
+.room-file-document-preview { min-height: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: #9fd2aa; background: radial-gradient(circle at center, #1d2a20 0, #080c09 68%); animation: fade-in 180ms ease both; }
+.room-file-document-preview strong { font: 600 clamp(36px, 8vw, 84px)/1 Georgia, serif; letter-spacing: .08em; }
+.room-file-document-preview span { color: #9faea3; font-size: 10px; }
+.art-gallery-preview figcaption { padding: 13px 15px; border-top: 1px solid rgba(220, 235, 224, .14); background: #171e19; }
+.art-gallery-preview h3 { margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: white; font: 600 19px/1.2 Georgia, serif; }
+.art-gallery-preview p { margin: 0; color: #9faea3; font-size: 9px; line-height: 1.5; }
+.art-gallery-preview-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.art-gallery-preview-actions a, .art-gallery-preview-actions button { min-height: 36px; padding: 9px 12px; border: 1px solid #56665a; color: #d9e3db; background: transparent; font-size: 10px; font-weight: 800; text-decoration: none; }
+.art-gallery-preview-actions a:hover { border-color: #91b79a; }
+.art-gallery-preview-actions .primary-action { border-color: #87c291; color: #102116; background: #9ddb9f; }
+.art-gallery-preview-actions button:disabled { opacity: .58; cursor: default; }
+.art-gallery-empty { align-self: center; justify-self: center; display: grid; justify-items: center; gap: 7px; max-width: 400px; padding: 48px 24px; text-align: center; }
+.art-gallery-empty[hidden] { display: none; }
+.art-gallery-empty strong { color: white; font: 500 24px/1.2 Georgia, serif; }
+.art-gallery-empty span { color: #9faea3; font-size: 11px; line-height: 1.55; }
 .toast { position: fixed; right: 24px; bottom: 24px; padding: 12px 16px; color: white; background: #8a2d2d; font-size: 12px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: 180ms ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .governance-scrim { position: fixed; inset: 0; z-index: 30; background: rgba(14, 23, 17, .34); }
@@ -260,7 +301,7 @@ button { cursor: pointer; }
   .composer-wrap { padding: 12px 14px 16px; }
   .composer-note { display: none; }
   .message.user { padding-left: 24px; }
-  .email-actions small { display: none; }
+  .email-actions small, .art-actions small { display: none; }
   .email-action-buttons { gap: 4px; }
   .delivery-alert { grid-template-columns: 1fr; }
   .delivery-alert-actions { justify-content: flex-end; }
@@ -277,4 +318,10 @@ button { cursor: pointer; }
   .address-book-toolbar label { grid-column: 1 / -1; }
   .address-book-content { grid-template-columns: 1fr; overflow-y: auto; }
   .contact-list { min-height: 220px; }
+  .art-gallery-shell { padding: 16px; }
+  .art-gallery-shell h2 { font-size: 26px; }
+  .art-gallery-content { grid-template-columns: 1fr; grid-template-rows: 150px minmax(0, 1fr); gap: 14px; padding-top: 14px; }
+  .art-gallery-grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); grid-auto-flow: column; grid-auto-columns: minmax(120px, 1fr); overflow-x: auto; overflow-y: hidden; padding: 0 0 5px; }
+  .art-gallery-preview-actions { flex-wrap: wrap; }
+  .art-gallery-preview-actions .primary-action { flex: 1 0 100%; }
 }

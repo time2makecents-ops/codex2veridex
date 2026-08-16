@@ -113,11 +113,38 @@ def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str,
         "kind",
         "scope",
         "scope_ref",
+        "room_id",
+        "created_at",
+        "linked_at",
         "ledgered_at",
     ]
     if include_path:
         keys.append("path")
     return {key: row[key] for key in keys if key in row}
+
+
+def public_art_image(row: Dict[str, Any]) -> Dict[str, Any]:
+    value = public_file(row)
+    for key in ("source_session_id", "source_session_title", "created_at"):
+        if key in row:
+            value[key] = row[key]
+    return value
+
+
+def public_room_file(row: Dict[str, Any]) -> Dict[str, Any]:
+    value = public_file(row)
+    for key in ("source_session_id", "source_session_title"):
+        if key in row:
+            value[key] = row[key]
+    return value
+
+
+def room_file_library_id(value: Any) -> str:
+    room_id = str(value or "").strip()
+    room = room_by_id(room_id)
+    if not room or room_id in {"lobby", "art_department"}:
+        raise ValueError("The Files library is available only in non-Lobby rooms outside Art Department.")
+    return room_id
 
 
 def generated_artifact_report(artifacts: list[Dict[str, Any]]) -> str:
@@ -1438,6 +1465,23 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "contacts": GMAIL.list_contacts(str(query.get("q", [""])[0])),
                     "sync": GMAIL.contact_sync_status(),
                 })
+            elif parsed.path == "/api/art/images":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                self._json({
+                    "images": [
+                        public_art_image(row)
+                        for row in STORE.list_generated_images(workspace_id, "art_department")
+                    ]
+                })
+            elif parsed.path == "/api/room/files":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                room_id = room_file_library_id(query.get("room_id", [""])[0])
+                self._json({
+                    "files": [
+                        public_room_file(row)
+                        for row in STORE.list_room_files(workspace_id, room_id)
+                    ]
+                })
             elif parsed.path == "/api/mail/alerts":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
@@ -1498,6 +1542,38 @@ class VeridexHandler(BaseHTTPRequestHandler):
             payload = self._body()
             if parsed.path == "/api/contacts/save":
                 self._json({"contact": GMAIL.save_contact(payload), "contacts": GMAIL.list_contacts()})
+            elif parsed.path == "/api/contacts/delete":
+                self._json({
+                    "deleted": GMAIL.delete_contact(str(payload.get("contact_id") or "")),
+                    "contacts": GMAIL.list_contacts(),
+                })
+            elif parsed.path == "/api/art/images/attach":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                linked = STORE.link_generated_image(
+                    workspace_id,
+                    session_id,
+                    str(payload.get("file_id") or ""),
+                    "art_department",
+                )
+                self._json({
+                    "file": public_file(linked),
+                    "files": [public_file(row) for row in STORE.list_files(workspace_id, session_id)],
+                })
+            elif parsed.path == "/api/room/files/attach":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                room_id = room_file_library_id(payload.get("room_id"))
+                linked = STORE.link_room_file(
+                    workspace_id,
+                    session_id,
+                    str(payload.get("file_id") or ""),
+                    room_id,
+                )
+                self._json({
+                    "file": public_file(linked),
+                    "files": [public_file(row) for row in STORE.list_files(workspace_id, session_id)],
+                })
             elif parsed.path == "/api/contacts/sync":
                 self._json(GMAIL.sync_contacts(max_messages=500))
             elif parsed.path == "/api/mail/check-delivery":

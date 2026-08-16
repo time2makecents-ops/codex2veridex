@@ -583,6 +583,20 @@ class GmailGateway:
             row = conn.execute("SELECT * FROM gmail_contacts WHERE contact_id = ?", (contact_id,)).fetchone()
         return self._contact_value(row)
 
+    def delete_contact(self, contact_id: str) -> Dict[str, Any]:
+        normalized_id = str(contact_id or "").strip()
+        if not normalized_id:
+            raise GmailGatewayError("Choose an address-book contact to delete.")
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM gmail_contacts WHERE contact_id = ?",
+                (normalized_id,),
+            ).fetchone()
+            if not row:
+                raise GmailGatewayError("That address-book contact no longer exists.")
+            conn.execute("DELETE FROM gmail_contacts WHERE contact_id = ?", (normalized_id,))
+        return self._contact_value(row)
+
     def _record_contact_event(
         self,
         conn: sqlite3.Connection,

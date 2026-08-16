@@ -10,6 +10,13 @@ from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_room_file_library_rejects_lobby_and_art_department(self) -> None:
+        self.assertEqual(veridex_server.room_file_library_id("control_room"), "control_room")
+        with self.assertRaises(ValueError):
+            veridex_server.room_file_library_id("lobby")
+        with self.assertRaises(ValueError):
+            veridex_server.room_file_library_id("art_department")
+
     def test_chat_saves_exact_model_route_with_no_external_app_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = VeridexStore(Path(temporary))

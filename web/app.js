@@ -16,6 +16,16 @@ const state = {
   rooms: [],
   contacts: [],
   contactSync: { completed: false },
+  artImages: [],
+  artImagesLoading: false,
+  artImagesLoaded: false,
+  selectedArtImageId: "",
+  attachingArtImageId: "",
+  roomFiles: [],
+  roomFilesLoading: false,
+  roomFilesRoomId: "",
+  selectedRoomFileId: "",
+  attachingRoomFileId: "",
   deliveryAlerts: [],
   governance: {},
   selectedFiles: new Set(),
@@ -68,6 +78,8 @@ function savedRoute(messages) {
 function applyState(value, preserveRoute = false) {
   const priorMessageIds = new Set(state.messages.map((message) => message.message_id).filter(Boolean));
   const wasBootstrapped = state.bootstrapped;
+  const workspaceChanged = state.workspace?.workspace_id
+    && state.workspace.workspace_id !== value.workspace?.workspace_id;
   const sessionChanged = state.session?.session_id && state.session.session_id !== value.session?.session_id;
   if (sessionChanged && window.speechSynthesis) {
     window.speechSynthesis.cancel();
@@ -86,6 +98,14 @@ function applyState(value, preserveRoute = false) {
     state.selectedFiles.clear();
     state.emailAttachments = [];
     state.deliveryAlerts = [];
+  }
+  if (workspaceChanged) {
+    state.artImages = [];
+    state.artImagesLoaded = false;
+    state.selectedArtImageId = "";
+    state.roomFiles = [];
+    state.roomFilesRoomId = "";
+    state.selectedRoomFileId = "";
   }
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
@@ -338,6 +358,28 @@ function hideContactForm() {
   renderContacts();
 }
 
+function emailContact(contact) {
+  closeAddressBook();
+  openEmailComposer({ to: [contactLabel(contact)] });
+}
+
+async function deleteContact(contact) {
+  const label = contact.name || contact.email;
+  if (!window.confirm(`Delete ${label} from the address book?`)) return;
+  try {
+    const result = await api("/api/contacts/delete", {
+      method: "POST",
+      body: JSON.stringify({ contact_id: contact.contact_id }),
+    });
+    state.contacts = result.contacts || state.contacts.filter((row) => row.contact_id !== contact.contact_id);
+    if (el("contact-id").value === contact.contact_id) hideContactForm();
+    else renderContacts();
+    el("contact-sync-status").textContent = `Deleted ${label}.`;
+  } catch (error) {
+    showError(error.message || String(error));
+  }
+}
+
 function renderContacts() {
   const list = el("contact-list");
   if (!list) return;
@@ -357,18 +399,39 @@ function renderContacts() {
   }
   const selectedId = el("contact-id").value;
   contacts.forEach((contact) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `contact-row${selectedId === contact.contact_id ? " active" : ""}`;
+    const row = document.createElement("div");
+    row.className = `contact-row${selectedId === contact.contact_id ? " active" : ""}`;
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "contact-row-main";
+    edit.title = `Edit ${contact.name || contact.email}`;
     const name = document.createElement("strong");
     name.textContent = contact.name || contact.email;
     const address = document.createElement("span");
     address.textContent = [contact.email, contact.company, contact.phone].filter(Boolean).join(" · ");
     const count = document.createElement("small");
     count.textContent = `${Number(contact.email_count || 0)} sent`;
-    button.append(name, address, count);
-    button.addEventListener("click", () => showContactForm(contact));
-    list.append(button);
+    edit.append(name, address);
+    edit.addEventListener("click", () => showContactForm(contact));
+
+    const meta = document.createElement("div");
+    meta.className = "contact-row-meta";
+    const actions = document.createElement("div");
+    actions.className = "contact-row-actions";
+    const email = document.createElement("button");
+    email.type = "button";
+    email.className = "contact-email-action";
+    email.textContent = "Email";
+    email.addEventListener("click", () => emailContact(contact));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "contact-delete-action";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => deleteContact(contact));
+    actions.append(email, remove);
+    meta.append(count, actions);
+    row.append(edit, meta);
+    list.append(row);
   });
 }
 
@@ -876,7 +939,16 @@ function renderFiles() {
     uploading.textContent = "Saving file…";
     tray.append(uploading);
   }
-  state.files.forEach((file) => {
+  const recentFiles = state.files
+    .map((file, index) => ({ file, index }))
+    .sort((left, right) => {
+      const leftTime = String(left.file.linked_at || left.file.updated_at || left.file.created_at || left.file.ledgered_at || "");
+      const rightTime = String(right.file.linked_at || right.file.updated_at || right.file.created_at || right.file.ledgered_at || "");
+      return rightTime.localeCompare(leftTime) || right.index - left.index;
+    })
+    .slice(0, 4)
+    .map((entry) => entry.file);
+  recentFiles.forEach((file) => {
     const button = document.createElement("button");
     const selected = state.selectedFiles.has(file.file_id);
     button.type = "button";
@@ -890,6 +962,338 @@ function renderFiles() {
     });
     tray.append(button);
   });
+}
+
+function artImageContentUrl(image) {
+  const query = new URLSearchParams({
+    workspace_id: state.workspace.workspace_id,
+    session_id: image.source_session_id,
+    file_id: image.file_id,
+  });
+  return `/api/files/content?${query}`;
+}
+
+function selectedArtImage() {
+  return state.artImages.find((image) => image.file_id === state.selectedArtImageId)
+    || state.artImages[0]
+    || null;
+}
+
+async function loadArtImages() {
+  if (!state.workspace || state.artImagesLoading) return;
+  state.artImagesLoading = true;
+  renderArtGallery();
+  try {
+    const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id });
+    const result = await api(`/api/art/images?${query}`);
+    state.artImages = result.images || [];
+    state.artImagesLoaded = true;
+    if (!state.artImages.some((image) => image.file_id === state.selectedArtImageId)) {
+      state.selectedArtImageId = state.artImages[0]?.file_id || "";
+    }
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    state.artImagesLoading = false;
+    renderArtGallery();
+  }
+}
+
+async function attachArtImage(image) {
+  if (!image || state.attachingArtImageId || state.selectedFiles.has(image.file_id)) return;
+  state.attachingArtImageId = image.file_id;
+  renderArtGallery();
+  try {
+    const result = await api("/api/art/images/attach", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        file_id: image.file_id,
+      }),
+    });
+    state.files = result.files || state.files;
+    state.selectedFiles.add(image.file_id);
+    renderFiles();
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    state.attachingArtImageId = "";
+    renderArtGallery();
+  }
+}
+
+function renderArtGallery() {
+  const dialog = el("art-gallery-dialog");
+  if (!dialog) return;
+  const grid = el("art-gallery-grid");
+  const preview = el("art-gallery-preview");
+  const empty = el("art-gallery-empty");
+  grid.replaceChildren();
+  preview.replaceChildren();
+  el("art-gallery-summary").textContent = state.artImagesLoading
+    ? "Loading verified artworkâ€¦"
+    : `${state.artImages.length} verified ${state.artImages.length === 1 ? "image" : "images"} across Art Department sessions`;
+  empty.hidden = state.artImagesLoading || state.artImages.length > 0;
+  el("art-gallery-content").hidden = state.artImagesLoading || !state.artImages.length;
+  if (state.artImagesLoading || !state.artImages.length) return;
+
+  const selected = selectedArtImage();
+  state.artImages.forEach((image) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `art-gallery-thumb${selected?.file_id === image.file_id ? " active" : ""}`;
+    button.setAttribute("aria-pressed", String(selected?.file_id === image.file_id));
+    button.setAttribute("aria-label", `Preview ${image.name || "generated image"}`);
+    const thumbnail = document.createElement("img");
+    thumbnail.src = artImageContentUrl(image);
+    thumbnail.alt = "";
+    thumbnail.loading = "lazy";
+    const label = document.createElement("span");
+    label.textContent = image.name || "Generated image";
+    button.append(thumbnail, label);
+    button.addEventListener("click", () => {
+      state.selectedArtImageId = image.file_id;
+      renderArtGallery();
+    });
+    grid.append(button);
+  });
+
+  if (!selected) return;
+  const hero = document.createElement("figure");
+  const image = document.createElement("img");
+  image.src = artImageContentUrl(selected);
+  image.alt = selected.name || "Generated image";
+  const caption = document.createElement("figcaption");
+  const name = document.createElement("h3");
+  name.textContent = selected.name || "Generated image";
+  const facts = document.createElement("p");
+  facts.textContent = [
+    selected.artifact_number ? `Artifact #${selected.artifact_number}` : "Verified artifact",
+    formatBytes(Number(selected.size || 0)),
+    readableEmailDate(selected.created_at || selected.ledgered_at),
+    selected.source_session_title,
+  ].filter(Boolean).join(" Â· ");
+  caption.append(name, facts);
+  hero.append(image, caption);
+
+  const actions = document.createElement("div");
+  actions.className = "art-gallery-preview-actions";
+  const open = document.createElement("a");
+  open.href = artImageContentUrl(selected);
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.textContent = "Open original";
+  const download = document.createElement("a");
+  download.href = artImageContentUrl(selected);
+  download.download = selected.name || "generated-image";
+  download.textContent = "Download";
+  const attach = document.createElement("button");
+  const attached = state.selectedFiles.has(selected.file_id);
+  attach.type = "button";
+  attach.className = "primary-action";
+  attach.disabled = attached || Boolean(state.attachingArtImageId);
+  attach.textContent = attached
+    ? "Attached to next message"
+    : state.attachingArtImageId === selected.file_id ? "Attachingâ€¦" : "Attach to next message";
+  attach.addEventListener("click", () => attachArtImage(selected));
+  actions.append(open, download, attach);
+  preview.append(hero, actions);
+}
+
+async function openArtGallery() {
+  if (state.session?.active_room !== "art_department") return;
+  const dialog = el("art-gallery-dialog");
+  if (!dialog.open) dialog.showModal();
+  await loadArtImages();
+}
+
+function closeArtGallery() {
+  const dialog = el("art-gallery-dialog");
+  if (dialog.open) dialog.close();
+}
+
+function currentRoom() {
+  return state.rooms.find((room) => room.id === state.session?.active_room) || null;
+}
+
+function roomFileContentUrl(file) {
+  return artImageContentUrl(file);
+}
+
+function roomFileType(file) {
+  const extension = String(file.name || "").split(".").pop();
+  if (extension && extension !== file.name) return extension.toUpperCase().slice(0, 8);
+  return String(file.content_type || "FILE").split("/").pop().toUpperCase().slice(0, 8);
+}
+
+function selectedRoomFile() {
+  return state.roomFiles.find((file) => file.file_id === state.selectedRoomFileId)
+    || state.roomFiles[0]
+    || null;
+}
+
+async function loadRoomFiles() {
+  const roomId = state.session?.active_room || "";
+  if (!state.workspace || !roomId || state.roomFilesLoading) return;
+  state.roomFilesLoading = true;
+  state.roomFilesRoomId = roomId;
+  renderRoomFileLibrary();
+  try {
+    const query = new URLSearchParams({
+      workspace_id: state.workspace.workspace_id,
+      room_id: roomId,
+    });
+    const result = await api(`/api/room/files?${query}`);
+    if (state.session?.active_room !== roomId) return;
+    state.roomFiles = result.files || [];
+    if (!state.roomFiles.some((file) => file.file_id === state.selectedRoomFileId)) {
+      state.selectedRoomFileId = state.roomFiles[0]?.file_id || "";
+    }
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    state.roomFilesLoading = false;
+    renderRoomFileLibrary();
+  }
+}
+
+async function attachRoomFile(file) {
+  if (!file || state.attachingRoomFileId || state.selectedFiles.has(file.file_id)) return;
+  state.attachingRoomFileId = file.file_id;
+  renderRoomFileLibrary();
+  try {
+    const result = await api("/api/room/files/attach", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        room_id: state.session.active_room,
+        file_id: file.file_id,
+      }),
+    });
+    state.files = result.files || state.files;
+    state.selectedFiles.add(file.file_id);
+    renderFiles();
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    state.attachingRoomFileId = "";
+    renderRoomFileLibrary();
+  }
+}
+
+function renderRoomFileLibrary() {
+  const dialog = el("room-file-dialog");
+  if (!dialog) return;
+  const room = currentRoom();
+  const grid = el("room-file-grid");
+  const preview = el("room-file-preview");
+  const empty = el("room-file-empty");
+  grid.replaceChildren();
+  preview.replaceChildren();
+  el("room-file-eyebrow").textContent = room?.title || "Room files";
+  el("room-file-summary").textContent = state.roomFilesLoading
+    ? "Loading room filesâ€¦"
+    : `${state.roomFiles.length} ${state.roomFiles.length === 1 ? "file" : "files"} created or added across ${room?.title || "this room"} sessions`;
+  empty.hidden = state.roomFilesLoading || state.roomFiles.length > 0;
+  el("room-file-content").hidden = state.roomFilesLoading || !state.roomFiles.length;
+  if (state.roomFilesLoading || !state.roomFiles.length) return;
+
+  const selected = selectedRoomFile();
+  state.roomFiles.forEach((file) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `art-gallery-thumb room-file-thumb${selected?.file_id === file.file_id ? " active" : ""}`;
+    button.setAttribute("aria-pressed", String(selected?.file_id === file.file_id));
+    button.setAttribute("aria-label", `Preview ${file.name || "file"}`);
+    if (String(file.content_type || "").startsWith("image/")) {
+      const thumbnail = document.createElement("img");
+      thumbnail.src = roomFileContentUrl(file);
+      thumbnail.alt = "";
+      thumbnail.loading = "lazy";
+      button.append(thumbnail);
+    } else {
+      const type = document.createElement("div");
+      type.className = "room-file-type";
+      type.textContent = roomFileType(file);
+      button.append(type);
+    }
+    const label = document.createElement("span");
+    label.textContent = file.name || "File";
+    button.append(label);
+    button.addEventListener("click", () => {
+      state.selectedRoomFileId = file.file_id;
+      renderRoomFileLibrary();
+    });
+    grid.append(button);
+  });
+
+  if (!selected) return;
+  const hero = document.createElement("figure");
+  if (String(selected.content_type || "").startsWith("image/")) {
+    const image = document.createElement("img");
+    image.src = roomFileContentUrl(selected);
+    image.alt = selected.name || "Room file";
+    hero.append(image);
+  } else {
+    const documentPreview = document.createElement("div");
+    documentPreview.className = "room-file-document-preview";
+    const type = document.createElement("strong");
+    type.textContent = roomFileType(selected);
+    const contentType = document.createElement("span");
+    contentType.textContent = selected.content_type || "File";
+    documentPreview.append(type, contentType);
+    hero.append(documentPreview);
+  }
+  const caption = document.createElement("figcaption");
+  const name = document.createElement("h3");
+  name.textContent = selected.name || "File";
+  const facts = document.createElement("p");
+  facts.textContent = [
+    selected.artifact_number ? `Artifact #${selected.artifact_number}` : "Ledgered file",
+    formatBytes(Number(selected.size || 0)),
+    readableEmailDate(selected.created_at || selected.ledgered_at),
+    selected.source_session_title,
+  ].filter(Boolean).join(" Â· ");
+  caption.append(name, facts);
+  hero.append(caption);
+
+  const actions = document.createElement("div");
+  actions.className = "art-gallery-preview-actions";
+  const open = document.createElement("a");
+  open.href = roomFileContentUrl(selected);
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.textContent = "Open original";
+  const download = document.createElement("a");
+  download.href = roomFileContentUrl(selected);
+  download.download = selected.name || "room-file";
+  download.textContent = "Download";
+  const attach = document.createElement("button");
+  const attached = state.selectedFiles.has(selected.file_id);
+  attach.type = "button";
+  attach.className = "primary-action";
+  attach.disabled = attached || Boolean(state.attachingRoomFileId);
+  attach.textContent = attached
+    ? "Attached to next message"
+    : state.attachingRoomFileId === selected.file_id ? "Attachingâ€¦" : "Attach to next message";
+  attach.addEventListener("click", () => attachRoomFile(selected));
+  actions.append(open, download, attach);
+  preview.append(hero, actions);
+}
+
+async function openRoomFileLibrary() {
+  const roomId = state.session?.active_room || "";
+  if (!roomId || ["lobby", "art_department"].includes(roomId)) return;
+  const dialog = el("room-file-dialog");
+  if (!dialog.open) dialog.showModal();
+  await loadRoomFiles();
+}
+
+function closeRoomFileLibrary() {
+  const dialog = el("room-file-dialog");
+  if (dialog.open) dialog.close();
 }
 
 function renderRoomControl() {
@@ -914,6 +1318,22 @@ function renderEmailTools() {
   el("email-compose-form").querySelector('[type="submit"]').disabled = state.sending || state.uploading;
   renderEmailAttachments();
   renderDeliveryAlerts();
+}
+
+function renderArtTools() {
+  const isArtDepartment = state.session?.active_room === "art_department";
+  el("art-actions").hidden = !isArtDepartment;
+  el("open-art-gallery").disabled = state.sending || state.uploading || state.switchingRoom;
+  if (!isArtDepartment && el("art-gallery-dialog").open) closeArtGallery();
+}
+
+function renderRoomFileTools() {
+  const room = currentRoom();
+  const hasFileLibrary = Boolean(room && !["lobby", "art_department"].includes(room.id));
+  el("room-file-actions").hidden = !hasFileLibrary;
+  el("room-file-action-title").textContent = room ? `${room.title} files` : "Room files";
+  el("open-room-files").disabled = state.sending || state.uploading || state.switchingRoom;
+  if (!hasFileLibrary && el("room-file-dialog").open) closeRoomFileLibrary();
 }
 
 function renderGovernance() {
@@ -1024,6 +1444,8 @@ function render() {
     : "Dictation requires Chrome or Edge";
   renderRoomControl();
   renderEmailTools();
+  renderArtTools();
+  renderRoomFileTools();
   renderGovernance();
   renderNavigation();
   renderMessages();
@@ -1173,6 +1595,18 @@ el("voice-input").addEventListener("click", toggleDictation);
 
 el("compose-email").addEventListener("click", () => openEmailComposer());
 el("address-book").addEventListener("click", openAddressBook);
+el("open-art-gallery").addEventListener("click", openArtGallery);
+el("art-gallery-close").addEventListener("click", closeArtGallery);
+el("art-gallery-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeArtGallery();
+});
+el("open-room-files").addEventListener("click", openRoomFileLibrary);
+el("room-file-close").addEventListener("click", closeRoomFileLibrary);
+el("room-file-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeRoomFileLibrary();
+});
 el("email-compose-close").addEventListener("click", closeEmailComposer);
 el("email-compose-cancel").addEventListener("click", closeEmailComposer);
 el("email-compose-dialog").addEventListener("cancel", (event) => {
