@@ -17,4 +17,4 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $Python -m pip install -r $Requirements
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Veridex document dependencies are ready in $EnvironmentRoot"
+Write-Host "Veridex document and Art Studio dependencies are ready in $EnvironmentRoot"

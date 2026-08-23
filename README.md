@@ -16,6 +16,7 @@ and does not read from or write to `C:\Office-App`.
 - Durable NDJSON chat logs stored beneath `data/workspaces/`.
 - Session-scoped file attachments saved beside each session transcript.
 - Generated images verified, ledgered, previewed, and reported with their exact local path and checksum.
+- A full Art Studio with the existing Codex image route, optional free-provider generation, reference editing, local finishing tools, explicit projects, and image lineage.
 - An HR Resume Studio with saved career profiles, job tailoring, ATS review, private/federal templates, and verified DOCX/PDF/text exports.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
@@ -123,6 +124,37 @@ Generated documents use the same governed staging and ledger boundary. PDF,
 DOCX, TXT, and Markdown files are checked by signature or readable content
 before they can support a file-creation claim.
 
+## Art Department Studio
+
+Enter **Art Department** and select **Art Studio**. Its four work areas provide:
+
+- automatic generation through the same authenticated Codex image tools used by Art Department chat, with no separate API key;
+- Cloudflare Workers AI generation through Fast Draft, Reference Edit, Text/Poster, and Quality modes;
+- automatic fallback to Pollinations `flux` or `zimage` when an eligible Cloudflare request hits quota or a transient provider failure;
+- one-to-four variants, reusable seeds, negative prompts, style presets, and common aspect ratios;
+- reference-based edits using up to four verified Art Department images;
+- local resizing, upscaling, cropping, captions, collages, conversion, compression, and CPU background removal;
+- optional visual critique, explicit project versions, downloads, and attach-to-chat actions.
+
+The provider registry is strictly allowlisted. The Codex route uses the existing
+ChatGPT-authenticated Codex session and does not enable API billing. It never
+selects a Pollinations paid-only model. Keep the Cloudflare account on **Workers Free** and use a
+Pollinations account without purchased Pollen to preserve the intended
+zero-cost optional-provider boundary. Add those optional credentials to ignored `.env.local`:
+
+```text
+VERIDEX_CLOUDFLARE_ACCOUNT_ID=...
+VERIDEX_CLOUDFLARE_API_TOKEN=...
+VERIDEX_POLLINATIONS_API_KEY=...
+```
+
+Cloudflare Free stops after its daily allocation; Veridex never enables billing.
+When the optional hosted providers are unavailable, Auto uses Codex image tools
+in Full computer access mode so the verified result can be saved, while local
+Finish tools continue to work. The first background-removal request
+downloads its open model and can take longer on this computer. Every result is a
+new verified artifact; originals are never overwritten.
+
 ## HR Resume Studio
 
 Enter **HR Department** and select **Resume Studio**. The guided workflow can:
@@ -193,6 +225,20 @@ room controls`, and `can you list available rooms?` return the authoritative
 directory. Room navigation and directory requests are handled deterministically
 by Veridex before Codex is called, and every session still has exactly one
 active room.
+
+### Governed administration
+
+The Infrastructure Room exposes Administration for global room and program
+changes. Navigator handles rule and gate proposals from the Control Room. A
+proposal remains a preview until the user approves its exact catalog or policy
+version. Amendments and disabling governance require a second confirmation;
+the protected approval, audit, truth, and scope kernel cannot be disabled from
+inside Veridex.
+
+Applied catalogs and governance snapshots are versioned under ignored
+`data/system/administration/` storage. Approved program changes are restricted
+to the proposal's repository paths, must pass verification, and never restart
+Veridex automatically.
 
 ## Model routing
 

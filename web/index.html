@@ -62,6 +62,7 @@
             <button id="navigator-status" class="navigator-status" type="button" aria-expanded="false" aria-controls="governance-panel">
               <span class="navigator-dot"></span><span>Navigator active · monitoring</span>
             </button>
+            <button id="open-administration" class="administration-status" type="button" aria-expanded="false" aria-controls="administration-panel" hidden>Infrastructure administration</button>
           </div>
           <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">
             <div class="route-primary"><span class="route-dot"></span><span id="route-model">Model routing ready</span></div>
@@ -89,8 +90,8 @@
             </div>
           </div>
           <div id="art-actions" class="art-actions" hidden>
-            <span><strong>Art Department</strong><small>Browse verified images created across this workspace</small></span>
-            <button id="open-art-gallery" type="button">Images</button>
+            <span><strong>Art Department</strong><small>Create, finish, and browse verified workspace artwork</small></span>
+            <div class="email-action-buttons"><button id="open-art-studio" type="button">Art Studio</button><button id="open-art-gallery" type="button">Images</button></div>
           </div>
           <div id="room-file-actions" class="art-actions room-file-actions" hidden>
             <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
@@ -183,6 +184,83 @@
         <div id="art-gallery-empty" class="art-gallery-empty" hidden>
           <strong>No Art Department images yet</strong>
           <span>Images created here will appear in this gallery after Veridex verifies them.</span>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="art-studio-dialog" class="art-studio-dialog" aria-labelledby="art-studio-title">
+      <section class="art-studio-shell">
+        <header class="art-studio-header">
+          <div><div class="eyebrow">Art Department</div><h2 id="art-studio-title">Art Studio</h2><p>Account and free-provider routes. Verified outputs. Every revision preserved.</p></div>
+          <div class="art-studio-header-status"><span id="art-provider-status">Checking providers</span><button id="art-studio-close" class="dialog-close" type="button" aria-label="Close Art Studio">&times;</button></div>
+        </header>
+        <nav class="art-mode-rail" aria-label="Art Studio modes">
+          <button class="active" data-art-mode="create" type="button"><span>01</span>Create</button>
+          <button data-art-mode="edit" type="button"><span>02</span>Edit</button>
+          <button data-art-mode="finish" type="button"><span>03</span>Finish</button>
+          <button data-art-mode="projects" type="button"><span>04</span>Projects</button>
+        </nav>
+        <div class="art-studio-workspace">
+          <aside class="art-control-column">
+            <section id="art-mode-create" class="art-mode-panel active">
+              <div class="art-panel-heading"><div class="eyebrow">New work</div><h3>Create image</h3><p>Start plainly; Art Director can add production detail.</p></div>
+              <label>Describe the image<textarea id="art-prompt" rows="7" placeholder="A quiet coastal workshop at sunrise…"></textarea></label>
+              <div class="art-inline-actions"><button id="art-improve-prompt" type="button">Improve prompt</button><label class="art-check"><input id="art-auto-improve" type="checkbox" /><span>Improve when generating</span></label></div>
+              <div class="art-control-grid">
+                <label>Style<select id="art-preset"></select></label>
+                <label>Model<select id="art-model"></select></label>
+                <label>Canvas<select id="art-aspect"></select></label>
+                <label>Variants<select id="art-variants"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+                <label>Seed<input id="art-seed" type="number" min="0" placeholder="Random" /></label>
+              </div>
+              <label>Keep out<input id="art-negative-prompt" type="text" placeholder="watermarks, duplicate subjects…" /></label>
+              <button id="art-generate" class="art-primary" type="button">Generate variants</button>
+            </section>
+            <section id="art-mode-edit" class="art-mode-panel">
+              <div class="art-panel-heading"><div class="eyebrow">References</div><h3>Edit or vary</h3><p>Choose up to four verified images, then describe the change.</p></div>
+              <input id="art-reference-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+              <div class="art-reference-upload">
+                <button id="art-reference-upload" type="button">Upload images from computer</button>
+                <span id="art-reference-upload-status">PNG, JPEG, or WebP · up to four references</span>
+              </div>
+              <div id="art-reference-list" class="art-reference-list"></div>
+              <label>Edit instruction<textarea id="art-edit-prompt" rows="6" placeholder="Keep the subject, change the setting to…"></textarea></label>
+              <div class="art-control-grid"><label>Canvas<select id="art-edit-aspect"></select></label><label>Seed<input id="art-edit-seed" type="number" min="0" placeholder="Random" /></label></div>
+              <button id="art-edit" class="art-primary" type="button">Create edited version</button>
+            </section>
+            <section id="art-mode-finish" class="art-mode-panel">
+              <div class="art-panel-heading"><div class="eyebrow">Local tools</div><h3>Finish image</h3><p>These tools remain available when hosted quotas are exhausted.</p></div>
+              <label>Source image<select id="art-finish-source"></select></label>
+              <label>Operation<select id="art-finish-operation"><option value="remove_background">Remove background</option><option value="upscale">Upscale</option><option value="resize">Resize</option><option value="crop">Crop</option><option value="add_text">Add text</option><option value="collage">Collage</option><option value="convert">Convert or compress</option></select></label>
+              <div id="art-finish-options" class="art-control-grid">
+                <label>Width<input id="art-finish-width" type="number" min="64" max="5000" placeholder="Original" /></label>
+                <label>Height<input id="art-finish-height" type="number" min="64" max="5000" placeholder="Original" /></label>
+                <label>Scale<select id="art-finish-scale"><option value="2">2×</option><option value="4">4×</option></select></label>
+                <label>Format<select id="art-finish-format"><option value="PNG">PNG</option><option value="JPEG">JPEG</option><option value="WEBP">WebP</option></select></label>
+                <label>Quality<input id="art-finish-quality" type="number" min="40" max="100" value="92" /></label>
+                <label class="full">Text<input id="art-finish-text" type="text" placeholder="Caption or headline" /></label>
+              </div>
+              <button id="art-finish" class="art-primary" type="button">Create finished copy</button>
+            </section>
+            <section id="art-mode-projects" class="art-mode-panel">
+              <div class="art-panel-heading"><div class="eyebrow">Versions</div><h3>Projects</h3><p>Saving is explicit. Existing image files are never overwritten.</p></div>
+              <label>Project name<input id="art-project-name" type="text" placeholder="Campaign or concept name" /></label>
+              <label>Saved project<select id="art-project-select"><option value="">New project</option></select></label>
+              <div class="art-project-actions"><button id="art-project-load" type="button">Load project</button><button id="art-project-save" class="art-primary" type="button">Save version</button></div>
+              <div id="art-project-summary" class="art-project-summary">No project selected.</div>
+            </section>
+          </aside>
+          <main class="art-canvas-column">
+            <div id="art-canvas-empty" class="art-canvas-empty"><span>Verified canvas</span><strong>Create or choose an image</strong><p>New variants and derived versions appear here before entering the workspace gallery.</p></div>
+            <figure id="art-canvas" class="art-canvas" hidden><img id="art-canvas-image" alt="Selected Art Studio output" /><figcaption><strong id="art-canvas-name">Artwork</strong><span id="art-canvas-facts"></span></figcaption></figure>
+            <div id="art-variant-strip" class="art-variant-strip" aria-label="Art Studio variants"></div>
+            <div id="art-job-progress" class="art-job-progress" hidden><div><span id="art-job-message">Working</span><strong id="art-job-percent">0%</strong></div><progress id="art-job-meter" max="100" value="0"></progress><button id="art-job-cancel" type="button">Cancel</button></div>
+          </main>
+          <aside class="art-inspector-column">
+            <section><div class="art-inspector-heading"><strong>Output</strong><button id="art-critique" type="button">Critique</button></div><dl id="art-output-facts"><div><dt>Status</dt><dd>No image selected</dd></div></dl></section>
+            <section><strong>Art Director notes</strong><p id="art-critic-notes">Run a critique for composition, legibility, and visible defects.</p></section>
+            <section><strong>Generation routing</strong><div id="art-provider-list" class="art-provider-list"></div></section>
+            <div class="art-output-actions"><button id="art-use-reference" type="button">Use as reference</button><button id="art-download" type="button">Download</button><button id="art-attach" class="art-primary" type="button">Attach to chat</button></div>
+          </aside>
         </div>
       </section>
     </dialog>
@@ -279,9 +357,47 @@
       </dl>
       <div class="governance-section"><h3>Workspace gates</h3><div id="governance-workspace-gates" class="gate-list"></div></div>
       <div class="governance-section"><h3>Hard gates</h3><div id="governance-hard-gates" class="governance-rule-list"></div></div>
+      <div class="governance-section">
+        <div class="governance-section-heading"><h3>Pending governed changes</h3><button id="governance-open-administration" type="button">Open administration</button></div>
+        <div id="governance-proposals" class="governance-rule-list"></div>
+      </div>
       <div class="governance-section"><h3>Source provenance</h3><div id="governance-provenance" class="governance-rule-list"></div></div>
     </aside>
     <div id="governance-scrim" class="governance-scrim" hidden></div>
+    <aside id="administration-panel" class="administration-panel" hidden aria-label="Infrastructure administration">
+      <div class="administration-header">
+        <div><div class="eyebrow">Infrastructure Room</div><h2>Administration</h2><p>Prepare changes here. Navigator validates them before you approve anything.</p></div>
+        <button id="administration-close" type="button" aria-label="Close administration">×</button>
+      </div>
+      <div class="administration-version-line">
+        <span>Rooms <strong id="admin-room-version">v1</strong></span>
+        <span>Governance <strong id="admin-governance-version">v1</strong></span>
+      </div>
+      <form id="administration-form" class="administration-form">
+        <div class="administration-form-heading"><h3>New proposal</h3><span>No change is applied by this form.</span></div>
+        <div class="administration-grid">
+          <label>Change type<select id="admin-kind"><option value="room">Room</option><option value="rule">Rule</option><option value="gate">Gate</option><option value="program">Program</option></select></label>
+          <label>Action<select id="admin-action"></select></label>
+        </div>
+        <label id="admin-title-field">Title<input id="admin-title" type="text" maxlength="120" placeholder="New department or program change"></label>
+        <label id="admin-target-field" hidden>Existing ID<input id="admin-target" type="text" maxlength="100" placeholder="RULE-ID or room_id"></label>
+        <label id="admin-persona-field">Default persona<input id="admin-persona" type="text" maxlength="100" placeholder="Room Steward"></label>
+        <label id="admin-statement-field">Purpose or policy text<textarea id="admin-statement" rows="4" placeholder="Describe the room, rule, gate, or requested code change"></textarea></label>
+        <label id="admin-reason-field" hidden>Reason<textarea id="admin-reason" rows="2" placeholder="Why this governance protection should be disabled"></textarea></label>
+        <label id="admin-paths-field" hidden>Approved paths<input id="admin-paths" type="text" placeholder="web/app.js, veridex_server.py"></label>
+        <label id="admin-tests-field" hidden>Verification commands<input id="admin-tests" type="text" placeholder="python -m unittest test_veridex_server.py"></label>
+        <button class="administration-primary" type="submit">Create proposal</button>
+      </form>
+      <section class="administration-proposals">
+        <div class="administration-form-heading"><h3>Change queue</h3><button id="administration-refresh" type="button">Refresh</button></div>
+        <div id="administration-proposal-list" class="administration-proposal-list"></div>
+      </section>
+      <section class="administration-audit">
+        <div class="administration-form-heading"><h3>Recent audit</h3><span>Append-only evidence</span></div>
+        <div id="administration-audit-list" class="administration-audit-list"></div>
+      </section>
+    </aside>
+    <div id="administration-scrim" class="governance-scrim" hidden></div>
     <div id="toast" class="toast" role="status"></div>
     <script src="/app.js" defer></script>
   </body>

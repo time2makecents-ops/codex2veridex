@@ -92,10 +92,11 @@ def classify_task(text: str) -> str:
 class VeridexStore:
     """File-backed state rooted entirely inside this repository by default."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, governance_registry_path: Path | None = None):
         self.root = Path(root).resolve()
         self.account_path = self.root / "account.json"
         self.workspaces_root = self.root / "workspaces"
+        self.governance_registry_path = Path(governance_registry_path or GOVERNANCE_REGISTRY_PATH).resolve()
         self._lock = threading.RLock()
 
     @staticmethod
@@ -254,7 +255,7 @@ class VeridexStore:
             state = self._read_json(path, {})
             if not isinstance(state, dict):
                 state = {}
-            defaults = GovernanceRegistry(GOVERNANCE_REGISTRY_PATH).gate_defaults
+            defaults = GovernanceRegistry(self.governance_registry_path).gate_defaults
             gates = dict(state.get("gates") or {})
             for name, enabled in defaults.items():
                 gates.setdefault(name, enabled)
@@ -264,7 +265,7 @@ class VeridexStore:
                     "navigator_always_present": True,
                     "navigator_visibility": "VISIBLE_STATUS",
                     "gates": gates,
-                    "registry_path": str(GOVERNANCE_REGISTRY_PATH.resolve()),
+                    "registry_path": str(self.governance_registry_path),
                     "updated_at": state.get("updated_at") or utc_now(),
                 }
             )
@@ -461,6 +462,7 @@ class VeridexStore:
         scope_ref: str = "",
         description: str = "",
         uploaded_by_session_id: str = "",
+        metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         with self._lock:
             session = self.find_session(session_id)
@@ -505,6 +507,7 @@ class VeridexStore:
                 "scope_ref": file_scope_ref,
                 "room_id": str(session.get("active_room") or "lobby"),
                 "description": str(description or ""),
+                "metadata": dict(metadata or {}),
                 "uploaded_by_session_id": str(uploaded_by_session_id or session_id),
                 "path": str(path.resolve()),
                 "storage_path": str(path.resolve()),
@@ -533,6 +536,7 @@ class VeridexStore:
                     "scope_ref": row["scope_ref"],
                     "room_id": row["room_id"],
                     "description": row["description"],
+                    "metadata": row["metadata"],
                     "uploaded_by_session_id": row["uploaded_by_session_id"],
                     "source_path": str(source_path or ""),
                     "path": row["path"],

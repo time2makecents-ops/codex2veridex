@@ -1,16 +1,192 @@
 from __future__ import annotations
 
+import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 import veridex_server
+from art_studio import ArtJobManager, ArtProviderError, ArtStudio
 from resume_studio import ResumeStudio
 from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_art_bootstrap_includes_existing_codex_image_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            studio = ArtStudio(root)
+            route = {
+                "id": "codex",
+                "name": "Codex image tools",
+                "configured": True,
+                "free_only": False,
+                "quota_label": "Existing ChatGPT account route; no API key",
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ART", studio), patch.object(
+                veridex_server, "codex_art_provider", return_value=route
+            ):
+                result = veridex_server.art_bootstrap(workspace_id, session_id)
+            self.assertEqual(result["providers"][0], route)
+
+    def test_codex_art_assets_require_and_return_verified_image_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            studio = ArtStudio(root)
+
+            def generate(request: dict) -> dict:
+                output_dir = Path(request["artifact_output_dir"])
+                (output_dir / "codex-test.png").write_bytes(self._sample_png())
+                return {"text": "Created the image.", "model": "gpt-5.6-sol"}
+
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ART", studio), patch.object(
+                veridex_server, "codex_art_provider", return_value={"configured": True, "quota_label": "Ready"}
+            ), patch.object(veridex_server, "invoke_codex", side_effect=generate) as invoke:
+                assets = veridex_server.codex_art_assets(
+                    workspace_id,
+                    session_id,
+                    "artjob_test",
+                    {"operation": "generate", "prompt": "a fox reading", "preset_id": "illustration", "aspect": "square", "variants": 1},
+                    [],
+                )
+            self.assertEqual(len(assets), 1)
+            self.assertEqual(assets[0]["metadata"]["provider"], "codex")
+            self.assertEqual(assets[0]["metadata"]["model"], "gpt-5.6-sol")
+            request = invoke.call_args.args[0]
+            self.assertEqual(request["task_type"], "media")
+            self.assertEqual(request["context"]["artifact_storage_policy"]["scope_ref"], "art_department")
+
+    @staticmethod
+    def _sample_png() -> bytes:
+        output = io.BytesIO()
+        Image.new("RGB", (80, 60), "#335544").save(output, format="PNG")
+        return output.getvalue()
+
+    def test_art_job_outputs_are_verified_art_department_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            studio = ArtStudio(root)
+            asset = {"content": self._sample_png(), "extension": ".png", "content_type": "image/png", "metadata": {"provider": "cloudflare", "model": "test-model", "operation": "generate", "seed": 7, "parent_file_ids": []}}
+            manager = ArtJobManager(workers=1)
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ART", studio), patch.object(
+                veridex_server, "ART_JOBS", manager
+            ), patch.object(studio, "generate", return_value=[asset]):
+                job = veridex_server.submit_art_job({"workspace_id": workspace_id, "session_id": session_id, "operation": "generate", "prompt": "test artwork"})
+                for _ in range(100):
+                    job = manager.get(job["job_id"])
+                    if job["status"] == "completed":
+                        break
+                    time.sleep(0.01)
+            self.assertEqual(job["status"], "completed")
+            saved = job["result"]["files"][0]
+            self.assertEqual(saved["kind"], "generated_image")
+            self.assertEqual(saved["scope_ref"], "art_department")
+            self.assertEqual(saved["provider"], "cloudflare")
+            ledger = store.list_artifact_ledger(workspace_id)[-1]
+            self.assertEqual(ledger["metadata"]["art"]["model"], "test-model")
+
+    def test_art_job_auto_falls_back_to_existing_codex_image_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            studio = ArtStudio(root)
+            manager = ArtJobManager(workers=1)
+            asset = {
+                "content": self._sample_png(),
+                "extension": ".png",
+                "content_type": "image/png",
+                "metadata": {"provider": "codex", "model": "gpt-5.6-sol", "operation": "generate", "seed": None, "parent_file_ids": []},
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ART", studio), patch.object(
+                veridex_server, "ART_JOBS", manager
+            ), patch.object(studio, "generate", side_effect=ArtProviderError("auto", "optional providers unavailable")), patch.object(
+                veridex_server, "codex_art_assets", return_value=[asset]
+            ) as codex_assets:
+                job = veridex_server.submit_art_job({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "operation": "generate",
+                    "model_id": "auto",
+                    "prompt": "test artwork",
+                })
+                for _ in range(100):
+                    job = manager.get(job["job_id"])
+                    if job["status"] == "completed":
+                        break
+                    time.sleep(0.01)
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["result"]["files"][0]["provider"], "codex")
+            codex_assets.assert_called_once()
+
+    def test_art_reference_edit_falls_back_to_existing_codex_image_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "art_department")
+            source = store.save_file(workspace_id, session_id, "reference.png", self._sample_png(), "image/png")
+            studio = ArtStudio(root)
+            manager = ArtJobManager(workers=1)
+            asset = {
+                "content": self._sample_png(),
+                "extension": ".png",
+                "content_type": "image/png",
+                "metadata": {
+                    "provider": "codex",
+                    "model": "gpt-5.6-sol",
+                    "operation": "edit",
+                    "seed": None,
+                    "parent_file_ids": [source["file_id"]],
+                },
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ART", studio), patch.object(
+                veridex_server, "ART_JOBS", manager
+            ), patch.object(studio, "generate", side_effect=ArtProviderError("cloudflare", "not configured")), patch.object(
+                veridex_server, "codex_art_assets", return_value=[asset]
+            ) as codex_assets:
+                job = veridex_server.submit_art_job({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "operation": "edit",
+                    "model_id": "edit",
+                    "prompt": "Put it on a gray pedestal",
+                    "source_file_ids": [source["file_id"]],
+                })
+                for _ in range(100):
+                    job = manager.get(job["job_id"])
+                    if job["status"] == "completed":
+                        break
+                    time.sleep(0.01)
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(job["result"]["files"][0]["operation"], "edit")
+            self.assertEqual(job["result"]["files"][0]["parent_file_ids"], [source["file_id"]])
+            codex_assets.assert_called_once()
+
     def test_resume_exports_are_verified_hr_room_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -111,13 +111,17 @@ class GovernanceRegistry:
 
     def status(self, active_gates: Dict[str, bool], pending: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         gates = self.gates()
+        core_rules = [dict(row) for row in self.data.get("core_rules", []) if isinstance(row, dict)]
         return {
             "navigator": dict(self.data.get("navigator") or {}),
             "registry_path": str(self.path),
+            "base_registry_path": str(self.data.get("snapshot", {}).get("base_registry_path") or self.path),
             "registry_version": self.version,
             "registry_sha256": self.sha256,
             "provenance": list(self.data.get("snapshot", {}).get("provenance") or []),
-            "core_rules": list(self.data.get("core_rules") or []),
+            "core_rules": core_rules,
+            "active_core_rule_ids": [row.get("id") for row in core_rules if row.get("status", "active") == "active"],
+            "disabled_core_rule_ids": [row.get("id") for row in core_rules if row.get("status") == "disabled"],
             "workspace_gates": dict(active_gates),
             "gates": gates,
             "active_gate_ids": [row["id"] for row in gates if row.get("status") == "active"],
@@ -142,12 +146,17 @@ class GovernanceRegistry:
             for row in self.gates()
             if row.get("status") == "active"
         ]
-        core_lines = [f"- {row['id']}: {row['text']}" for row in self.data.get("core_rules", [])]
+        core_lines = [
+            f"- {row['id']}: {row['text']}"
+            for row in self.data.get("core_rules", [])
+            if isinstance(row, dict) and row.get("status", "active") == "active"
+        ]
         return "\n".join(
             [
                 "I’m Navigator, Veridex’s always-present governance authority. I monitor every room without changing the active room. I answer governance questions, run preflight and verification checks, and visibly hard-stop actions that would breach an active rule.",
                 "",
                 f"Rule source: {self.path}",
+                f"Baseline source: {self.data.get('snapshot', {}).get('base_registry_path') or self.path}",
                 f"Snapshot: v{self.version} · SHA-256 {self.sha256}",
                 f"Active workspace gates: {', '.join(enabled) or 'none'}",
                 "",

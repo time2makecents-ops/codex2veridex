@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -25,6 +27,26 @@ ROOMS: List[Dict[str, Any]] = [
     {"id": "security_room", "title": "Security Room", "default_persona": "Security Chief", "is_active": True},
     {"id": "break_room", "title": "Break Room", "default_persona": "Break Room Host", "is_active": True},
 ]
+
+_ROOM_CATALOG_PATH: Optional[Path] = None
+
+
+def configure_room_catalog(path: Optional[Path]) -> None:
+    """Use a versioned global catalog while retaining built-ins as a safe fallback."""
+    global _ROOM_CATALOG_PATH
+    _ROOM_CATALOG_PATH = Path(path).resolve() if path else None
+
+
+def _configured_rooms() -> List[Dict[str, Any]]:
+    if _ROOM_CATALOG_PATH and _ROOM_CATALOG_PATH.is_file():
+        try:
+            value = json.loads(_ROOM_CATALOG_PATH.read_text(encoding="utf-8"))
+            rows = value.get("rooms") if isinstance(value, dict) else None
+            if isinstance(rows, list):
+                return [dict(row) for row in rows if isinstance(row, dict)]
+        except (OSError, json.JSONDecodeError):
+            pass
+    return [dict(room) for room in ROOMS]
 
 
 ROOM_ALIASES = {
@@ -55,7 +77,7 @@ def _normalize(value: str) -> str:
 
 
 def rooms_payload() -> List[Dict[str, Any]]:
-    return [dict(room) for room in ROOMS if room.get("is_active", False)]
+    return [dict(room) for room in _configured_rooms() if room.get("is_active", False)]
 
 
 def room_by_id(room_id: str) -> Optional[Dict[str, Any]]:
@@ -70,7 +92,12 @@ def resolve_room(value: str) -> Optional[Dict[str, Any]]:
     normalized = _normalize(value)
     normalized = re.sub(r"^(?:the|a) ", "", normalized)
     for room in rooms_payload():
-        candidates = {room["id"].replace("_", " "), room["title"], *ROOM_ALIASES.get(room["id"], ())}
+        candidates = {
+            room["id"].replace("_", " "),
+            room["title"],
+            *ROOM_ALIASES.get(room["id"], ()),
+            *(room.get("aliases") or []),
+        }
         if normalized in {_normalize(candidate) for candidate in candidates}:
             return room
     return None

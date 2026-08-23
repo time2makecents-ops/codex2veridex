@@ -107,6 +107,35 @@ class WebUiTests(unittest.TestCase):
         self.assertIn(".art-gallery-dialog", styles)
         self.assertIn(".art-gallery-preview", styles)
 
+    def test_art_studio_full_free_provider_workflow_is_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="open-art-studio"', html)
+        self.assertIn('id="art-studio-dialog"', html)
+        self.assertIn('id="art-reference-input" type="file" accept="image/png,image/jpeg,image/webp" multiple', html)
+        self.assertIn('id="art-reference-upload"', html)
+        for mode in ("create", "edit", "finish", "projects"):
+            self.assertIn(f'data-art-mode="{mode}"', html)
+        self.assertIn("function renderArtStudio", script)
+        self.assertIn("function artReferenceCandidates", script)
+        self.assertIn('previewReferenceId: ""', script)
+        self.assertIn('studio.previewReferenceId = image.file_id', script)
+        self.assertIn('uploadFiles(event.target.files, "art")', script)
+        self.assertIn('api("/api/art/jobs"', script)
+        self.assertIn("function pollArtJob", script)
+        self.assertIn('api("/api/art/projects/save"', script)
+        self.assertIn('classList.toggle("failed", failed)', script)
+        self.assertIn('generation route${configured === 1 ? "" : "s"} ready', script)
+        self.assertIn(".art-studio-dialog", styles)
+        self.assertIn(".art-canvas-column", styles)
+        self.assertIn(".art-job-progress.failed", styles)
+        self.assertIn(".art-reference-upload", styles)
+        self.assertIn(".art-control-column .art-reference-choice", styles)
+        self.assertIn(".art-reference-state", styles)
+        self.assertIn(".art-canvas-empty[hidden], .art-canvas[hidden], .art-job-progress[hidden]", styles)
+
     def test_room_file_libraries_and_four_file_tray_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -140,6 +169,22 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("Review with Nancy", script)
         self.assertIn(".resume-studio-dialog", styles)
         self.assertIn(".resume-draft-layout", styles)
+
+    def test_infrastructure_administration_and_navigator_approval_ui_are_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="open-administration"', html)
+        self.assertIn('id="administration-panel"', html)
+        self.assertIn('id="governance-proposals"', html)
+        self.assertIn('id="admin-kind"', html)
+        self.assertIn("function renderAdministration", script)
+        self.assertIn('api("/api/admin/proposals"', script)
+        self.assertIn('api("/api/admin/proposals/apply"', script)
+        self.assertIn("second_confirmation_token", script)
+        self.assertIn(".administration-panel", styles)
+        self.assertIn(".administration-proposal-actions", styles)
 
 
 if __name__ == "__main__":

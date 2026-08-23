@@ -100,6 +100,24 @@ plain-text versions, reopen them, verify readable text and PDF page bounds, and
 then register them as HR room artifacts. Suggested facts remain separate
 unconfirmed claims and block export until the user resolves them.
 
+Art Studio is a native Art Department subsystem. `art_studio.py` owns a small
+provider registry, free-model allowlists, asynchronous job state, deterministic
+finishing operations, and versioned project JSON. Cloudflare Workers AI is the
+primary image provider; only transient or quota failures may fall through to
+the allowlisted Pollinations free models. When Auto has no usable optional
+provider, the server uses the same ChatGPT-authenticated Codex image route as
+Art Department chat; that route requires Full computer access so the result can
+enter Veridex's verified artifact handoff. Explicit provider choices, policy
+rejection, malformed input, and cancellation never trigger provider substitution.
+
+Provider bytes are not exposed directly to the browser. The server decodes and
+reopens each image, applies byte and pixel limits, then saves it through the
+same generated-image path used by governed chat. Artifact metadata records the
+provider, model, operation, prompt, seed, dimensions, project, and parent image
+IDs. Local finishing uses Pillow and optional rembg/Real-ESRGAN capability
+adapters; every transformation produces a derived artifact rather than changing
+its source.
+
 The launcher has two explicit modes:
 
 - Default: `--sandbox read-only --ask-for-approval never`.
@@ -171,6 +189,20 @@ recursion, so the gateway embeds the governing rules directly:
 The child process is ephemeral and cannot pause for approval. Its filesystem
 mode is read-only by default and full only after the explicit `-FullAccess`
 launch option. Veridex, not the Codex thread, owns conversation continuity.
+
+## Administrative control plane
+
+`veridex_admin.py` owns a global versioned room catalog, active governance
+snapshot, proposal records, backups, and an append-only audit log. Infrastructure
+creates room and path-bounded program proposals; Navigator validates and owns
+rule and gate proposals. Applying a proposal requires its ID, preview version,
+and explicit confirmation. Governance amendments or disables require a second
+one-time confirmation token.
+
+Room and governance applications use atomic JSON replacement with prior-version
+backups. Program proposals record a repository fingerprint, become stale when
+source changes before approval, and preserve approved-path backups for rollback.
+Activation and application restart remain separate explicit operations.
 
 ## Billing and fallback
 

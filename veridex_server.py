@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import uuid
 from datetime import datetime
 from http import HTTPStatus
@@ -15,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
+from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
@@ -34,8 +38,9 @@ from resume_studio import (
     validate_export_bytes,
 )
 from veridex_core import VeridexStore, classify_task, transcript_context
+from veridex_admin import AdminService
 from veridex_governance import GovernanceRegistry, intervention_text
-from veridex_rooms import room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
+from veridex_rooms import ROOMS, configure_room_catalog, room_by_id, room_directory_text, rooms_payload, route_room_request, valid_room_titles
 
 
 ROOT = Path(__file__).resolve().parent
@@ -106,13 +111,131 @@ def load_env(path: Path) -> None:
 
 load_env(ROOT / ".env.local")
 DATA_ROOT = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
-STORE = VeridexStore(DATA_ROOT)
+ADMIN = AdminService(DATA_ROOT, ROOT, ROOMS, ROOT / "governance" / "navigator_governance_v1.0.0.json")
+configure_room_catalog(ADMIN.room_catalog_path)
+STORE = VeridexStore(DATA_ROOT, ADMIN.active_governance_path)
 RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
+ART = ArtStudio(DATA_ROOT)
+ART_JOBS = ArtJobManager()
 GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
-GOVERNANCE = GovernanceRegistry(ROOT / "governance" / "navigator_governance_v1.0.0.json")
 ACTIVE_REQUESTS = ActiveRequestRegistry()
+
+
+def active_governance_registry() -> GovernanceRegistry:
+    return GovernanceRegistry(ADMIN.active_governance_path)
+
+
+def _repository_manifest() -> Dict[str, str]:
+    manifest: Dict[str, str] = {}
+    excluded = {".git", "data", "__pycache__", ".pytest_cache", "node_modules", ".next"}
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or any(part in excluded for part in path.relative_to(ROOT).parts):
+            continue
+        try:
+            manifest[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return manifest
+
+
+def _path_is_allowed(relative: str, allowed_paths: list[str]) -> bool:
+    normalized = str(relative or "").replace("\\", "/").strip("/")
+    return any(normalized == allowed or normalized.startswith(f"{allowed}/") for allowed in allowed_paths)
+
+
+def _backup_program_paths(proposal: Dict[str, Any]) -> list[Dict[str, Any]]:
+    backup_root = ADMIN.backups_root / str(proposal["proposal_id"]) / "program"
+    manifest: list[Dict[str, Any]] = []
+    for index, relative in enumerate(proposal["payload"].get("allowed_paths", []), start=1):
+        target = (ROOT / relative).resolve()
+        backup = backup_root / f"{index:03d}"
+        row: Dict[str, Any] = {"path": relative, "existed": target.exists(), "backup_path": str(backup)}
+        if target.is_dir():
+            shutil.copytree(target, backup)
+            row["kind"] = "directory"
+        elif target.is_file():
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup)
+            row["kind"] = "file"
+        else:
+            row["kind"] = "absent"
+            row["backup_path"] = ""
+        manifest.append(row)
+    return manifest
+
+
+def run_program_change(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one already-approved, path-bounded Veridex code change through Codex."""
+    if access_mode() != "full":
+        return {"verified": False, "error": "Full computer access is required for an approved program change."}
+    payload = dict(proposal.get("payload") or {})
+    allowed_paths = list(payload.get("allowed_paths") or [])
+    rollback_manifest = _backup_program_paths(proposal)
+    before = _repository_manifest()
+    prompt = (
+        f"Implement the approved Veridex change: {payload.get('title')}.\n\n"
+        f"Instructions:\n{payload.get('instructions')}\n\n"
+        f"You may edit only these repository-relative paths: {', '.join(allowed_paths)}. "
+        "Preserve unrelated work. Do not restart, deploy, commit, reset, or delete outside those paths. "
+        "Run the requested tests when possible and report the exact edits and test evidence."
+    )
+    result = invoke_codex(
+        {
+            "task_type": "coding",
+            "access_mode": "full",
+            "system_prompt": "You are Infrastructure Manager implementing an explicitly approved, Navigator-validated Veridex proposal.",
+            "user_prompt": prompt,
+            "context": {"proposal_id": proposal["proposal_id"], "allowed_paths": allowed_paths},
+        }
+    )
+    after = _repository_manifest()
+    changed_paths = sorted({*before, *after} - {path for path in set(before) & set(after) if before[path] == after[path]})
+    unexpected = [path for path in changed_paths if not _path_is_allowed(path, allowed_paths)]
+    tests: list[Dict[str, Any]] = []
+    for command in payload.get("tests", []):
+        completed = subprocess.run(
+            str(command),
+            cwd=ROOT,
+            shell=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=300,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        tests.append(
+            {
+                "command": command,
+                "returncode": completed.returncode,
+                "stdout": completed.stdout[-4000:],
+                "stderr": completed.stderr[-2000:],
+                "passed": completed.returncode == 0,
+            }
+        )
+    verified = not unexpected and all(row["passed"] for row in tests)
+    return {
+        "verified": verified,
+        "error": "Unexpected files changed outside the approved scope." if unexpected else "",
+        "changed_paths": changed_paths,
+        "unexpected_paths": unexpected,
+        "tests": tests,
+        "codex": {
+            "provider": result.get("provider"),
+            "model": result.get("model"),
+            "reasoning_effort": result.get("reasoning_effort"),
+            "summary": str(result.get("text") or "")[-6000:],
+            "evidence": result.get("evidence") or [],
+        },
+        "activation": {"status": "restart_required", "automatic_restart": False},
+        "rollback": {"supported": True, "manifest": rollback_manifest},
+    }
+
+
+ADMIN.program_runner = run_program_change
 
 
 def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str, Any]:
@@ -131,6 +254,7 @@ def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str,
         "created_at",
         "linked_at",
         "ledgered_at",
+        "metadata",
     ]
     if include_path:
         keys.append("path")
@@ -142,6 +266,12 @@ def public_art_image(row: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("source_session_id", "source_session_title", "created_at"):
         if key in row:
             value[key] = row[key]
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    art = metadata.get("art") if isinstance(metadata.get("art"), dict) else {}
+    value.update({key: art[key] for key in (
+        "project_id", "parent_file_ids", "provider", "model", "operation", "seed",
+        "prompt", "preset_id", "width", "height",
+    ) if key in art})
     return value
 
 
@@ -239,7 +369,7 @@ def governance_status(workspace_id: str, session_id: str = "") -> Dict[str, Any]
     state = STORE.ensure_governance_state(workspace_id)
     pending = STORE.pending_governance(workspace_id, session_id) if session_id else {}
     incidents = STORE.list_governance_incidents(workspace_id, limit=1)
-    status = GOVERNANCE.status(dict(state.get("gates") or {}), pending)
+    status = active_governance_registry().status(dict(state.get("gates") or {}), pending)
     status["latest_incident"] = incidents[-1] if incidents else None
     status["persistent_memo_count"] = len(STORE.list_governance_memos(workspace_id))
     return status
@@ -251,7 +381,7 @@ def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "")
     session_id = str(session.get("session_id") or "")
     governance = governance_status(workspace_id, session_id) if workspace_id else {}
-    return {**value, "runtime": runtime_status(), "governance": governance}
+    return {**value, "runtime": runtime_status(), "governance": governance, "administration": ADMIN.bootstrap()}
 
 
 def public_delivery_alert(
@@ -429,6 +559,297 @@ def save_resume_exports(payload: Dict[str, Any]) -> Dict[str, Any]:
         saved.append(saved_row)
         verification.append({"file_id": saved_row["file_id"], "name": saved_row["name"], **facts})
     return {"files": [public_file(row, include_path=True) for row in saved], "verification": verification, "review": quality_review(draft, str(payload.get("job_description") or ""), federal=resume_type == "federal")}
+
+
+def art_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace = STORE.get_workspace(str(workspace_id or ""))
+    session = STORE.find_session(str(session_id or ""))
+    if str(session.get("workspace_id") or "") != str(workspace.get("workspace_id") or ""):
+        raise KeyError("Session does not belong to workspace")
+    if str(session.get("active_room") or "") != "art_department":
+        raise ValueError("Art Studio is available only in Art Department.")
+    return {"workspace": workspace, "session": session}
+
+
+def art_bootstrap(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    art_context(workspace_id, session_id)
+    value = ART.bootstrap(workspace_id)
+    value["providers"] = [codex_art_provider(), *(value.get("providers") or [])]
+    return value
+
+
+def codex_art_provider() -> Dict[str, Any]:
+    enabled = str(os.environ.get("VERIDEX_CODEX_ENABLED") or "true").strip().casefold() in {"1", "true", "yes", "on"}
+    command = str(os.environ.get("VERIDEX_CODEX_COMMAND") or "codex").strip()
+    writable = bool(runtime_status().get("can_write_computer"))
+    available = enabled and bool(shutil.which(command))
+    if not available:
+        detail = "Codex CLI unavailable"
+    elif not writable:
+        detail = "Requires Full computer access to save verified images"
+    else:
+        detail = "Existing ChatGPT account route; no API key"
+    return {
+        "id": "codex",
+        "name": "Codex image tools",
+        "configured": available and writable,
+        "free_only": False,
+        "quota_label": detail,
+    }
+
+
+def codex_art_text(prompt: str, *, system_prompt: str, attachment_paths: list[str] | None = None) -> str:
+    if not codex_art_provider()["configured"]:
+        raise ArtProviderError("codex", codex_art_provider()["quota_label"])
+    result = invoke_codex({
+        "task_type": "media" if attachment_paths else "conversation",
+        "system_prompt": system_prompt,
+        "user_prompt": str(prompt or "").strip(),
+        "context": {
+            "current_room": {"id": "art_department", "title": "Art Department", "active_persona": "Creative Director"},
+            "computer_access": runtime_status(),
+        },
+        "attachment_paths": list(attachment_paths or []),
+        "artifact_output_dir": "",
+    })
+    text = str(result.get("text") or "").strip()
+    if not text:
+        raise ArtProviderError("codex", "Codex returned no Art Studio text")
+    return text
+
+
+def codex_art_assets(
+    workspace_id: str,
+    session_id: str,
+    job_id: str,
+    payload: Dict[str, Any],
+    sources: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    provider = codex_art_provider()
+    if not provider["configured"]:
+        raise ArtProviderError("codex", str(provider["quota_label"]))
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("Describe the image to create")
+    variants = max(1, min(4, int(payload.get("variants") or 1)))
+    preset_id = str(payload.get("preset_id") or "photography")
+    expanded = ART.expanded_prompt(prompt, preset_id)
+    aspect = str(payload.get("aspect") or "square")
+    operation = str(payload.get("operation") or "generate")
+    negative = str(payload.get("negative_prompt") or "").strip()
+    output_dir = STORE.prepare_generated_output_dir(workspace_id, session_id, job_id)
+    reference_instruction = (
+        f"Use the {len(sources)} attached reference image(s) as the source material and follow the requested edit precisely."
+        if sources else
+        "Create the image from the written direction without requiring reference files."
+    )
+    user_prompt = (
+        f"Create exactly {variants} finished image variant{'s' if variants != 1 else ''} for this Art Studio request.\n"
+        f"Direction: {expanded}\n"
+        f"Canvas: {aspect}.\n"
+        f"Operation: {operation}.\n"
+        f"{reference_instruction}\n"
+        + (f"Avoid: {negative}.\n" if negative else "")
+        + "Return only finished image files through the required artifact handoff."
+    )
+    result = invoke_codex({
+        "task_type": "media",
+        "system_prompt": (
+            "You are the Art Studio production renderer in the Art Department. "
+            "Use the built-in image generation tool and honor the requested subject, style, canvas, variant count, and references. "
+            "Do not merely describe an image; create the requested files."
+        ),
+        "user_prompt": user_prompt,
+        "context": {
+            "current_room": {"id": "art_department", "title": "Art Department", "active_persona": "Creative Director"},
+            "computer_access": runtime_status(),
+            "required_artifact_output_dir": str(output_dir),
+            "artifact_storage_policy": {
+                "handoff_dir": str(output_dir),
+                "canonical_dir": str(STORE.generated_files_dir(workspace_id, "art_department")),
+                "kind": "generated_image",
+                "scope": "room",
+                "scope_ref": "art_department",
+                "owner": "veridex",
+                "rule": "Write final generated images to handoff_dir only; Veridex validates and stores them.",
+            },
+        },
+        "attachment_paths": [str(row.get("path") or "") for row in sources if str(row.get("path") or "")],
+        "artifact_output_dir": str(output_dir),
+    })
+    assets: list[Dict[str, Any]] = []
+    for candidate in sorted(output_dir.rglob("*")):
+        if not candidate.is_file():
+            continue
+        try:
+            content = candidate.read_bytes()
+            facts = validate_image_bytes(content)
+        except (OSError, ValueError):
+            continue
+        extension = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp"}[facts["format"]]
+        assets.append({
+            "content": content,
+            "extension": extension,
+            "content_type": facts["content_type"],
+            "metadata": {
+                "provider": "codex",
+                "model": str(result.get("model") or "Codex image tools"),
+                "operation": operation,
+                "seed": int(payload.get("seed") or 0) or None,
+                "prompt": expanded,
+                "preset_id": preset_id,
+                "width": facts["width"],
+                "height": facts["height"],
+                "parent_file_ids": [str(row.get("file_id") or "") for row in sources],
+            },
+        })
+        if len(assets) >= variants:
+            break
+    if not assets:
+        detail = str(result.get("text") or "").strip()
+        raise ArtProviderError("codex", detail[:500] or "Codex did not return a verified image file")
+    return assets
+
+
+def art_sources(workspace_id: str, session_id: str, file_ids: list[Any]) -> list[Dict[str, Any]]:
+    requested = [str(value or "").strip() for value in file_ids if str(value or "").strip()][:4]
+    if not requested:
+        return []
+    candidates = {
+        str(row.get("file_id") or ""): row
+        for row in [
+            *STORE.list_files(workspace_id, session_id),
+            *STORE.list_generated_images(workspace_id, "art_department"),
+        ]
+    }
+    rows: list[Dict[str, Any]] = []
+    for file_id in requested:
+        row = candidates.get(file_id)
+        if not row:
+            raise KeyError(f"Unknown Art Studio source image: {file_id}")
+        path = Path(str(row.get("path") or ""))
+        if not path.is_file():
+            raise KeyError(f"Art Studio source image is unavailable: {file_id}")
+        content = path.read_bytes()
+        facts = validate_image_bytes(content)
+        rows.append({
+            **row,
+            "content": content,
+            "content_type": str(row.get("content_type") or facts["content_type"]),
+        })
+    return rows
+
+
+def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    art_context(workspace_id, session_id)
+    source_ids = payload.get("source_file_ids") if isinstance(payload.get("source_file_ids"), list) else []
+    sources = art_sources(workspace_id, session_id, source_ids)
+    safe_payload = dict(payload)
+    safe_payload.pop("workspace_id", None)
+    safe_payload.pop("session_id", None)
+
+    def runner(job_id: str, progress: Any, canceled: Any) -> Dict[str, Any]:
+        operation = str(safe_payload.get("operation") or "generate")
+        if canceled():
+            return {}
+        if operation == "improve_prompt":
+            progress(35, "Directing prompt")
+            prompt = str(safe_payload.get("prompt") or "").strip()
+            preset_id = str(safe_payload.get("preset_id") or "photography")
+            try:
+                text = ART.improve_prompt(prompt, preset_id)
+            except ArtProviderError:
+                text = codex_art_text(
+                    ART.expanded_prompt(prompt, preset_id),
+                    system_prompt=(
+                        "You are an art director. Rewrite the request as one precise image-generation prompt. "
+                        "Preserve every requested subject and constraint; add composition, lighting, material, palette, and camera or medium detail. "
+                        "Do not name living artists. Return only the improved prompt."
+                    ),
+                )
+            return {"kind": "text", "text": text}
+        if operation == "critique":
+            if not sources:
+                raise ValueError("Choose an image to critique")
+            progress(35, "Reviewing image")
+            try:
+                text = ART.critique(sources[0])
+            except ArtProviderError:
+                text = codex_art_text(
+                    "Evaluate composition, hierarchy, lighting and color, legibility, visible anatomy or object defects, and professional suitability. Give the three most useful improvements.",
+                    system_prompt="You are a concise Art Studio visual critic. Inspect the attached image and report only evidence visible in it.",
+                    attachment_paths=[str(sources[0].get("path") or "")],
+                )
+            return {"kind": "critique", "text": text}
+        progress(20, "Preparing image operation")
+        if operation in {"remove_background", "resize", "upscale", "crop", "add_text", "collage", "convert"}:
+            asset = ART.local.apply(operation, sources, safe_payload.get("options") if isinstance(safe_payload.get("options"), dict) else {})
+            assets = [{**asset, "metadata": {
+                "provider": "local",
+                "model": str(asset.get("model") or "pillow"),
+                "operation": operation,
+                "parent_file_ids": [str(row.get("file_id") or "") for row in sources],
+            }}]
+        else:
+            progress(35, "Generating variants")
+            generation_payload = dict(safe_payload)
+            if generation_payload.get("improve_prompt") and not ART.cloudflare.configured() and codex_art_provider()["configured"]:
+                if not str(generation_payload.get("prompt") or "").strip():
+                    raise ValueError("Describe the image to create")
+                generation_payload["prompt"] = codex_art_text(
+                    ART.expanded_prompt(str(generation_payload.get("prompt") or ""), str(generation_payload.get("preset_id") or "photography")),
+                    system_prompt=(
+                        "You are an art director. Rewrite the request as one precise image-generation prompt. "
+                        "Preserve every requested subject and constraint; add composition, lighting, material, palette, and camera or medium detail. "
+                        "Return only the improved prompt."
+                    ),
+                )
+                generation_payload["improve_prompt"] = False
+            try:
+                assets = ART.generate(generation_payload, sources)
+            except ArtProviderError:
+                fallback_model = str(generation_payload.get("model_id") or "auto")
+                if fallback_model not in {"auto", "edit"}:
+                    raise
+                progress(45, "Generating with Codex image tools")
+                assets = codex_art_assets(workspace_id, session_id, job_id, generation_payload, sources)
+        progress(78, "Verifying outputs")
+        files: list[Dict[str, Any]] = []
+        prompt_slug = re.sub(r"[^A-Za-z0-9]+", "_", str(safe_payload.get("prompt") or operation)).strip("_")[:50] or "artwork"
+        for index, asset in enumerate(assets, start=1):
+            if canceled():
+                return {}
+            content = bytes(asset["content"])
+            facts = validate_image_bytes(content)
+            art_metadata = {
+                **(asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}),
+                "project_id": str(safe_payload.get("project_id") or ""),
+                "width": facts["width"],
+                "height": facts["height"],
+                "job_id": job_id,
+            }
+            filename = f"{prompt_slug}_{index}{str(asset.get('extension') or '.png')}"
+            saved = STORE.save_file(
+                workspace_id,
+                session_id,
+                filename,
+                content,
+                str(asset.get("content_type") or facts["content_type"]),
+                source="generated",
+                kind="generated_image",
+                scope="room",
+                scope_ref="art_department",
+                description=f"Art Studio {operation} output via {art_metadata.get('provider', 'local')}.",
+                uploaded_by_session_id=session_id,
+                metadata={"art": art_metadata},
+            )
+            files.append({**public_art_image(saved), "source_session_id": session_id})
+        progress(96, "Updating Art Department")
+        return {"kind": "images", "files": files}
+
+    return ART_JOBS.submit(safe_payload, runner)
 
 
 def delivery_alerts(workspace_id: str = "", session_id: str = "") -> list[Dict[str, Any]]:
@@ -1003,8 +1424,228 @@ def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+ADMIN_APPROVE_RE = re.compile(r"^\s*(?:approve|confirm)\s+(proposal_[A-Za-z0-9_-]+)(?:\s+again)?\s*$", re.IGNORECASE)
+ADMIN_REJECT_RE = re.compile(r"^\s*reject\s+(proposal_[A-Za-z0-9_-]+)(?:\s+because\s+(.+))?\s*$", re.IGNORECASE | re.DOTALL)
+ADMIN_ROLLBACK_RE = re.compile(r"^\s*rollback\s+(proposal_[A-Za-z0-9_-]+)\s*$", re.IGNORECASE)
+ROOM_CREATE_RE = re.compile(
+    r"\b(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?room(?:\s+(?:called|named))?\s+(.+?)(?:\s+with\s+(?:the\s+)?persona\s+(.+))?$",
+    re.IGNORECASE,
+)
+GOVERNANCE_ADD_RE = re.compile(r"\badd\s+(?:a\s+)?(?:new\s+)?(rule|gate)(?:\s+that|\s*:)?\s+(.+)$", re.IGNORECASE | re.DOTALL)
+GOVERNANCE_DISABLE_RE = re.compile(r"\bdisable\s+(?:the\s+)?(rule|gate)\s+([A-Za-z0-9_-]+)(?:\s+because\s+(.+))?$", re.IGNORECASE | re.DOTALL)
+PROGRAM_MUTATION_RE = re.compile(
+    r"\b(?:change|modify|update|fix|edit|implement|refactor|add)\b.{0,100}\b(?:veridex|program|application|app|code|source)\b|"
+    r"\b(?:veridex|program|application|app|code|source)\b.{0,100}\b(?:change|modify|update|fix|edit|implement|refactor|add)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def admin_create_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    if session_id:
+        session = STORE.find_session(session_id)
+        workspace_id = workspace_id or str(session.get("workspace_id") or "")
+        if workspace_id != session.get("workspace_id"):
+            raise ValueError("Session does not belong to workspace")
+    else:
+        session = None
+    kind = str(payload.get("kind") or "").lower()
+    if kind in {"room", "program"}:
+        if not session:
+            raise ValueError("session_id is required for Infrastructure administration")
+        if str(session.get("active_room") or "") != "infrastructure_room":
+            raise ValueError("Room and program proposals must be prepared in Infrastructure Room")
+    proposal = ADMIN.create_proposal(
+        kind,
+        str(payload.get("action") or ""),
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        requested_by=str(payload.get("requested_by") or "Local User"),
+        workspace_id=workspace_id,
+        session_id=session_id,
+    )
+    return {"status": "awaiting_approval", "proposal": proposal, "administration": ADMIN.bootstrap()}
+
+
+def admin_apply_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    result = ADMIN.approve_and_apply(
+        str(payload.get("proposal_id") or ""),
+        expected_version=int(payload.get("expected_version") or 0),
+        confirm=bool(payload.get("confirm")),
+        second_confirmation_token=str(payload.get("second_confirmation_token") or ""),
+    )
+    if result.get("status") in {"confirmation_required", "second_confirmation_required"} and isinstance(result.get("proposal"), dict):
+        proposal = dict(result["proposal"])
+        proposal.pop("second_confirmation_token", None)
+        return {**result, "proposal": proposal, "administration": ADMIN.bootstrap()}
+    proposal = dict(result)
+    proposal.pop("second_confirmation_token", None)
+    return {"status": proposal.get("status"), "proposal": proposal, "administration": ADMIN.bootstrap()}
+
+
+def maybe_admin_chat_response(
+    workspace_id: str,
+    session_id: str,
+    user_message: Dict[str, Any],
+    text: str,
+    active_room: str,
+    active_persona: str,
+) -> Dict[str, Any] | None:
+    approve = ADMIN_APPROVE_RE.fullmatch(text)
+    if approve:
+        proposal = ADMIN.get_proposal(approve.group(1))
+        token = str(proposal.get("second_confirmation_token") or "") if proposal.get("status") == "awaiting_second_approval" else ""
+        result = ADMIN.approve_and_apply(
+            proposal["proposal_id"],
+            expected_version=int(proposal.get("base_version") or 0),
+            confirm=True,
+            second_confirmation_token=token,
+        )
+        if result.get("status") == "second_confirmation_required":
+            message = (
+                f"Navigator recorded the first approval for {proposal['proposal_id']}. This change can weaken active governance. "
+                f"Review the impact and type `confirm {proposal['proposal_id']} again` to apply it."
+            )
+        else:
+            message = f"Infrastructure applied and verified {proposal['proposal_id']}. The result and rollback evidence are in Administration."
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            message,
+            "Navigator" if proposal.get("kind") in {"rule", "gate"} else "Infrastructure Manager",
+            "administration_apply",
+            response_provider="veridex_admin",
+            governance=governance_status(workspace_id, session_id),
+            administration=ADMIN.bootstrap(),
+        )
+    reject = ADMIN_REJECT_RE.fullmatch(text)
+    if reject:
+        proposal = ADMIN.reject(reject.group(1), reject.group(2) or "User rejected proposal")
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            f"Rejected {proposal['proposal_id']}. No proposed change was applied.",
+            "Navigator",
+            "administration_reject",
+            response_provider="veridex_admin",
+            governance=governance_status(workspace_id, session_id),
+            administration=ADMIN.bootstrap(),
+        )
+    rollback = ADMIN_ROLLBACK_RE.fullmatch(text)
+    if rollback:
+        proposal = ADMIN.rollback(rollback.group(1), confirm=True)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            f"Rolled back {proposal['proposal_id']}. The rollback was recorded in the administration audit log.",
+            "Navigator",
+            "administration_rollback",
+            response_provider="veridex_admin",
+            governance=governance_status(workspace_id, session_id),
+            administration=ADMIN.bootstrap(),
+        )
+    if active_room == "infrastructure_room":
+        create_room = ROOM_CREATE_RE.search(text)
+        if create_room:
+            title = " ".join(create_room.group(1).split()).strip(" .")
+            persona = " ".join((create_room.group(2) or "Room Steward").split()).strip(" .")
+            proposal = ADMIN.create_proposal(
+                "room",
+                "create",
+                {"title": title, "default_persona": persona},
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Infrastructure prepared {proposal['proposal_id']} to create {title} globally with {persona} as its persona. Review and approve it in Administration, or type `approve {proposal['proposal_id']}`.",
+                "Infrastructure Manager",
+                "administration_proposal",
+                response_provider="veridex_admin",
+                governance=governance_status(workspace_id, session_id),
+                administration=ADMIN.bootstrap(),
+            )
+        if PROGRAM_MUTATION_RE.search(text):
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                "Infrastructure can implement that after approval. Open Administration and create a Program proposal with the exact allowed paths and verification commands; Navigator will validate the preview before any code is edited.",
+                "Infrastructure Manager",
+                "administration_scope_required",
+                response_provider="veridex_admin",
+                governance=governance_status(workspace_id, session_id),
+                administration=ADMIN.bootstrap(),
+            )
+    elif re.search(r"\b(?:create|add|make)\b.{0,40}\b(?:new\s+)?room\b", text, re.IGNORECASE):
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            "Infrastructure Room owns room creation. Enter Infrastructure Room, then describe the room or open Administration to prepare the governed proposal.",
+            "Navigator",
+            "administration_handoff",
+            response_provider="veridex_admin",
+            governance=governance_status(workspace_id, session_id),
+            administration=ADMIN.bootstrap(),
+        )
+    if active_persona == "Navigator" or active_room == "control_room" or re.search(r"\bnavigator\b", text, re.IGNORECASE):
+        add = GOVERNANCE_ADD_RE.search(text)
+        if add:
+            kind = add.group(1).lower()
+            statement = " ".join(add.group(2).split()).strip(" .")
+            proposal = ADMIN.create_proposal(
+                kind,
+                "add",
+                {"text" if kind == "rule" else "definition": statement},
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Navigator validated {proposal['proposal_id']} to add {proposal['payload']['id']}. Type `approve {proposal['proposal_id']}` to activate the new governance snapshot.",
+                "Navigator",
+                "governance_proposal",
+                response_provider="veridex_admin",
+                governance=governance_status(workspace_id, session_id),
+                administration=ADMIN.bootstrap(),
+            )
+        disable = GOVERNANCE_DISABLE_RE.search(text)
+        if disable:
+            kind = disable.group(1).lower()
+            target_id = disable.group(2)
+            reason = " ".join((disable.group(3) or "Disabled by explicit user request").split())
+            proposal = ADMIN.create_proposal(
+                kind,
+                "disable",
+                {"target_id": target_id, "reason": reason},
+                workspace_id=workspace_id,
+                session_id=session_id,
+            )
+            return local_chat_response(
+                workspace_id,
+                session_id,
+                user_message,
+                f"Navigator prepared high-risk proposal {proposal['proposal_id']} to disable {proposal['payload']['target_id']}. It requires two separate approvals and remains fully reversible.",
+                "Navigator",
+                "governance_proposal",
+                response_provider="veridex_admin",
+                governance=governance_status(workspace_id, session_id),
+                administration=ADMIN.bootstrap(),
+            )
+    return None
+
+
 def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     text = str(payload.get("text") or "").strip()
+    governance = active_governance_registry()
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     request_id = str(payload.get("request_id") or "").strip()
@@ -1054,7 +1695,17 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     workspace_governance = STORE.ensure_governance_state(workspace_id)
     active_gates = dict(workspace_governance.get("gates") or {})
     pending = STORE.pending_governance(workspace_id, session_id)
-    preflight = GOVERNANCE.preflight(user_prompt, active_gates, pending)
+    admin_response = maybe_admin_chat_response(
+        workspace_id,
+        session_id,
+        user_message,
+        user_prompt,
+        active_room,
+        active_persona,
+    )
+    if admin_response is not None:
+        return admin_response
+    preflight = governance.preflight(user_prompt, active_gates, pending)
     if not preflight.get("allowed"):
         return navigator_intervention_response(
             workspace_id,
@@ -1113,12 +1764,12 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "gate_ids": ["SAVE_GATE"],
                 },
             )
-    if GOVERNANCE.is_governance_question(user_prompt, active_persona):
+    if governance.is_governance_question(user_prompt, active_persona):
         return local_chat_response(
             workspace_id,
             session_id,
             user_message,
-            GOVERNANCE.governance_answer(active_gates),
+            governance.governance_answer(active_gates),
             "Navigator",
             "governance",
             response_provider="veridex_governance",
@@ -1130,7 +1781,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "visibility": "VISIBLE",
                     "mode": "governance_answer",
                 },
-                "gate_ids": GOVERNANCE.status(active_gates).get("active_gate_ids", []),
+                "gate_ids": governance.status(active_gates).get("active_gate_ids", []),
             },
         )
     governed_prompt = str(preflight.get("effective_text") or user_prompt)
@@ -1221,7 +1872,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     if explicit_google_search:
         task_type = "search_deep"
     policy = select_model(task_type)
-    route_check = GOVERNANCE.validate_model_route(task_type, policy.model, policy.reasoning_effort)
+    route_check = governance.validate_model_route(task_type, policy.model, policy.reasoning_effort)
     if not route_check.get("allowed"):
         route_block = {
             "allowed": False,
@@ -1280,7 +1931,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 governance=governance_status(workspace_id, session_id),
             )
         context["google_browser_search"] = google_browser_search
-    artifact_required = GOVERNANCE.requires_file_artifact(governed_prompt, task_type)
+    artifact_required = governance.requires_file_artifact(governed_prompt, task_type)
     artifact_output_dir = (
         STORE.prepare_generated_output_dir(workspace_id, session_id, user_message["message_id"])
         if artifact_required
@@ -1398,7 +2049,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
         for artifact in generated_artifacts
     )
-    postflight = GOVERNANCE.postflight(
+    postflight = governance.postflight(
         str(result.get("text") or ""),
         evidence,
         request_text=governed_prompt,
@@ -1412,7 +2063,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         result = invoke_codex(date_search_retry_request(codex_request, result, postflight))
         retry_evidence = result.get("evidence") if isinstance(result.get("evidence"), list) else []
         evidence.extend(retry_evidence)
-        postflight = GOVERNANCE.postflight(
+        postflight = governance.postflight(
             str(result.get("text") or ""),
             evidence,
             request_text=governed_prompt,
@@ -1525,6 +2176,13 @@ TOOLS = [
     {"name": "office.transcript_get", "description": "Read a session transcript."},
     {"name": "office.room_list", "description": "List available governed rooms and personas."},
     {"name": "office.room_set", "description": "Explicitly change the active room for one session."},
+    {"name": "office.admin_status", "description": "Read global room/governance versions, pending proposals, audit evidence, and rollback availability."},
+    {"name": "office.room_propose", "description": "Create a global room create/update/archive/restore proposal; this never applies the change."},
+    {"name": "office.governance_propose", "description": "Ask Navigator to validate a rule or gate add/amend/disable/restore proposal; this never applies the change."},
+    {"name": "office.program_change_propose", "description": "Create a path-bounded Veridex program-change proposal for Infrastructure; implementation requires later approval."},
+    {"name": "office.admin_apply", "description": "Apply one exact proposal only with confirm=true and its expected version; governance weakening requires a second token."},
+    {"name": "office.admin_reject", "description": "Reject one pending administrative proposal without applying it."},
+    {"name": "office.admin_rollback", "description": "Rollback one verified proposal only with confirm=true and record the result."},
     {"name": "office.gmail_status", "description": "Check whether Veridex's local Gmail integration is connected."},
     {"name": "office.gmail_search", "description": "Search Gmail metadata using the connected veridexcorp@gmail.com account."},
     {"name": "office.gmail_send", "description": "Send Gmail, including session attachments when provided, only when confirm=true; otherwise return a confirmation requirement."},
@@ -1541,6 +2199,11 @@ TOOLS = [
     {"name": "resume.review", "description": "Run deterministic ATS, completeness, claim, and keyword checks."},
     {"name": "resume.project_save", "description": "Persist a resume project only when confirm=true."},
     {"name": "resume.export", "description": "Render verified DOCX, PDF, and plain-text resume artifacts."},
+    {"name": "art.studio_get", "description": "Read free-provider status, model capabilities, presets, and saved Art Studio projects."},
+    {"name": "art.job_start", "description": "Start a free-only Art Studio generation, edit, critique, or local finishing job."},
+    {"name": "art.job_get", "description": "Read progress or results for one Art Studio job."},
+    {"name": "art.job_cancel", "description": "Request cancellation of one active Art Studio job."},
+    {"name": "art.project_save", "description": "Persist an Art Studio project version only when confirm=true."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
@@ -1640,6 +2303,13 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     str(query.get("workspace_id", [""])[0]).strip(),
                     str(query.get("session_id", [""])[0]).strip(),
                 ))
+            elif parsed.path == "/api/art/studio":
+                self._json(art_bootstrap(
+                    str(query.get("workspace_id", [""])[0]).strip(),
+                    str(query.get("session_id", [""])[0]).strip(),
+                ))
+            elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
+                self._json(ART_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif parsed.path == "/api/art/images":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 self._json({
@@ -1684,6 +2354,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/governance/incidents":
                 workspace_id = str(query.get("workspace_id", [""])[0])
                 self._json({"incidents": STORE.list_governance_incidents(workspace_id)})
+            elif parsed.path == "/api/admin":
+                self._json({"administration": ADMIN.bootstrap()})
             elif parsed.path == "/tools":
                 if not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
@@ -1761,6 +2433,18 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     self._json({"status": "saved", "project": project, "projects": RESUME.list_projects(workspace_id)})
             elif parsed.path == "/api/resume/export":
                 self._json(save_resume_exports(payload), HTTPStatus.CREATED)
+            elif parsed.path == "/api/art/jobs":
+                self._json(submit_art_job(payload), HTTPStatus.ACCEPTED)
+            elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
+                self._json(ART_JOBS.cancel(parsed.path.split("/")[-2]))
+            elif parsed.path == "/api/art/projects/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                art_context(workspace_id, str(payload.get("session_id") or ""))
+                if not payload.get("confirm"):
+                    self._json({"status": "confirmation_required", "message": "Confirm Save Project to persist this Art Studio project."})
+                else:
+                    project = ART.save_project(workspace_id, payload.get("project") if isinstance(payload.get("project"), dict) else {})
+                    self._json({"status": "saved", "project": project, "projects": ART.list_projects(workspace_id)})
             elif parsed.path == "/api/contacts/delete":
                 self._json({
                     "deleted": GMAIL.delete_contact(str(payload.get("contact_id") or "")),
@@ -1825,6 +2509,16 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(state_response(STORE.bootstrap(session["workspace_id"], session["session_id"])), HTTPStatus.CREATED)
             elif parsed.path == "/api/rooms":
                 self._json(room_change_response(payload))
+            elif parsed.path == "/api/admin/proposals":
+                self._json(admin_create_response(payload), HTTPStatus.CREATED)
+            elif parsed.path == "/api/admin/proposals/apply":
+                self._json(admin_apply_response(payload))
+            elif parsed.path == "/api/admin/proposals/reject":
+                proposal = ADMIN.reject(str(payload.get("proposal_id") or ""), str(payload.get("reason") or ""))
+                self._json({"status": "rejected", "proposal": proposal, "administration": ADMIN.bootstrap()})
+            elif parsed.path == "/api/admin/proposals/rollback":
+                proposal = ADMIN.rollback(str(payload.get("proposal_id") or ""), confirm=bool(payload.get("confirm")))
+                self._json({"status": proposal.get("status"), "proposal": proposal, "administration": ADMIN.bootstrap()})
             elif parsed.path == "/api/chat/cancel":
                 request_id = str(payload.get("request_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -1881,6 +2575,25 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = {"rooms": rooms_payload()}
         elif tool == "office.room_set":
             value = room_change_response(args)
+        elif tool == "office.admin_status":
+            value = ADMIN.bootstrap()
+        elif tool == "office.room_propose":
+            value = admin_create_response({**args, "kind": "room"})
+        elif tool == "office.governance_propose":
+            kind = str(args.get("kind") or "").lower()
+            if kind not in {"rule", "gate"}:
+                raise ValueError("kind must be rule or gate")
+            value = admin_create_response({**args, "kind": kind})
+        elif tool == "office.program_change_propose":
+            value = admin_create_response({**args, "kind": "program", "action": "change"})
+        elif tool == "office.admin_apply":
+            value = admin_apply_response(args)
+        elif tool == "office.admin_reject":
+            proposal = ADMIN.reject(str(args.get("proposal_id") or ""), str(args.get("reason") or ""))
+            value = {"status": "rejected", "proposal": proposal, "administration": ADMIN.bootstrap()}
+        elif tool == "office.admin_rollback":
+            proposal = ADMIN.rollback(str(args.get("proposal_id") or ""), confirm=bool(args.get("confirm")))
+            value = {"status": proposal.get("status"), "proposal": proposal, "administration": ADMIN.bootstrap()}
         elif tool == "office.gmail_status":
             value = GMAIL.connection_status()
         elif tool == "office.gmail_search":
@@ -1977,6 +2690,27 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 value = {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Export."}
             else:
                 value = save_resume_exports(args)
+        elif tool == "art.studio_get":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            value = art_bootstrap(workspace_id, session_id)
+        elif tool == "art.job_start":
+            value = submit_art_job(args)
+        elif tool == "art.job_get":
+            value = ART_JOBS.get(str(args.get("job_id") or ""))
+        elif tool == "art.job_cancel":
+            value = ART_JOBS.cancel(str(args.get("job_id") or ""))
+        elif tool == "art.project_save":
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            art_context(workspace_id, session_id)
+            value = (
+                {"status": "saved", "project": ART.save_project(workspace_id, args.get("project") or {})}
+                if args.get("confirm")
+                else {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Save Project."}
+            )
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None

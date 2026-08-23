@@ -50,6 +50,21 @@ function Stop-Veridex {
   if (Test-Path -LiteralPath $PidPath) { Remove-Item -LiteralPath $PidPath -Force }
 }
 
+function Normalize-ProcessPathEnvironment {
+  # Some launchers inject both Path and PATH. Start-Process treats environment
+  # keys case-insensitively on Windows and throws before starting the child.
+  $PathEntries = @(
+    [Environment]::GetEnvironmentVariables("Process").GetEnumerator() |
+      Where-Object { ([string]$_.Key) -ieq "Path" }
+  )
+  if ($PathEntries.Count -le 1) { return }
+  $PathValue = [string]$PathEntries[0].Value
+  foreach ($Entry in $PathEntries) {
+    [Environment]::SetEnvironmentVariable([string]$Entry.Key, $null, "Process")
+  }
+  [Environment]::SetEnvironmentVariable("Path", $PathValue, "Process")
+}
+
 function Start-Veridex {
   $Existing = Get-VeridexProcess
   if ($Existing) {
@@ -73,6 +88,7 @@ function Start-Veridex {
   $Server = Join-Path $RepoRoot "veridex_server.py"
   $PreviousAccessMode = $env:VERIDEX_CODEX_ACCESS_MODE
   $env:VERIDEX_CODEX_ACCESS_MODE = $RequestedAccessMode
+  Normalize-ProcessPathEnvironment
   $Process = Start-Process -FilePath $Python `
     -ArgumentList @($Server, "--host", "127.0.0.1", "--port", "$Port") `
     -WorkingDirectory $RepoRoot `

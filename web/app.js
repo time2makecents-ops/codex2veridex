@@ -21,6 +21,24 @@ const state = {
   artImagesLoaded: false,
   selectedArtImageId: "",
   attachingArtImageId: "",
+  artStudio: {
+    loaded: false,
+    loading: false,
+    mode: "create",
+    providers: [],
+    models: [],
+    presets: [],
+    aspects: [],
+    projects: [],
+    currentProjectId: "",
+    selectedFileId: "",
+    previewReferenceId: "",
+    referenceIds: new Set(),
+    variants: [],
+    activeJob: null,
+    pollTimer: null,
+    criticNotes: "",
+  },
   roomFiles: [],
   roomFilesLoading: false,
   roomFilesRoomId: "",
@@ -28,6 +46,8 @@ const state = {
   attachingRoomFileId: "",
   deliveryAlerts: [],
   governance: {},
+  administration: { versions: {}, proposals: [], audit: [], rooms: [] },
+  adminTokens: {},
   selectedFiles: new Set(),
   emailAttachments: [],
   runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
@@ -108,6 +128,7 @@ function applyState(value, preserveRoute = false) {
   state.rooms = value.rooms || state.rooms;
   state.runtime = value.runtime || state.runtime;
   state.governance = value.governance || state.governance;
+  state.administration = value.administration || state.administration;
   if (sessionChanged) {
     state.selectedFiles.clear();
     state.emailAttachments = [];
@@ -117,6 +138,13 @@ function applyState(value, preserveRoute = false) {
     state.artImages = [];
     state.artImagesLoaded = false;
     state.selectedArtImageId = "";
+    state.artStudio.loaded = false;
+    state.artStudio.projects = [];
+    state.artStudio.currentProjectId = "";
+    state.artStudio.selectedFileId = "";
+    state.artStudio.previewReferenceId = "";
+    state.artStudio.referenceIds.clear();
+    state.artStudio.variants = [];
     state.roomFiles = [];
     state.roomFilesRoomId = "";
     state.selectedRoomFileId = "";
@@ -986,10 +1014,25 @@ function renderFiles() {
 function artImageContentUrl(image) {
   const query = new URLSearchParams({
     workspace_id: state.workspace.workspace_id,
-    session_id: image.source_session_id,
+    session_id: image.source_session_id || state.session.session_id,
     file_id: image.file_id,
   });
   return `/api/files/content?${query}`;
+}
+
+function artReferenceCandidates() {
+  const candidates = new Map();
+  state.files
+    .filter((file) => String(file.content_type || "").startsWith("image/"))
+    .forEach((file) => candidates.set(file.file_id, {
+      ...file,
+      source_session_id: file.source_session_id || state.session?.session_id || "",
+      provider: file.provider || "upload",
+      model: file.model || "original",
+      operation: file.operation || "reference_upload",
+    }));
+  state.artImages.forEach((image) => candidates.set(image.file_id, image));
+  return [...candidates.values()];
 }
 
 function selectedArtImage() {
@@ -1130,6 +1173,338 @@ async function openArtGallery() {
 function closeArtGallery() {
   const dialog = el("art-gallery-dialog");
   if (dialog.open) dialog.close();
+}
+
+function selectedStudioImage() {
+  return artReferenceCandidates().find((image) => image.file_id === state.artStudio.previewReferenceId)
+    || state.artImages.find((image) => image.file_id === state.artStudio.selectedFileId)
+    || state.artStudio.variants.find((image) => image.file_id === state.artStudio.selectedFileId)
+    || state.artStudio.variants[0]
+    || null;
+}
+
+function fillArtSelect(id, rows, label, fallback = "") {
+  const select = el(id);
+  const previous = select.value || fallback;
+  select.replaceChildren();
+  rows.forEach((row) => {
+    const option = document.createElement("option");
+    option.value = row.id;
+    option.textContent = label(row);
+    select.append(option);
+  });
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+}
+
+function setArtMode(mode) {
+  state.artStudio.mode = mode;
+  renderArtStudio();
+}
+
+function artFactRow(term, value) {
+  const row = document.createElement("div");
+  const dt = document.createElement("dt");
+  const dd = document.createElement("dd");
+  dt.textContent = term;
+  dd.textContent = String(value || "—");
+  row.append(dt, dd);
+  return row;
+}
+
+function renderArtStudio() {
+  const studio = state.artStudio;
+  const dialog = el("art-studio-dialog");
+  if (!dialog) return;
+  document.querySelectorAll("[data-art-mode]").forEach((button) => button.classList.toggle("active", button.dataset.artMode === studio.mode));
+  document.querySelectorAll(".art-mode-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `art-mode-${studio.mode}`));
+
+  if (studio.loaded) {
+    fillArtSelect("art-preset", studio.presets, (row) => row.name, "photography");
+    const readyProviders = new Set(studio.providers.filter((row) => row.configured).map((row) => row.id));
+    const availableModels = studio.models.filter((row) => row.id === "auto" || readyProviders.has(row.provider));
+    fillArtSelect("art-model", availableModels, (row) => row.name, "auto");
+    ["art-aspect", "art-edit-aspect"].forEach((id) => fillArtSelect(id, studio.aspects, (row) => `${row.id.replaceAll("_", " ")} · ${row.width}×${row.height}`, "square"));
+  }
+
+  const generationProviders = studio.providers.filter((row) => row.id !== "local");
+  const configured = generationProviders.filter((row) => row.configured).length;
+  el("art-provider-status").textContent = studio.loading
+    ? "Loading generation routes…"
+    : `${configured} generation route${configured === 1 ? "" : "s"} ready`;
+  const providerList = el("art-provider-list");
+  providerList.replaceChildren();
+  studio.providers.forEach((provider) => {
+    const row = document.createElement("div");
+    row.className = `art-provider-row${provider.configured ? " ready" : ""}`;
+    const dot = document.createElement("i");
+    const name = document.createElement("strong");
+    const detail = document.createElement("span");
+    name.textContent = provider.name;
+    detail.textContent = provider.configured
+      ? `${provider.quota_label || "Available"}${provider.balance != null ? ` · ${provider.balance} Pollen` : ""}`
+      : "Not configured";
+    row.append(dot, name, detail);
+    providerList.append(row);
+  });
+
+  const referenceList = el("art-reference-list");
+  referenceList.replaceChildren();
+  const referenceCandidates = artReferenceCandidates();
+  referenceCandidates.forEach((image) => {
+    const isSelected = studio.referenceIds.has(image.file_id);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `art-reference-choice${isSelected ? " active" : ""}`;
+    button.setAttribute("aria-pressed", String(isSelected));
+    button.title = isSelected ? "Preview and remove from this edit" : "Preview and select for editing";
+    const preview = document.createElement("img");
+    preview.src = artImageContentUrl(image);
+    preview.alt = image.name || "Reference image";
+    const name = document.createElement("span");
+    name.className = "art-reference-name";
+    name.textContent = image.name || "Artwork";
+    const stateLabel = document.createElement("strong");
+    stateLabel.className = "art-reference-state";
+    stateLabel.textContent = isSelected ? "Selected" : "Select";
+    button.append(preview, name, stateLabel);
+    button.addEventListener("click", () => {
+      studio.previewReferenceId = image.file_id;
+      if (studio.referenceIds.has(image.file_id)) studio.referenceIds.delete(image.file_id);
+      else if (studio.referenceIds.size < 4) studio.referenceIds.add(image.file_id);
+      else showError("Reference edits support up to four images.");
+      renderArtStudio();
+    });
+    referenceList.append(button);
+  });
+  if (!referenceCandidates.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "Create an image or upload one from your computer.";
+    referenceList.append(empty);
+  }
+
+  const finishSource = el("art-finish-source");
+  const previousSource = finishSource.value || studio.selectedFileId;
+  finishSource.replaceChildren();
+  referenceCandidates.forEach((image) => {
+    const option = document.createElement("option");
+    option.value = image.file_id;
+    option.textContent = image.name || "Artwork";
+    finishSource.append(option);
+  });
+  if ([...finishSource.options].some((option) => option.value === previousSource)) finishSource.value = previousSource;
+
+  const projectSelect = el("art-project-select");
+  const previousProject = projectSelect.value || studio.currentProjectId;
+  projectSelect.replaceChildren(new Option("New project", ""));
+  studio.projects.forEach((project) => projectSelect.append(new Option(`${project.name} · v${project.version}`, project.project_id)));
+  if ([...projectSelect.options].some((option) => option.value === previousProject)) projectSelect.value = previousProject;
+  const project = studio.projects.find((row) => row.project_id === (projectSelect.value || studio.currentProjectId));
+  el("art-project-summary").textContent = project
+    ? `Version ${project.version} · ${(project.file_ids || []).length} linked images · saved ${readableEmailDate(project.updated_at)}`
+    : "No project selected.";
+
+  const selected = selectedStudioImage();
+  el("art-canvas-empty").hidden = Boolean(selected);
+  el("art-canvas").hidden = !selected;
+  if (selected) {
+    el("art-canvas-image").src = artImageContentUrl(selected);
+    el("art-canvas-name").textContent = selected.name || "Artwork";
+    el("art-canvas-facts").textContent = [selected.provider, selected.model, selected.width && selected.height ? `${selected.width}×${selected.height}` : "", selected.artifact_number ? `Artifact #${selected.artifact_number}` : ""].filter(Boolean).join(" · ");
+  }
+  const variantStrip = el("art-variant-strip");
+  variantStrip.replaceChildren();
+  studio.variants.forEach((image) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = image.file_id === selected?.file_id ? "active" : "";
+    const preview = document.createElement("img");
+    preview.src = artImageContentUrl(image);
+    preview.alt = `Select ${image.name || "variant"}`;
+    button.append(preview);
+    button.addEventListener("click", () => {
+      studio.previewReferenceId = "";
+      studio.selectedFileId = image.file_id;
+      renderArtStudio();
+    });
+    variantStrip.append(button);
+  });
+
+  const facts = el("art-output-facts");
+  facts.replaceChildren();
+  if (selected) {
+    facts.append(
+      artFactRow("Provider", selected.provider || "Verified import"),
+      artFactRow("Model", selected.model || "—"),
+      artFactRow("Operation", selected.operation || "generated"),
+      artFactRow("Seed", selected.seed ?? "—"),
+      artFactRow("Lineage", (selected.parent_file_ids || []).length ? `${selected.parent_file_ids.length} source images` : "Original"),
+      artFactRow("Artifact", selected.artifact_number ? `#${selected.artifact_number}` : "Verified"),
+    );
+  } else facts.append(artFactRow("Status", "No image selected"));
+  el("art-critic-notes").textContent = studio.criticNotes || "Run a critique for composition, legibility, and visible defects.";
+
+  const job = studio.activeJob;
+  const active = Boolean(job && !["completed", "failed", "canceled"].includes(job.status));
+  const failed = job?.status === "failed";
+  el("art-job-progress").hidden = !(active || failed);
+  el("art-job-progress").classList.toggle("failed", failed);
+  el("art-job-cancel").hidden = !active;
+  if (job) {
+    el("art-job-message").textContent = job.message || job.status;
+    el("art-job-percent").textContent = `${job.progress || 0}%`;
+    el("art-job-meter").value = job.progress || 0;
+  }
+  ["art-generate", "art-edit", "art-finish", "art-improve-prompt", "art-critique", "art-project-save"].forEach((id) => { el(id).disabled = active || studio.loading; });
+  el("art-reference-upload").disabled = active || studio.loading || (state.uploading && state.uploadTarget === "art");
+  el("art-reference-upload-status").textContent = state.uploading && state.uploadTarget === "art"
+    ? "Uploading and verifying image…"
+    : `${studio.referenceIds.size} of 4 selected · PNG, JPEG, or WebP`;
+  el("art-edit").disabled ||= !studio.referenceIds.size;
+  el("art-finish").disabled ||= !finishSource.value;
+  el("art-critique").disabled ||= !selected;
+  el("art-use-reference").disabled = !selected;
+  el("art-download").disabled = !selected;
+  el("art-attach").disabled = !selected || state.selectedFiles.has(selected?.file_id);
+  el("art-attach").textContent = selected && state.selectedFiles.has(selected.file_id) ? "Attached" : "Attach to chat";
+}
+
+async function openArtStudio() {
+  if (state.session?.active_room !== "art_department") return;
+  const dialog = el("art-studio-dialog");
+  if (!dialog.open) dialog.showModal();
+  if (!state.artImagesLoaded) await loadArtImages();
+  if (state.artStudio.loaded || state.artStudio.loading) { renderArtStudio(); return; }
+  state.artStudio.loading = true;
+  renderArtStudio();
+  try {
+    const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+    const result = await api(`/api/art/studio?${query}`);
+    Object.assign(state.artStudio, {
+      providers: result.providers || [], models: result.models || [], presets: result.presets || [],
+      aspects: result.aspects || [], projects: result.projects || [], loaded: true,
+    });
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.artStudio.loading = false; renderArtStudio(); }
+}
+
+function closeArtStudio() {
+  const dialog = el("art-studio-dialog");
+  if (dialog.open) dialog.close();
+}
+
+async function pollArtJob(jobId) {
+  window.clearTimeout(state.artStudio.pollTimer);
+  try {
+    const job = await api(`/api/art/jobs/${encodeURIComponent(jobId)}`);
+    state.artStudio.activeJob = job;
+    renderArtStudio();
+    if (["queued", "running", "canceling"].includes(job.status)) {
+      state.artStudio.pollTimer = window.setTimeout(() => pollArtJob(jobId), 900);
+      return;
+    }
+    if (job.status === "failed") throw new Error(job.error || job.message || "Art Studio job failed");
+    if (job.status === "canceled") return;
+    const result = job.result || {};
+    if (result.kind === "text") el("art-prompt").value = result.text || el("art-prompt").value;
+    if (result.kind === "critique") state.artStudio.criticNotes = result.text || "No critique returned.";
+    if (result.kind === "images") {
+      const files = result.files || [];
+      const byId = new Map([...files, ...state.artImages].map((image) => [image.file_id, image]));
+      state.artImages = [...byId.values()];
+      state.artImagesLoaded = true;
+      state.artStudio.variants = files;
+      state.artStudio.previewReferenceId = "";
+      state.artStudio.selectedFileId = files[0]?.file_id || state.artStudio.selectedFileId;
+      state.selectedArtImageId = state.artStudio.selectedFileId;
+      await loadState(state.workspace.workspace_id, state.session.session_id, true);
+    }
+  } catch (error) {
+    state.artStudio.activeJob = { ...(state.artStudio.activeJob || {}), status: "failed", progress: 100, message: error.message || String(error) };
+    showError(error.message || String(error));
+  }
+  renderArtStudio();
+}
+
+async function startArtJob(payload) {
+  if (state.artStudio.activeJob && ["queued", "running", "canceling"].includes(state.artStudio.activeJob.status)) return;
+  try {
+    const job = await api("/api/art/jobs", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      project_id: state.artStudio.currentProjectId,
+      ...payload,
+    }) });
+    state.artStudio.activeJob = job;
+    renderArtStudio();
+    await pollArtJob(job.job_id);
+  } catch (error) {
+    state.artStudio.activeJob = { status: "failed", progress: 100, message: error.message || String(error) };
+    showError(error.message || String(error));
+    renderArtStudio();
+  }
+}
+
+function generateArt() {
+  startArtJob({
+    operation: "generate", prompt: el("art-prompt").value.trim(), preset_id: el("art-preset").value,
+    model_id: el("art-model").value, aspect: el("art-aspect").value, variants: Number(el("art-variants").value),
+    seed: Number(el("art-seed").value || 0), negative_prompt: el("art-negative-prompt").value.trim(),
+    improve_prompt: el("art-auto-improve").checked,
+  });
+}
+
+function editArt() {
+  startArtJob({
+    operation: "edit", prompt: el("art-edit-prompt").value.trim(), preset_id: el("art-preset").value,
+    model_id: "edit", aspect: el("art-edit-aspect").value, variants: 1,
+    seed: Number(el("art-edit-seed").value || 0), source_file_ids: [...state.artStudio.referenceIds],
+  });
+}
+
+function finishArt() {
+  const source = el("art-finish-source").value;
+  const operation = el("art-finish-operation").value;
+  const sourceIds = operation === "collage" && state.artStudio.referenceIds.size
+    ? [...state.artStudio.referenceIds]
+    : [source];
+  startArtJob({ operation, source_file_ids: sourceIds, options: {
+    width: Number(el("art-finish-width").value || 0), height: Number(el("art-finish-height").value || 0),
+    scale: Number(el("art-finish-scale").value || 2), format: el("art-finish-format").value,
+    quality: Number(el("art-finish-quality").value || 92), text: el("art-finish-text").value.trim(),
+  } });
+}
+
+async function saveArtProject() {
+  const selected = selectedStudioImage();
+  try {
+    const result = await api("/api/art/projects/save", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, confirm: true,
+      project: {
+        project_id: state.artStudio.currentProjectId,
+        name: el("art-project-name").value.trim() || "Untitled art project",
+        prompt: el("art-prompt").value.trim(), preset_id: el("art-preset").value,
+        model_id: el("art-model").value, aspect: el("art-aspect").value,
+        selected_file_id: selected?.file_id || "", file_ids: state.artStudio.variants.map((image) => image.file_id),
+      },
+    }) });
+    state.artStudio.currentProjectId = result.project.project_id;
+    state.artStudio.projects = result.projects || state.artStudio.projects;
+    renderArtStudio();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+function loadArtProject() {
+  const project = state.artStudio.projects.find((row) => row.project_id === el("art-project-select").value);
+  if (!project) return;
+  state.artStudio.currentProjectId = project.project_id;
+  el("art-project-name").value = project.name || "";
+  el("art-prompt").value = project.prompt || "";
+  el("art-preset").value = project.preset_id || "photography";
+  el("art-model").value = project.model_id || "auto";
+  el("art-aspect").value = project.aspect || "square";
+  state.artStudio.variants = state.artImages.filter((image) => (project.file_ids || []).includes(image.file_id));
+  state.artStudio.selectedFileId = project.selected_file_id || state.artStudio.variants[0]?.file_id || "";
+  setArtMode("create");
 }
 
 function currentRoom() {
@@ -1890,7 +2265,10 @@ function renderArtTools() {
   const isArtDepartment = state.session?.active_room === "art_department";
   el("art-actions").hidden = !isArtDepartment;
   el("open-art-gallery").disabled = state.sending || state.uploading || state.switchingRoom;
+  el("open-art-studio").disabled = state.sending || state.uploading || state.switchingRoom;
   if (!isArtDepartment && el("art-gallery-dialog").open) closeArtGallery();
+  if (!isArtDepartment && el("art-studio-dialog").open) closeArtStudio();
+  if (el("art-studio-dialog").open) renderArtStudio();
 }
 
 function renderRoomFileTools() {
@@ -1934,6 +2312,26 @@ function renderGovernance() {
     hardGates.append(row);
   });
 
+  const governanceProposals = el("governance-proposals");
+  governanceProposals.replaceChildren();
+  const pending = (state.administration?.proposals || []).filter((proposal) =>
+    ["awaiting_approval", "awaiting_second_approval"].includes(proposal.status));
+  if (!pending.length) {
+    const row = document.createElement("div");
+    row.textContent = "No changes awaiting approval.";
+    governanceProposals.append(row);
+  } else {
+    pending.slice(0, 8).forEach((proposal) => {
+      const row = document.createElement("div");
+      const title = document.createElement("strong");
+      const detail = document.createElement("span");
+      title.textContent = `${proposal.kind.toUpperCase()} · ${proposal.action}`;
+      detail.textContent = `${proposal.proposal_id} · ${proposal.status.replaceAll("_", " ")}`;
+      row.append(title, detail);
+      governanceProposals.append(row);
+    });
+  }
+
   const provenance = el("governance-provenance");
   provenance.replaceChildren();
   (governance.provenance || []).forEach((path) => {
@@ -1941,6 +2339,128 @@ function renderGovernance() {
     row.textContent = path;
     provenance.append(row);
   });
+}
+
+const ADMIN_ACTIONS = {
+  room: ["create", "update", "archive", "restore"],
+  rule: ["add", "amend", "disable", "restore"],
+  gate: ["add", "amend", "disable", "restore"],
+  program: ["change"],
+};
+
+function adminProposalSummary(proposal) {
+  const payload = proposal.payload || {};
+  if (proposal.kind === "room") return payload.title || payload.target_id || "Room change";
+  if (["rule", "gate"].includes(proposal.kind)) return payload.id || payload.target_id || "Governance change";
+  return payload.title || "Program change";
+}
+
+function updateAdministrationForm() {
+  const kind = el("admin-kind").value;
+  const actionSelect = el("admin-action");
+  const previous = actionSelect.value;
+  actionSelect.replaceChildren();
+  (ADMIN_ACTIONS[kind] || []).forEach((action) => {
+    const option = document.createElement("option");
+    option.value = action;
+    option.textContent = action[0].toUpperCase() + action.slice(1);
+    actionSelect.append(option);
+  });
+  if ([...(ADMIN_ACTIONS[kind] || [])].includes(previous)) actionSelect.value = previous;
+  const action = actionSelect.value;
+  const creating = (kind === "room" && action === "create") || kind === "program";
+  const adding = ["rule", "gate"].includes(kind) && action === "add";
+  el("admin-title-field").hidden = !creating;
+  el("admin-target-field").hidden = creating || adding;
+  el("admin-persona-field").hidden = !(kind === "room" && action === "create");
+  el("admin-statement-field").hidden = ["archive", "restore", "disable"].includes(action);
+  el("admin-reason-field").hidden = action !== "disable";
+  el("admin-paths-field").hidden = kind !== "program";
+  el("admin-tests-field").hidden = kind !== "program";
+}
+
+function renderAdministration() {
+  const administration = state.administration || {};
+  const infrastructureActive = state.session?.active_room === "infrastructure_room";
+  [...el("admin-kind").options].forEach((option) => {
+    if (["room", "program"].includes(option.value)) option.disabled = !infrastructureActive;
+  });
+  if (!infrastructureActive && ["room", "program"].includes(el("admin-kind").value)) el("admin-kind").value = "rule";
+  const versions = administration.versions || {};
+  el("admin-room-version").textContent = `v${versions.room_catalog || 1}`;
+  el("admin-governance-version").textContent = `v${versions.governance || 1}`;
+  el("open-administration").hidden = !infrastructureActive;
+  const list = el("administration-proposal-list");
+  list.replaceChildren();
+  const proposals = administration.proposals || [];
+  if (!proposals.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No administrative proposals yet.";
+    list.append(empty);
+  }
+  proposals.forEach((proposal) => {
+    const row = document.createElement("article");
+    row.className = "administration-proposal";
+    const head = document.createElement("div");
+    head.className = "administration-proposal-head";
+    const title = document.createElement("strong");
+    title.textContent = adminProposalSummary(proposal);
+    const status = document.createElement("span");
+    status.textContent = proposal.status.replaceAll("_", " ");
+    head.append(title, status);
+    const detail = document.createElement("p");
+    detail.textContent = `${proposal.kind} · ${proposal.action} · ${proposal.risk_level} risk · ${proposal.approvals_received || 0}/${proposal.approvals_required || 1} approvals`;
+    const id = document.createElement("code");
+    id.textContent = proposal.proposal_id;
+    row.append(head, detail, id);
+    const findings = proposal.navigator?.findings || [];
+    if (findings.length) {
+      const impact = document.createElement("p");
+      impact.textContent = `Navigator: ${findings.join(" ")}`;
+      row.append(impact);
+    }
+    const actions = document.createElement("div");
+    actions.className = "administration-proposal-actions";
+    if (["awaiting_approval", "awaiting_second_approval"].includes(proposal.status)) {
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.dataset.adminAction = "approve";
+      approve.dataset.proposalId = proposal.proposal_id;
+      approve.dataset.expectedVersion = String(proposal.base_version || 0);
+      approve.textContent = proposal.status === "awaiting_second_approval" ? "Confirm again" : "Approve";
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.className = "danger";
+      reject.dataset.adminAction = "reject";
+      reject.dataset.proposalId = proposal.proposal_id;
+      reject.textContent = "Reject";
+      actions.append(approve, reject);
+    }
+    if (proposal.status === "verified") {
+      const rollback = document.createElement("button");
+      rollback.type = "button";
+      rollback.className = "danger";
+      rollback.dataset.adminAction = "rollback";
+      rollback.dataset.proposalId = proposal.proposal_id;
+      rollback.textContent = "Rollback";
+      actions.append(rollback);
+    }
+    row.append(actions);
+    list.append(row);
+  });
+  const auditList = el("administration-audit-list");
+  auditList.replaceChildren();
+  [...(administration.audit || [])].reverse().slice(0, 12).forEach((event) => {
+    const row = document.createElement("div");
+    row.className = "administration-audit-row";
+    const time = document.createElement("time");
+    time.textContent = new Date(event.timestamp).toLocaleString();
+    const text = document.createElement("span");
+    text.textContent = `${event.event.replaceAll("_", " ")} · ${event.proposal_id}`;
+    row.append(time, text);
+    auditList.append(row);
+  });
+  updateAdministrationForm();
 }
 
 function renderRoute() {
@@ -1961,7 +2481,7 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  const deterministic = ["veridex_router", "veridex_governance", "veridex_google_router", "veridex_gmail_router"].includes(state.route.provider);
+  const deterministic = ["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router"].includes(state.route.provider);
   el("route-model").textContent = deterministic
     ? `Veridex · deterministic ${state.route.task_type.replaceAll("_", " ")}`
     : `Codex CLI · ${state.route.model}`;
@@ -2014,6 +2534,7 @@ function render() {
   renderRoomFileTools();
   renderResumeTools();
   renderGovernance();
+  renderAdministration();
   renderNavigation();
   renderMessages();
   renderFiles();
@@ -2037,7 +2558,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
 }
 
 function routeNotice(next) {
-  if (["veridex_router", "veridex_governance", "veridex_google_router", "veridex_gmail_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
+  if (["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -2137,6 +2658,13 @@ function showError(message) {
   window.setTimeout(() => toast.classList.remove("show"), 7000);
 }
 
+function showToast(message) {
+  const toast = el("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  window.setTimeout(() => toast.classList.remove("show"), 4500);
+}
+
 el("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = el("message-input");
@@ -2162,6 +2690,55 @@ el("voice-input").addEventListener("click", toggleDictation);
 
 el("compose-email").addEventListener("click", () => openEmailComposer());
 el("address-book").addEventListener("click", openAddressBook);
+el("open-art-studio").addEventListener("click", openArtStudio);
+el("art-studio-close").addEventListener("click", closeArtStudio);
+el("art-studio-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeArtStudio();
+});
+document.querySelectorAll("[data-art-mode]").forEach((button) => button.addEventListener("click", () => setArtMode(button.dataset.artMode)));
+el("art-improve-prompt").addEventListener("click", () => startArtJob({ operation: "improve_prompt", prompt: el("art-prompt").value.trim(), preset_id: el("art-preset").value }));
+el("art-generate").addEventListener("click", generateArt);
+el("art-edit").addEventListener("click", editArt);
+el("art-reference-upload").addEventListener("click", () => el("art-reference-input").click());
+el("art-reference-input").addEventListener("change", (event) => uploadFiles(event.target.files, "art"));
+el("art-finish").addEventListener("click", finishArt);
+el("art-project-save").addEventListener("click", saveArtProject);
+el("art-project-load").addEventListener("click", loadArtProject);
+el("art-project-select").addEventListener("change", renderArtStudio);
+el("art-finish-source").addEventListener("change", (event) => { state.artStudio.selectedFileId = event.target.value; renderArtStudio(); });
+el("art-critique").addEventListener("click", () => {
+  const selected = selectedStudioImage();
+  if (selected) startArtJob({ operation: "critique", source_file_ids: [selected.file_id] });
+});
+el("art-use-reference").addEventListener("click", () => {
+  const selected = selectedStudioImage();
+  if (!selected) return;
+  state.artStudio.referenceIds.add(selected.file_id);
+  state.artStudio.previewReferenceId = selected.file_id;
+  setArtMode("edit");
+});
+el("art-download").addEventListener("click", () => {
+  const selected = selectedStudioImage();
+  if (!selected) return;
+  const link = document.createElement("a");
+  link.href = artImageContentUrl(selected);
+  link.download = selected.name || "veridex-artwork";
+  link.click();
+});
+el("art-attach").addEventListener("click", async () => {
+  const selected = selectedStudioImage();
+  if (selected) await attachArtImage(selected);
+  renderArtStudio();
+});
+el("art-job-cancel").addEventListener("click", async () => {
+  const job = state.artStudio.activeJob;
+  if (!job?.job_id) return;
+  try {
+    state.artStudio.activeJob = await api(`/api/art/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST", body: "{}" });
+    renderArtStudio();
+  } catch (error) { showError(error.message || String(error)); }
+});
 el("open-art-gallery").addEventListener("click", openArtGallery);
 el("art-gallery-close").addEventListener("click", closeArtGallery);
 el("art-gallery-dialog").addEventListener("cancel", (event) => {
@@ -2277,7 +2854,7 @@ el("email-compose-form").addEventListener("submit", async (event) => {
 const EMAIL_ATTACHMENT_LIMIT_BYTES = 20 * 1024 * 1024;
 
 async function uploadFiles(fileList, target = "chat") {
-  const files = [...fileList].filter((file) => file instanceof File);
+  let files = [...fileList].filter((file) => file instanceof File);
   if (!state.workspace || !state.session || !files.length) return;
   if (state.sending || state.uploading) {
     showError("Wait for the current request or upload to finish.");
@@ -2289,6 +2866,25 @@ async function uploadFiles(fileList, target = "chat") {
     if (currentSize + addedSize > EMAIL_ATTACHMENT_LIMIT_BYTES) {
       showError("Email attachments must total 20 MB or less.");
       return;
+    }
+  }
+  if (target === "art") {
+    const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+    const supportedExtensions = /\.(?:png|jpe?g|webp)$/i;
+    if (files.some((file) => !supportedTypes.has(file.type) && !supportedExtensions.test(file.name))) {
+      showError("Art Studio references must be PNG, JPEG, or WebP images.");
+      el("art-reference-input").value = "";
+      return;
+    }
+    const availableSlots = Math.max(0, 4 - state.artStudio.referenceIds.size);
+    if (!availableSlots) {
+      showError("Remove a reference before adding another. Art Studio supports up to four images.");
+      el("art-reference-input").value = "";
+      return;
+    }
+    if (files.length > availableSlots) {
+      showError(`Only the first ${availableSlots} image${availableSlots === 1 ? "" : "s"} will be added; Art Studio supports four references.`);
+      files = files.slice(0, availableSlots);
     }
   }
   state.uploading = true;
@@ -2309,6 +2905,10 @@ async function uploadFiles(fileList, target = "chat") {
       state.files = result.files || state.files;
       if (result.file?.file_id) {
         if (target === "email") state.emailAttachments.push(result.file);
+        else if (target === "art") {
+          state.artStudio.referenceIds.add(result.file.file_id);
+          state.artStudio.previewReferenceId = result.file.file_id;
+        }
         else state.selectedFiles.add(result.file.file_id);
       }
     }
@@ -2317,8 +2917,10 @@ async function uploadFiles(fileList, target = "chat") {
   } finally {
     state.uploading = false;
     state.uploadTarget = "";
-    el(target === "email" ? "email-file-input" : "file-input").value = "";
+    const inputId = target === "email" ? "email-file-input" : target === "art" ? "art-reference-input" : "file-input";
+    el(inputId).value = "";
     render();
+    if (target === "art") renderArtStudio();
   }
 }
 
@@ -2398,9 +3000,131 @@ function setGovernancePanel(open) {
   el("navigator-status").setAttribute("aria-expanded", String(open));
 }
 
+function setAdministrationPanel(open) {
+  el("administration-panel").hidden = !open;
+  el("administration-scrim").hidden = !open;
+  el("open-administration").setAttribute("aria-expanded", String(open));
+}
+
+async function refreshAdministration() {
+  const result = await api("/api/admin");
+  state.administration = result.administration || state.administration;
+  renderAdministration();
+  renderGovernance();
+}
+
+async function submitAdministrationProposal(event) {
+  event.preventDefault();
+  const kind = el("admin-kind").value;
+  const action = el("admin-action").value;
+  const title = el("admin-title").value.trim();
+  const targetId = el("admin-target").value.trim();
+  const statement = el("admin-statement").value.trim();
+  const reason = el("admin-reason").value.trim();
+  const payload = {};
+  if (kind === "room") {
+    if (action === "create") Object.assign(payload, { title, default_persona: el("admin-persona").value.trim() || "Room Steward", purpose: statement });
+    else Object.assign(payload, { target_id: targetId, ...(statement ? { purpose: statement } : {}) });
+  } else if (["rule", "gate"].includes(kind)) {
+    if (action === "add") payload[kind === "rule" ? "text" : "definition"] = statement;
+    else {
+      payload.target_id = targetId;
+      if (action === "amend") payload[kind === "rule" ? "text" : "definition"] = statement;
+      if (action === "disable") payload.reason = reason;
+    }
+  } else {
+    Object.assign(payload, {
+      title,
+      instructions: statement,
+      allowed_paths: el("admin-paths").value.split(",").map((value) => value.trim()).filter(Boolean),
+      tests: el("admin-tests").value.split(";;").map((value) => value.trim()).filter(Boolean),
+    });
+  }
+  try {
+    const result = await api("/api/admin/proposals", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace?.workspace_id,
+        session_id: state.session?.session_id,
+        kind,
+        action,
+        payload,
+      }),
+    });
+    state.administration = result.administration;
+    event.target.reset();
+    updateAdministrationForm();
+    renderAdministration();
+    renderGovernance();
+    showToast(`Proposal ${result.proposal.proposal_id} is ready for review.`);
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+async function handleAdministrationAction(event) {
+  const button = event.target.closest("button[data-admin-action]");
+  if (!button) return;
+  const proposalId = button.dataset.proposalId;
+  const action = button.dataset.adminAction;
+  const proposal = (state.administration.proposals || []).find((row) => row.proposal_id === proposalId);
+  if (!proposal) return;
+  try {
+    if (action === "approve") {
+      const second = proposal.status === "awaiting_second_approval";
+      const warning = second
+        ? "Confirm this governance change a second time? It can weaken an active protection."
+        : `Apply ${proposal.kind} ${proposal.action} proposal ${proposalId}?`;
+      if (!window.confirm(warning)) return;
+      const storageKey = `veridex-admin-token-${proposalId}`;
+      const token = second ? (state.adminTokens[proposalId] || window.sessionStorage.getItem(storageKey) || "") : "";
+      const result = await api("/api/admin/proposals/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          proposal_id: proposalId,
+          expected_version: Number(button.dataset.expectedVersion || proposal.base_version || 0),
+          confirm: true,
+          second_confirmation_token: token,
+        }),
+      });
+      if (result.status === "second_confirmation_required") {
+        state.adminTokens[proposalId] = result.second_confirmation_token;
+        window.sessionStorage.setItem(storageKey, result.second_confirmation_token);
+        showToast("First approval recorded. Review Navigator's warning, then confirm again.");
+      } else {
+        window.sessionStorage.removeItem(storageKey);
+        delete state.adminTokens[proposalId];
+        showToast(`${proposalId} applied and verified.`);
+      }
+      await loadState(state.workspace.workspace_id, state.session.session_id, true);
+      render();
+    } else if (action === "reject") {
+      if (!window.confirm(`Reject ${proposalId}? No change will be applied.`)) return;
+      const result = await api("/api/admin/proposals/reject", { method: "POST", body: JSON.stringify({ proposal_id: proposalId, reason: "Rejected in Administration" }) });
+      state.administration = result.administration;
+      renderAdministration();
+      renderGovernance();
+    } else if (action === "rollback") {
+      if (!window.confirm(`Rollback ${proposalId}? This restores the recorded prior version and will be audited.`)) return;
+      const result = await api("/api/admin/proposals/rollback", { method: "POST", body: JSON.stringify({ proposal_id: proposalId, confirm: true }) });
+      state.administration = result.administration;
+      await loadState(state.workspace.workspace_id, state.session.session_id, true);
+      render();
+      showToast(`${proposalId} rolled back.`);
+    }
+  } catch (error) { showError(error.message || String(error)); }
+}
+
 el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
 el("governance-close").addEventListener("click", () => setGovernancePanel(false));
 el("governance-scrim").addEventListener("click", () => setGovernancePanel(false));
+el("open-administration").addEventListener("click", () => setAdministrationPanel(el("administration-panel").hidden));
+el("governance-open-administration").addEventListener("click", () => { setGovernancePanel(false); setAdministrationPanel(true); });
+el("administration-close").addEventListener("click", () => setAdministrationPanel(false));
+el("administration-scrim").addEventListener("click", () => setAdministrationPanel(false));
+el("administration-refresh").addEventListener("click", () => refreshAdministration().catch((error) => showError(error.message || String(error))));
+el("administration-form").addEventListener("submit", submitAdministrationProposal);
+el("admin-kind").addEventListener("change", updateAdministrationForm);
+el("admin-action").addEventListener("change", updateAdministrationForm);
+el("administration-proposal-list").addEventListener("click", handleAdministrationAction);
 
 el("message-input").addEventListener("input", (event) => {
   event.target.style.height = "auto";

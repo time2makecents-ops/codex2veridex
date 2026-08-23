@@ -167,6 +167,16 @@ def _compact_context(context: Any, max_chars: int = 12000) -> str:
             "active_gate_ids": list(governance.get("active_gate_ids") or [])[:20],
             "workspace_gates": governance.get("workspace_gates"),
             "latest_incident": governance.get("latest_incident"),
+            "active_core_rules": [
+                {"id": row.get("id"), "text": _short_text(row.get("text"), 500)}
+                for row in (governance.get("core_rules") or [])
+                if isinstance(row, dict) and row.get("status", "active") == "active"
+            ][:30],
+            "active_gate_definitions": [
+                {"id": row.get("id"), "definition": _short_text(row.get("definition"), 500)}
+                for row in (governance.get("gates") or [])
+                if isinstance(row, dict) and row.get("status") == "active"
+            ][:30],
         }
     if isinstance(context.get("resume_studio"), dict):
         resume = context["resume_studio"]
