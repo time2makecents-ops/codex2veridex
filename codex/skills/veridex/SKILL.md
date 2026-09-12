@@ -34,5 +34,6 @@ After activation:
 
 Use `veridex_deactivate` when the user says to stop using Veridex.
 
-For full local file access, start the standalone server first with
-`C:\codex2veridex\veridex.ps1 restart -FullAccess`.
+The standalone server starts with full local file access by default. Use
+`C:\codex2veridex\veridex.ps1 restart -ReadOnly` only when the user explicitly
+requests a read-only run.

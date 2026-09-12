@@ -34,8 +34,8 @@ class ModelPolicy:
 
 
 def access_mode() -> str:
-    value = _env("VERIDEX_CODEX_ACCESS_MODE", "read_only").lower().replace("-", "_")
-    return value if value in ACCESS_MODES else "read_only"
+    value = _env("VERIDEX_CODEX_ACCESS_MODE", "full").lower().replace("-", "_")
+    return value if value in ACCESS_MODES else "full"
 
 
 def select_model(task_type: str) -> ModelPolicy:
@@ -257,8 +257,10 @@ def build_prompt(request: Dict[str, Any], policy: ModelPolicy) -> str:
             )
         else:
             artifact_instructions = (
-                "This request requires a generated document file. Create the requested final PDF, DOCX, TXT, or Markdown file and place it in this exact directory: "
+                "This request requires a generated document file. Create the requested final PDF, DOCX, XLSX, CSV, TXT, or Markdown file and place it in this exact directory: "
                 f'"{artifact_output_dir}". Use a descriptive filename. Do not place temporary or source files there. '
+                f'For XLSX output, use "{sys.executable}" with openpyxl, reopen the saved workbook, and verify its sheets and row count. '
+                "For researched contact directories, include a public source URL per row, leave unsupported fields blank, deduplicate businesses, and add a QA summary sheet. "
                 "Do not claim that a document or file was created, generated, rendered, exported, or saved unless writing the final file completed. "
             )
         artifact_instructions += "If generation or copying is unavailable, state plainly that no verified file was created. "
@@ -399,7 +401,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     workdir = Path(_env("VERIDEX_CODEX_WORKDIR", str(Path(__file__).resolve().parent))).resolve()
     if not workdir.is_dir():
         raise RuntimeError(f"Codex working directory does not exist: {workdir}")
-    timeout_seconds = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "240")))
+    timeout_seconds = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "600")))
     mode = access_mode()
     sandbox = "danger-full-access" if mode == "full" else "read-only"
     attachment_paths = [
@@ -439,6 +441,22 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     cancel_event = request.get("cancel_event")
 
+    def terminate_process_tree(process: subprocess.Popen[str]) -> None:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                creationflags=creation_flags,
+                check=False,
+            )
+        else:
+            process.terminate()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+
     def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
         if cancel_event is None:
             return subprocess.run(
@@ -469,24 +487,10 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         deadline = time.monotonic() + timeout_seconds
         while True:
             if cancel_event.is_set():
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        capture_output=True,
-                        creationflags=creation_flags,
-                        check=False,
-                    )
-                else:
-                    process.terminate()
-                try:
-                    process.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate()
+                terminate_process_tree(process)
                 raise RequestCancelled("The active Codex request was stopped by the user.")
             if time.monotonic() >= deadline:
-                process.kill()
-                process.communicate()
+                terminate_process_tree(process)
                 raise subprocess.TimeoutExpired(command, timeout_seconds)
             try:
                 stdout, stderr = process.communicate(timeout=0.25)

@@ -46,9 +46,9 @@ ACTION_CLAIM = re.compile(
 )
 FILE_CREATION_CLAIM = re.compile(
     r"(?:^|[.!?]\s+)(?:successfully\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
-    r"\b(?:file|document|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|txt)\b|"
+    r"\b(?:file|document|spreadsheet|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|xlsx?|csv|txt)\b|"
     r"\b(?:i|we)\s+(?:have\s+)?(?:created|generated|rendered|exported|saved|produced)\b.{0,120}"
-    r"\b(?:file|document|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|txt)\b|"
+    r"\b(?:file|document|spreadsheet|resume|cover letter|image|illustration|picture|photo|graphic|artwork|bitmap|png|jpe?g|webp|gif|pdf|docx?|xlsx?|csv|txt)\b|"
     r"\b(?:image|illustration|picture|photo|graphic|artwork|bitmap|file)\s+(?:was|has been)\s+"
     r"(?:created|generated|rendered|exported|saved|produced)\b",
     re.IGNORECASE,
@@ -67,8 +67,8 @@ MEDIA_TRANSFORM_INTENT = re.compile(
 )
 DOCUMENT_CREATION_REQUEST = re.compile(
     r"\b(?:create|generate|make|render|produce|export|save|write)\b.{0,120}"
-    r"\b(?:document|resume|cover letter|file|pdf|docx?|word document|text file)\b|"
-    r"\b(?:document|resume|cover letter|pdf|docx?|word document|text file)\b.{0,120}"
+    r"\b(?:document|spreadsheet|workbook|resume|cover letter|file|pdf|docx?|xlsx?|csv|excel(?: workbook)?|word document|text file)\b|"
+    r"\b(?:document|spreadsheet|workbook|resume|cover letter|pdf|docx?|xlsx?|csv|excel(?: workbook)?|word document|text file)\b.{0,120}"
     r"\b(?:create|generate|make|render|produce|export|save|write)\b",
     re.IGNORECASE,
 )

@@ -56,6 +56,7 @@ class VeridexCoreTests(unittest.TestCase):
             classify_task("check social media and google for a band called Stella Jones"),
             "search_synthesis",
         )
+        self.assertEqual(classify_task("research a statewide directory of event planners"), "search_deep")
         self.assertEqual(
             classify_task("take the file adam.png and have the character sitting next to an animated dog"),
             "media",
@@ -151,6 +152,37 @@ class VeridexCoreTests(unittest.TestCase):
             (staging / "not-really-an-image.png").write_bytes(b"plain text")
             self.assertEqual(store.import_generated_artifacts(workspace_id, session_id, staging), [])
             self.assertEqual(store.list_artifact_ledger(workspace_id), [])
+
+    def test_generated_xlsx_and_csv_are_validated_imported_and_ledgered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "marketing_room")
+            staging = store.prepare_generated_output_dir(workspace_id, session_id, "msg_sheets")
+
+            workbook = staging / "event-planners.xlsx"
+            from openpyxl import Workbook
+            generated = Workbook()
+            generated.active.append(["Name", "Phone", "Email"])
+            generated.active.append(["Example Events", "555-0100", "hello@example.com"])
+            generated.save(workbook)
+            generated.close()
+            csv_file = staging / "event-planners.csv"
+            csv_file.write_text("Name,Phone,Email\nExample Events,555-0100,hello@example.com\n", encoding="utf-8")
+            (staging / "fake.xlsx").write_text("not a workbook", encoding="utf-8")
+
+            imported = store.import_generated_artifacts(workspace_id, session_id, staging)
+
+            self.assertEqual({row["name"] for row in imported}, {"event-planners.xlsx", "event-planners.csv"})
+            self.assertTrue(all(row["kind"] == "generated_document" for row in imported))
+            self.assertTrue(all(row["scope_ref"] == "marketing_room" for row in imported))
+            self.assertEqual(
+                next(row["content_type"] for row in imported if row["name"].endswith(".xlsx")),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            self.assertEqual(len(store.list_artifact_ledger(workspace_id)), 2)
 
     def test_discovers_only_new_generated_files_with_matching_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

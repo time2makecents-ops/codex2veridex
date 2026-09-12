@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import mimetypes
 import re
@@ -20,7 +21,9 @@ DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
 MOJIBAKE_MARKERS = ("Ã", "Â", "â", "ð")
 GOVERNANCE_REGISTRY_PATH = Path(__file__).resolve().parent / "governance" / "navigator_governance_v1.0.0.json"
 GENERATED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-GENERATED_DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
+GENERATED_DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".csv", ".txt", ".md"}
+mimetypes.add_type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx")
+mimetypes.add_type("text/csv", ".csv")
 
 
 def utc_now() -> str:
@@ -72,6 +75,8 @@ def classify_task(text: str) -> str:
         r"\b(search|research|latest|current|look up|find online|web|google|social media|upcoming shows?|concert dates?)\w*\b",
         value,
     ):
+        if re.search(r"\b(?:all|comprehensive|statewide|directory|deep research|many sources|multiple sources)\b", value):
+            return "search_deep"
         return "search_synthesis"
     if re.search(r"\b(code|coding|python|javascript|typescript|react|api|function|class|bug|debug|refactor|compile|repository|git|sql|html|css)\w*\b", value):
         return "coding"
@@ -589,21 +594,49 @@ class VeridexStore:
             header = stream.read(8)
         if suffix == ".pdf":
             return header.startswith(b"%PDF-")
-        if suffix == ".docx":
+        if suffix in {".docx", ".xlsx"}:
             if not header.startswith(b"PK"):
                 return False
             try:
                 import zipfile
                 with zipfile.ZipFile(candidate) as archive:
                     names = set(archive.namelist())
-                return "[Content_Types].xml" in names and "word/document.xml" in names
+                if suffix == ".docx":
+                    return "[Content_Types].xml" in names and "word/document.xml" in names
+                worksheets = {
+                    name for name in names
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml")
+                }
+                has_workbook_parts = (
+                    "[Content_Types].xml" in names
+                    and "xl/workbook.xml" in names
+                    and bool(worksheets)
+                )
+                if not has_workbook_parts:
+                    return False
+                try:
+                    from openpyxl import load_workbook
+                    workbook = load_workbook(candidate, read_only=True, data_only=False)
+                    valid = bool(workbook.sheetnames)
+                    workbook.close()
+                    return valid
+                except Exception:
+                    return False
             except (OSError, zipfile.BadZipFile):
                 return False
         try:
             text = candidate.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return False
-        return bool(text.strip())
+        if not text.strip():
+            return False
+        if suffix == ".csv":
+            try:
+                rows = list(csv.reader(text.splitlines()))
+            except csv.Error:
+                return False
+            return bool(rows and any(any(cell.strip() for cell in row) for row in rows))
+        return True
 
     def import_generated_file(
         self,

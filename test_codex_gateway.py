@@ -14,6 +14,14 @@ from request_control import RequestCancelled
 
 
 class CodexGatewayTests(unittest.TestCase):
+    def test_full_access_is_the_default_and_read_only_remains_explicit(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(codex_gateway.access_mode(), "full")
+        with patch.dict(os.environ, {"VERIDEX_CODEX_ACCESS_MODE": "read_only"}, clear=True):
+            self.assertEqual(codex_gateway.access_mode(), "read_only")
+        with patch.dict(os.environ, {"VERIDEX_CODEX_ACCESS_MODE": "invalid"}, clear=True):
+            self.assertEqual(codex_gateway.access_mode(), "full")
+
     def test_selects_strong_models_for_coding_and_planning(self) -> None:
         coding = codex_gateway.select_model("coding")
         planning = codex_gateway.select_model("architecture")
@@ -134,6 +142,23 @@ class CodexGatewayTests(unittest.TestCase):
         self.assertIn("Desktop", prompt)
         self.assertIn("default Codex generated-images directory", prompt)
         self.assertIn("no verified file was created", prompt)
+
+    def test_document_prompt_supports_verified_spreadsheets(self) -> None:
+        output_dir = r"C:\codex2veridex\data\workspaces\ws\sessions\sess\generated_staging\msg"
+        prompt = codex_gateway.build_prompt(
+            {
+                "system_prompt": "system",
+                "user_prompt": "create an Excel spreadsheet",
+                "context": {},
+                "artifact_output_dir": output_dir,
+            },
+            codex_gateway.select_model("search_synthesis"),
+        )
+        self.assertIn("XLSX, CSV", prompt)
+        self.assertIn("openpyxl", prompt)
+        self.assertIn("public source URL per row", prompt)
+        self.assertIn("QA summary sheet", prompt)
+        self.assertIn(output_dir, prompt)
 
     def test_google_prompt_uses_supplied_browser_evidence_and_current_date(self) -> None:
         prompt = codex_gateway.build_prompt(

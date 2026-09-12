@@ -90,7 +90,8 @@ class VeridexClient:
             headers=self._headers(),
         )
         try:
-            with self.opener(request, timeout=max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "300")))) as response:
+            server_timeout = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "600")))
+            with self.opener(request, timeout=server_timeout + 60) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib_error.HTTPError as exc:

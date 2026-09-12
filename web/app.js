@@ -50,7 +50,7 @@ const state = {
   adminTokens: {},
   selectedFiles: new Set(),
   emailAttachments: [],
-  runtime: { access_mode: "read_only", access_label: "Read-only computer access" },
+  runtime: { access_mode: "full", access_label: "Full computer access" },
   route: null,
   sending: false,
   stopping: false,
@@ -2497,7 +2497,7 @@ function render() {
   el("access-label").textContent = state.runtime.access_label || (fullAccess ? "Full computer access" : "Read-only computer access");
   el("composer-note").textContent = fullAccess
     ? "Full computer access · Codex can search and work with local files · transcripts stay here"
-    : "Read-only computer access · attach files or restart with -FullAccess · transcripts stay here";
+    : "Read-only computer access · attach files or restart normally for full access · transcripts stay here";
   const sendButton = el("send-button");
   sendButton.disabled = state.uploading || state.stopping;
   sendButton.classList.toggle("stop-button", state.sending);

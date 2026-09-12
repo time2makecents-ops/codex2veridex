@@ -52,8 +52,9 @@ Chrome or Edge will request microphone permission the first time it is used.
 Veridex stores only the resulting text in the transcript and does not save the
 microphone audio.
 
-To let Veridex use Codex's normal local shell tools across the computer, start
-it explicitly in full-access mode:
+Veridex starts with full computer access so Codex can use normal local shell
+tools across the computer. The `-FullAccess` switch remains accepted for
+backward compatibility:
 
 ```powershell
 .\veridex.ps1 restart -FullAccess
@@ -62,8 +63,9 @@ it explicitly in full-access mode:
 The page always displays either `Read-only computer access` or
 `Full computer access` beneath the current room. Full access uses Codex's
 documented `danger-full-access` sandbox with approvals set to `never`. This lets
-Codex actually search and work with local files; only enable it when you intend
-to give the chat that authority. A normal `restart` returns to read-only mode.
+Codex search and work with local files. To opt into read-only mode for a run,
+use `.\veridex.ps1 restart -ReadOnly`; the next normal start or restart returns
+to full access.
 
 Requirements: Python 3 and a working `codex` command authenticated through the
 Codex desktop app/CLI. Install the document environment once after cloning or
@@ -74,6 +76,8 @@ pulling a version that changes `requirements.txt`:
 ```
 
 The launcher automatically prefers `.venv\Scripts\python.exe` when present.
+Broad, multi-source research requests use the deep-search route and may run for
+up to ten minutes before the server reports a timeout.
 
 ## Storage
 
@@ -121,8 +125,8 @@ assistant transcript. The completion is blocked if any of those checks fail.
 Verified images appear directly in the chat with an openable preview.
 
 Generated documents use the same governed staging and ledger boundary. PDF,
-DOCX, TXT, and Markdown files are checked by signature or readable content
-before they can support a file-creation claim.
+DOCX, XLSX, CSV, TXT, and Markdown files are checked by signature, archive
+structure, or readable content before they can support a file-creation claim.
 
 ## Art Department Studio
 

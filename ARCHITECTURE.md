@@ -120,8 +120,11 @@ its source.
 
 The launcher has two explicit modes:
 
-- Default: `--sandbox read-only --ask-for-approval never`.
-- `-FullAccess`: `--sandbox danger-full-access --ask-for-approval never`.
+- Default: `--sandbox danger-full-access --ask-for-approval never`.
+- `-ReadOnly`: `--sandbox read-only --ask-for-approval never`.
+
+The legacy `-FullAccess` switch remains accepted as an explicit spelling of the
+default mode.
 
 The server reports the active mode to the UI. In full mode, the governed prompt
 allows normal local shell inspection and file work within the user's requested
@@ -187,8 +190,8 @@ recursion, so the gateway embeds the governing rules directly:
 - direct answers with uncertainty stated instead of invented results.
 
 The child process is ephemeral and cannot pause for approval. Its filesystem
-mode is read-only by default and full only after the explicit `-FullAccess`
-launch option. Veridex, not the Codex thread, owns conversation continuity.
+mode is full by default; `-ReadOnly` opts a launcher run into read-only access.
+Veridex, not the Codex thread, owns conversation continuity.
 
 ## Administrative control plane
 

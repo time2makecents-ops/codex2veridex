@@ -2,17 +2,21 @@ param(
   [ValidateSet("start", "stop", "restart", "status", "google-profile", "google-status", "gmail-connect", "gmail-status")]
   [string]$Action = "start",
   [switch]$NoBrowser,
-  [switch]$FullAccess
+  [switch]$FullAccess,
+  [switch]$ReadOnly
 )
 
 $ErrorActionPreference = "Stop"
+if ($FullAccess -and $ReadOnly) {
+  throw "Choose either -FullAccess or -ReadOnly, not both. Full access is already the default."
+}
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RuntimeRoot = Join-Path $RepoRoot ".runtime"
 $LogRoot = Join-Path $RuntimeRoot "logs"
 $PidPath = Join-Path $RuntimeRoot "veridex.pid"
 $Port = if ($env:VERIDEX_PORT) { [int]$env:VERIDEX_PORT } else { 8765 }
 $HealthUrl = "http://127.0.0.1:$Port/health"
-$RequestedAccessMode = if ($FullAccess) { "full" } else { "read_only" }
+$RequestedAccessMode = if ($ReadOnly) { "read_only" } else { "full" }
 
 function Get-AccessStatus {
   try {
@@ -69,8 +73,9 @@ function Start-Veridex {
   $Existing = Get-VeridexProcess
   if ($Existing) {
     $CurrentStatus = Get-AccessStatus
-    if ($FullAccess -and $CurrentStatus -and $CurrentStatus.access_mode -ne "full") {
-      Write-Host "Restarting Veridex to enable full computer access."
+    if ($CurrentStatus -and $CurrentStatus.access_mode -ne $RequestedAccessMode) {
+      $RequestedLabel = if ($RequestedAccessMode -eq "full") { "full computer access" } else { "read-only computer access" }
+      Write-Host "Restarting Veridex to enable $RequestedLabel."
       Stop-Veridex
     } else {
       $CurrentLabel = if ($CurrentStatus) { $CurrentStatus.access_label } else { "access mode unavailable" }
@@ -111,7 +116,7 @@ function Start-Veridex {
   if (-not $Ready) {
     throw "Standalone Veridex did not become ready. See $LogRoot"
   }
-  $AccessLabel = if ($FullAccess) { "FULL COMPUTER ACCESS" } else { "read-only computer access" }
+  $AccessLabel = if ($RequestedAccessMode -eq "full") { "FULL COMPUTER ACCESS" } else { "read-only computer access" }
   Write-Host "Standalone Veridex is running at http://127.0.0.1:$Port (PID $($Process.Id), $AccessLabel)."
   if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
 }
