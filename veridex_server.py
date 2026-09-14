@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import uuid
@@ -19,10 +20,18 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
+from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
-from google_chrome_search import GoogleChromeSearchError, continues_google_search, search_google, wants_google_search
+from google_chrome_search import (
+    GoogleChromeSearchError,
+    continues_google_search,
+    search_ebay_product_research,
+    search_google,
+    search_google_lens,
+    wants_google_search,
+)
 from request_control import ActiveRequestRegistry, RequestCancelled
 from resume_studio import (
     ResumeStudio,
@@ -94,6 +103,13 @@ GMAIL_CONFIRM_RE = re.compile(
     r"\b(?:confirm send|send it|yes send|go ahead and send|send that email|confirm and send)\b",
     re.IGNORECASE,
 )
+ANTIQUES_START_RE = re.compile(r"\b(?:leo[, ]+)?start shopping mode\b", re.IGNORECASE)
+ANTIQUES_END_RE = re.compile(r"\b(?:leo[, ]+)?end shopping mode\b", re.IGNORECASE)
+ANTIQUES_CONFIRM_RE = re.compile(r"\b(?:confirm|yes|go ahead)(?: the)?(?: google lens| photo upload| research)?\b", re.IGNORECASE)
+ANTIQUES_RESEARCH_RE = re.compile(
+    r"\b(?:identify|research|value|appraise|what is|who (?:made|painted)|signature|maker(?:'s)? mark|quick research|deep research|buy|pass)\b",
+    re.IGNORECASE,
+)
 
 
 def load_env(path: Path) -> None:
@@ -116,11 +132,32 @@ configure_room_catalog(ADMIN.room_catalog_path)
 STORE = VeridexStore(DATA_ROOT, ADMIN.active_governance_path)
 RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
 ART = ArtStudio(DATA_ROOT)
+ANTIQUES = AntiquesDepartment(DATA_ROOT)
 ART_JOBS = ArtJobManager()
 GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
 ACTIVE_REQUESTS = ActiveRequestRegistry()
+REMOTE_ACCESS_PATH = DATA_ROOT / "system" / "remote_access.json"
+REMOTE_COOKIE = "veridex_remote_session"
+
+
+def remote_access_state() -> Dict[str, Any]:
+    try:
+        value = json.loads(REMOTE_ACCESS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        value = {}
+    if not isinstance(value, dict) or not str(value.get("pairing_token") or ""):
+        value = {"pairing_token": secrets.token_urlsafe(32), "sessions": [], "created_at": datetime.now().astimezone().isoformat()}
+        save_remote_access_state(value)
+    return value
+
+
+def save_remote_access_state(value: Dict[str, Any]) -> None:
+    REMOTE_ACCESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = REMOTE_ACCESS_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    temporary.replace(REMOTE_ACCESS_PATH)
 
 
 def active_governance_registry() -> GovernanceRegistry:
@@ -381,7 +418,8 @@ def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = str(workspace.get("workspace_id") or "")
     session_id = str(session.get("session_id") or "")
     governance = governance_status(workspace_id, session_id) if workspace_id else {}
-    return {**value, "runtime": runtime_status(), "governance": governance, "administration": ADMIN.bootstrap()}
+    antiques = ANTIQUES.bootstrap(workspace_id, session_id, str(session.get("active_room") or "")) if workspace_id and session_id else {}
+    return {**value, "runtime": runtime_status(), "governance": governance, "administration": ADMIN.bootstrap(), "antiques": antiques}
 
 
 def public_delivery_alert(
@@ -1403,6 +1441,8 @@ def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     session = STORE.find_session(session_id)
     workspace_id = workspace_id or str(session["workspace_id"])
     transition = STORE.set_room(workspace_id, session_id, room_id)
+    if transition["previous_room"] == ANTIQUES_ROOM_ID and transition["active_room"] != ANTIQUES_ROOM_ID:
+        ANTIQUES.end_shopping_mode(workspace_id, session_id, "room_exit")
     if transition["previous_room"] != transition["active_room"]:
         STORE.append_message(
             workspace_id,
@@ -1420,6 +1460,231 @@ def room_change_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "model": "deterministic",
             "reasoning_effort": "none",
             "task_type": "room_navigation",
+        },
+    }
+
+
+def antiques_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    session = STORE.find_session(session_id)
+    if str(session.get("workspace_id") or "") != workspace_id:
+        raise KeyError("Session does not belong to workspace")
+    if str(session.get("active_room") or "") != ANTIQUES_ROOM_ID:
+        raise ValueError("Museum tools are available only in Museum")
+    return session
+
+
+def _antiques_json_result(result: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        value = extract_json_object(str(result.get("text") or ""))
+    except Exception:
+        value = {}
+    return value if isinstance(value, dict) and value else fallback
+
+
+def _antiques_model_analysis(prompt: str, attachments: list[Dict[str, Any]], task_type: str = "media") -> tuple[Dict[str, Any], Dict[str, Any]]:
+    request = {
+        "task_type": task_type,
+        "system_prompt": (
+            "You are Leo, director of the Veridex Museum. Analyze thrift-store art, jewelry, pottery, "
+            "vintage kitchenware, and service items conservatively. Separate observation from inference. Never claim "
+            "authentication, appraisal, gemstone identity, or precious-metal content from photographs alone. Return only JSON."
+        ),
+        "user_prompt": prompt,
+        "context": {"current_room": {"id": ANTIQUES_ROOM_ID, "title": "Museum", "active_persona": "Leo"}},
+        "attachment_paths": [str(row.get("path") or "") for row in attachments],
+        "artifact_output_dir": "",
+    }
+    result = invoke_codex(request)
+    return _antiques_json_result(result, {}), result
+
+
+def _antiques_source_excerpt(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "provider": row.get("provider"),
+        "query": row.get("query"),
+        "searched_at": row.get("searched_at"),
+        "page_url": row.get("page_url"),
+        "result_text": str(row.get("result_text") or "")[:10000],
+        "links": list(row.get("links") or [])[:20],
+        "opened_sources": list(row.get("opened_sources") or [])[:5],
+    }
+
+
+def _money(value: Any) -> float | None:
+    try:
+        number = float(value)
+        return number if number >= 0 and number < 100_000_000 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def antiques_report_text(case: Dict[str, Any]) -> str:
+    report = case.get("latest_report") if isinstance(case.get("latest_report"), dict) else {}
+    valuation = report.get("valuation") if isinstance(report.get("valuation"), dict) else {}
+    buying = report.get("buying") if isinstance(report.get("buying"), dict) else {}
+    frame = report.get("frame") if isinstance(report.get("frame"), dict) else {}
+    confidence = str(report.get("confidence") or "low").title()
+    lines = [
+        f"Antiques case {case.get('case_id')}: {report.get('identification') or case.get('title') or 'Unidentified item'}",
+        f"Confidence: {confidence}",
+    ]
+    if report.get("artist_or_maker"):
+        lines.append(f"Artist or maker: {report['artist_or_maker']}")
+    if report.get("signature_or_mark"):
+        lines.append(f"Signature or mark: {report['signature_or_mark']}")
+    if report.get("medium_or_material"):
+        lines.append(f"Medium or material: {report['medium_or_material']}")
+    low, high = valuation.get("conservative_low"), valuation.get("likely_high")
+    if low is not None or high is not None:
+        lines.append(f"Resale estimate: {valuation.get('currency', 'USD')} {low if low is not None else '?'}–{high if high is not None else '?'}")
+    if buying.get("recommended_max_buy") is not None:
+        lines.append(f"Conservative maximum buy: {buying.get('currency', 'USD')} {buying['recommended_max_buy']}")
+    if frame:
+        lines.append(
+            "Frame: " + str(frame.get("assessment") or "Insufficient detail")
+            + (f"; estimated resale {frame.get('currency', 'USD')} {frame.get('resale_low')}–{frame.get('resale_high')}" if frame.get("resale_low") is not None else "")
+        )
+    if report.get("missing_photos"):
+        lines.append("Helpful additional photos: " + ", ".join(str(value) for value in report["missing_photos"][:6]))
+    lines.append("This is research-supported guidance, not authentication or a professional appraisal.")
+    return "\n".join(lines)
+
+
+def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    session = STORE.find_session(session_id)
+    workspace_id = str(payload.get("workspace_id") or session.get("workspace_id") or "").strip()
+    antiques_context(workspace_id, session_id)
+    attachment_ids = [str(value) for value in payload.get("attachment_ids", []) if str(value).strip()]
+    attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
+    if not attachments or len(attachments) != len(set(attachment_ids)):
+        raise ValueError("Attach at least one available item photo for Leo to research")
+    if any(not str(row.get("content_type") or "").startswith("image/") for row in attachments):
+        raise ValueError("Antiques research currently accepts image attachments only")
+    mode = "deep" if str(payload.get("mode") or "").lower() == "deep" else "quick"
+    confirmed = bool(payload.get("confirm_external"))
+    allowed, consent_basis = ANTIQUES.may_upload_photo(workspace_id, session_id, ANTIQUES_ROOM_ID, confirmed)
+    if not allowed:
+        pending = ANTIQUES.save_pending_research(workspace_id, session_id, {
+            "attachment_ids": attachment_ids,
+            "mode": mode,
+            "notes": payload.get("notes"),
+            "case_id": payload.get("case_id"),
+        })
+        return {
+            "status": "confirmation_required",
+            "message": "Leo is ready to send sanitized copies of the selected photos to Google Lens. Confirm this research run, or start shopping mode for continuing consent until you finish.",
+            "pending": pending,
+            "shopping_mode": ANTIQUES.shopping_status(workspace_id, session_id, ANTIQUES_ROOM_ID),
+        }
+    ANTIQUES.clear_pending_research(workspace_id, session_id)
+    if consent_basis == "shopping_mode":
+        ANTIQUES.touch_shopping_mode(workspace_id, session_id, ANTIQUES_ROOM_ID)
+
+    visual_prompt = (
+        "Inspect every attached photo. Return JSON with: identification, category, observed_features (array), "
+        "artist_or_maker_candidates (array), signature_or_mark, medium_or_material, likely_period, condition_notes "
+        "(array), frame_observations (array), missing_photos (array), search_query, and confidence. Do not estimate value yet. "
+        f"User notes: {str(payload.get('notes') or '')[:2000]}"
+    )
+    visual, visual_route = _antiques_model_analysis(visual_prompt, attachments, "media")
+    query = " ".join(str(visual.get(key) or "") for key in ("search_query", "identification", "signature_or_mark", "medium_or_material"))
+    query = " ".join(query.split())[:500] or "antique vintage item identification sold comparables"
+    source_results: list[Dict[str, Any]] = []
+    source_errors: list[Dict[str, str]] = []
+    lens_limit = min(len(attachments), 4 if mode == "deep" else 2)
+    for row in attachments[:lens_limit]:
+        sanitized = ANTIQUES.prepare_external_image(workspace_id, str(row["file_id"]), Path(str(row["path"])))
+        audit = ANTIQUES.log_external_upload(workspace_id, session_id, "Google Lens", [str(row["file_id"])], consent_basis)
+        try:
+            lens = search_google_lens(sanitized, cancel_event=cancel_event)
+            source_results.append({**_antiques_source_excerpt(lens), "source_id": "google_lens", "upload_id": audit["upload_id"]})
+        except GoogleChromeSearchError as exc:
+            source_errors.append({"source_id": "google_lens", "error": str(exc), "manual_url": "https://lens.google.com/"})
+    searches = [("google", query), ("ebay", query)]
+    if mode == "deep":
+        searches.extend([
+            ("liveauctioneers", f"{query} site:liveauctioneers.com auction results"),
+            ("kovels", f"{query} site:kovels.com mark"),
+            ("marks_project", f"{query} site:themarksproject.org mark artist"),
+            ("smithsonian", f"{query} site:si.edu OR site:americanart.si.edu"),
+            ("worthpoint", f"{query} site:worthpoint.com sold price"),
+        ])
+    for source_id, source_query in searches:
+        try:
+            found = (
+                search_ebay_product_research(source_query, cancel_event=cancel_event)
+                if source_id == "ebay"
+                else search_google(f"Google search for {source_query}", cancel_event=cancel_event)
+            )
+            source_results.append({**_antiques_source_excerpt(found), "source_id": source_id})
+        except GoogleChromeSearchError as exc:
+            manual = {
+                "ebay": "https://www.ebay.com/sh/research",
+                "liveauctioneers": "https://www.liveauctioneers.com/price-result/",
+                "kovels": "https://kovels.com/marks-identification-guide/",
+                "marks_project": "https://www.themarksproject.org/search-marks",
+                "smithsonian": "https://www.si.edu/collections",
+                "worthpoint": "https://www.worthpoint.com/",
+            }.get(source_id, "https://www.google.com/")
+            source_errors.append({"source_id": source_id, "error": str(exc), "manual_url": manual})
+
+    synthesis_prompt = (
+        "Synthesize the visual observations and browser evidence. Sold evidence is stronger than asking prices. Reject mismatched "
+        "comparables and explain uncertainty. Return JSON with: identification, category, artist_or_maker, signature_or_mark, "
+        "medium_or_material, likely_period, observed_facts (array), sourced_matches (array of objects with claim,url,source), "
+        "inferences (array), condition_notes (array), missing_photos (array), confidence (low|medium|high), valuation "
+        "{currency,conservative_low,likely_high,comparable_notes}, frame {assessment,currency,resale_low,resale_high,replacement_cost_low,"
+        "replacement_cost_high,contribution_notes}, warnings (array). Never claim definitive authentication or appraisal.\n\n"
+        + json.dumps({"visual": visual, "sources": source_results, "source_errors": source_errors}, ensure_ascii=False)[:50000]
+    )
+    report, synthesis_route = _antiques_model_analysis(synthesis_prompt, [], "search_deep")
+    if not report:
+        report = {
+            "identification": visual.get("identification") or "Item requires additional research",
+            "category": visual.get("category") or "unknown",
+            "artist_or_maker": "",
+            "signature_or_mark": visual.get("signature_or_mark") or "",
+            "medium_or_material": visual.get("medium_or_material") or "",
+            "observed_facts": visual.get("observed_features") or [],
+            "condition_notes": visual.get("condition_notes") or [],
+            "missing_photos": visual.get("missing_photos") or [],
+            "confidence": "low",
+            "valuation": {"currency": "USD", "conservative_low": None, "likely_high": None},
+            "frame": {"assessment": "; ".join(str(value) for value in visual.get("frame_observations") or [])},
+            "warnings": ["Research synthesis was unavailable; no value conclusion was produced."],
+        }
+    valuation = report.get("valuation") if isinstance(report.get("valuation"), dict) else {}
+    valuation["currency"] = str(valuation.get("currency") or ANTIQUES.settings(workspace_id)["currency"])
+    report["valuation"] = valuation
+    conservative = _money(valuation.get("conservative_low"))
+    report["buying"] = (
+        ANTIQUES.calculate_max_buy(conservative, payload.get("valuation_overrides") or {}, workspace_id)
+        if conservative is not None
+        else {"recommended_max_buy": None, "reason": "Insufficient reliable sold-comparable evidence"}
+    )
+    report["source_errors"] = source_errors
+    report["research_mode"] = mode
+    report["research_disclaimer"] = "Research-supported estimate only; not authentication or a professional appraisal."
+    case = ANTIQUES.save_case(
+        workspace_id,
+        session_id,
+        attachment_ids,
+        report,
+        mode,
+        str(payload.get("notes") or ""),
+        str(payload.get("case_id") or ""),
+    )
+    return {
+        "status": "completed",
+        "case": case,
+        "report": report,
+        "sources": source_results,
+        "source_errors": source_errors,
+        "shopping_mode": ANTIQUES.shopping_status(workspace_id, session_id, ANTIQUES_ROOM_ID),
+        "route": {
+            "visual": {key: visual_route.get(key) for key in ("provider", "model", "reasoning_effort", "task_type")},
+            "synthesis": {key: synthesis_route.get(key) for key in ("provider", "model", "reasoning_effort", "task_type")},
         },
     }
 
@@ -1828,6 +2093,77 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             rooms=rooms_payload(),
             attachments=public_attachments,
         )
+    if active_room == ANTIQUES_ROOM_ID and ANTIQUES_START_RE.search(governed_prompt):
+        shopping = ANTIQUES.start_shopping_mode(workspace_id, session_id, active_room)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            "Shopping mode is active. Until you end it, Leo may send sanitized copies of selected item photos to Google Lens for this Antiques session. It will end on room exit, session close, or after four hours without activity.",
+            "Leo",
+            "antiques_shopping_mode_start",
+            response_provider="veridex_antiques_router",
+            antiques={"shopping_mode": shopping},
+            message_metadata={"message_kind": "antiques_shopping_mode", "antiques": {"shopping_mode": shopping}},
+        )
+    if active_room == ANTIQUES_ROOM_ID and ANTIQUES_END_RE.search(governed_prompt):
+        shopping = ANTIQUES.end_shopping_mode(workspace_id, session_id)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            "Shopping mode ended. Google Lens photo uploads now require confirmation for each research run.",
+            "Leo",
+            "antiques_shopping_mode_end",
+            response_provider="veridex_antiques_router",
+            antiques={"shopping_mode": shopping},
+            message_metadata={"message_kind": "antiques_shopping_mode", "antiques": {"shopping_mode": shopping}},
+        )
+    pending_antique = ANTIQUES.pending_research(workspace_id, session_id) if active_room == ANTIQUES_ROOM_ID else {}
+    if active_room == ANTIQUES_ROOM_ID and pending_antique and ANTIQUES_CONFIRM_RE.search(governed_prompt):
+        antique_payload = {
+            **pending_antique,
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "confirm_external": True,
+        }
+        researched = antiques_research(antique_payload, cancel_event=cancel_event)
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            antiques_report_text(researched["case"]),
+            "Leo",
+            "antiques_research",
+            response_provider="veridex_antiques_router",
+            antiques=researched,
+            message_metadata={"message_kind": "antiques_research", "antiques": researched},
+        )
+    if active_room == ANTIQUES_ROOM_ID and attachments and (
+        ANTIQUES_RESEARCH_RE.search(governed_prompt) or all(str(row.get("content_type") or "").startswith("image/") for row in attachments)
+    ):
+        researched = antiques_research({
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "attachment_ids": attachment_ids,
+            "mode": "deep" if re.search(r"\bdeep\b", governed_prompt, re.IGNORECASE) else "quick",
+            "notes": governed_prompt,
+            "case_id": str(payload.get("antiques_case_id") or ""),
+            "confirm_external": bool(payload.get("confirm_external")),
+            "valuation_overrides": payload.get("valuation_overrides") if isinstance(payload.get("valuation_overrides"), dict) else {},
+        }, cancel_event=cancel_event)
+        text = researched.get("message") if researched.get("status") == "confirmation_required" else antiques_report_text(researched["case"])
+        return local_chat_response(
+            workspace_id,
+            session_id,
+            user_message,
+            str(text),
+            "Leo",
+            "antiques_research_confirmation" if researched.get("status") == "confirmation_required" else "antiques_research",
+            response_provider="veridex_antiques_router",
+            antiques=researched,
+            message_metadata={"message_kind": "antiques_research", "antiques": researched},
+        )
     local_answer = local_fact_text(
         governed_prompt,
         active_room,
@@ -1963,6 +2299,12 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 " For resume work, use only facts in attached files, the current request, or Resume Studio's explicitly saved profile/project. "
                 "Never invent employers, dates, credentials, skills, accomplishments, or metrics; label useful missing metrics as questions for the user."
                 if task_type == "resume_generation" else ""
+            )
+            + (
+                " As Leo, specialize in thrift-store antiques and vintage collectables: art, jewelry, pottery, kitchenware, and service items. "
+                "Separate visible observations, sourced evidence, and inference. Distinguish frame value from artwork value. Never claim definitive "
+                "authentication, professional appraisal, gemstone identity, or precious-metal content from photographs alone."
+                if active_room == ANTIQUES_ROOM_ID else ""
             )
         ),
         "user_prompt": governed_prompt,
@@ -2204,6 +2546,14 @@ TOOLS = [
     {"name": "art.job_get", "description": "Read progress or results for one Art Studio job."},
     {"name": "art.job_cancel", "description": "Request cancellation of one active Art Studio job."},
     {"name": "art.project_save", "description": "Persist an Art Studio project version only when confirm=true."},
+    {"name": "antiques.shopping_mode_start", "description": "Authorize Google Lens uploads for the current Antiques session until explicitly ended or safely expired."},
+    {"name": "antiques.shopping_mode_end", "description": "End Antiques shopping-mode photo-upload consent."},
+    {"name": "antiques.shopping_mode_status", "description": "Read current Antiques shopping-mode consent status."},
+    {"name": "antiques.research_item", "description": "Research attached item photos using Leo, Google Lens, Google, eBay, and category sources; external uploads require consent."},
+    {"name": "antiques.case_list", "description": "List automatically saved Antiques research cases."},
+    {"name": "antiques.case_get", "description": "Read one saved Antiques research case and its revisions."},
+    {"name": "antiques.settings_get", "description": "Read Antiques valuation settings."},
+    {"name": "antiques.settings_update", "description": "Update editable Antiques valuation settings."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
@@ -2215,6 +2565,46 @@ class VeridexHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}")
+
+    def _is_remote_host(self) -> bool:
+        host = str(self.headers.get("Host") or "").split(":", 1)[0].strip("[]").lower()
+        return host not in {"", "127.0.0.1", "localhost", "::1"}
+
+    def _remote_authorized(self) -> bool:
+        if not self._is_remote_host():
+            return True
+        access = remote_access_state()
+        cookies = {}
+        for part in str(self.headers.get("Cookie") or "").split(";"):
+            if "=" in part:
+                key, value = part.strip().split("=", 1)
+                cookies[key] = value
+        supplied = cookies.get(REMOTE_COOKIE, "")
+        return any(
+            supplied and secrets.compare_digest(supplied, str(row.get("token") or ""))
+            for row in access.get("sessions", [])
+            if isinstance(row, dict)
+        )
+
+    def _reject_remote(self) -> None:
+        self._json({"error": "This device is not paired with Veridex. Open the private pairing URL shown by .\\veridex.ps1 tailscale."}, HTTPStatus.UNAUTHORIZED)
+
+    def _pair_remote(self, token: str) -> None:
+        access = remote_access_state()
+        expected = str(access.get("pairing_token") or "")
+        if not expected or not secrets.compare_digest(str(token or ""), expected):
+            self._json({"error": "Invalid or expired pairing token"}, HTTPStatus.UNAUTHORIZED)
+            return
+        session_token = secrets.token_urlsafe(32)
+        sessions = [row for row in access.get("sessions", []) if isinstance(row, dict)][-9:]
+        sessions.append({"token": session_token, "paired_at": datetime.now().astimezone().isoformat()})
+        access.update({"pairing_token": secrets.token_urlsafe(32), "sessions": sessions})
+        save_remote_access_state(access)
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/")
+        self.send_header("Set-Cookie", f"{REMOTE_COOKIE}={session_token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def _json(self, value: Any, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -2271,6 +2661,12 @@ class VeridexHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
+            if parsed.path == "/pair":
+                self._pair_remote(str(query.get("token", [""])[0]))
+                return
+            if not self._remote_authorized():
+                self._reject_remote()
+                return
             if parsed.path == "/health":
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
             elif parsed.path == "/api/bootstrap":
@@ -2308,6 +2704,11 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     str(query.get("workspace_id", [""])[0]).strip(),
                     str(query.get("session_id", [""])[0]).strip(),
                 ))
+            elif parsed.path == "/api/antiques":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                session = antiques_context(workspace_id, session_id)
+                self._json(ANTIQUES.bootstrap(workspace_id, session_id, str(session.get("active_room") or "")))
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(ART_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif parsed.path == "/api/art/images":
@@ -2371,6 +2772,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if not self._remote_authorized():
+                self._reject_remote()
+                return
             if parsed.path == "/api/files":
                 query = parse_qs(parsed.query)
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
@@ -2435,6 +2839,23 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(save_resume_exports(payload), HTTPStatus.CREATED)
             elif parsed.path == "/api/art/jobs":
                 self._json(submit_art_job(payload), HTTPStatus.ACCEPTED)
+            elif parsed.path == "/api/antiques/research":
+                self._json(antiques_research(payload))
+            elif parsed.path == "/api/antiques/shopping/start":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                session = antiques_context(workspace_id, session_id)
+                self._json({"shopping_mode": ANTIQUES.start_shopping_mode(workspace_id, session_id, str(session.get("active_room") or ""))})
+            elif parsed.path == "/api/antiques/shopping/end":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                antiques_context(workspace_id, session_id)
+                self._json({"shopping_mode": ANTIQUES.end_shopping_mode(workspace_id, session_id)})
+            elif parsed.path == "/api/antiques/settings":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                antiques_context(workspace_id, session_id)
+                self._json({"settings": ANTIQUES.update_settings(workspace_id, payload.get("settings") if isinstance(payload.get("settings"), dict) else {})})
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
                 self._json(ART_JOBS.cancel(parsed.path.split("/")[-2]))
             elif parsed.path == "/api/art/projects/save":
@@ -2711,6 +3132,29 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 if args.get("confirm")
                 else {"status": "confirmation_required", "message": "Set confirm=true only after the user explicitly chooses Save Project."}
             )
+        elif tool.startswith("antiques."):
+            session_id = str(args.get("session_id") or "")
+            session = STORE.find_session(session_id)
+            workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
+            antiques_context(workspace_id, session_id)
+            if tool == "antiques.shopping_mode_start":
+                value = {"shopping_mode": ANTIQUES.start_shopping_mode(workspace_id, session_id, ANTIQUES_ROOM_ID)}
+            elif tool == "antiques.shopping_mode_end":
+                value = {"shopping_mode": ANTIQUES.end_shopping_mode(workspace_id, session_id)}
+            elif tool == "antiques.shopping_mode_status":
+                value = {"shopping_mode": ANTIQUES.shopping_status(workspace_id, session_id, ANTIQUES_ROOM_ID)}
+            elif tool == "antiques.research_item":
+                value = antiques_research({**args, "workspace_id": workspace_id, "session_id": session_id})
+            elif tool == "antiques.case_list":
+                value = {"cases": ANTIQUES.list_cases(workspace_id)}
+            elif tool == "antiques.case_get":
+                value = {"case": ANTIQUES.get_case(workspace_id, str(args.get("case_id") or ""))}
+            elif tool == "antiques.settings_get":
+                value = {"settings": ANTIQUES.settings(workspace_id)}
+            elif tool == "antiques.settings_update":
+                value = {"settings": ANTIQUES.update_settings(workspace_id, args.get("settings") if isinstance(args.get("settings"), dict) else args)}
+            else:
+                raise ValueError(f"Unknown tool: {tool}")
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None

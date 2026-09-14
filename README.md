@@ -17,6 +17,7 @@ and does not read from or write to `C:\Office-App`.
 - Session-scoped file attachments saved beside each session transcript.
 - Generated images verified, ledgered, previewed, and reported with their exact local path and checksum.
 - A full Art Studio with the existing Codex image route, optional free-provider generation, reference editing, local finishing tools, explicit projects, and image lineage.
+- A Museum led by Leo for photo-led identification, evidence-linked value research, frame analysis, and conservative thrift-buy guidance.
 - An HR Resume Studio with saved career profiles, job tailoring, ATS review, private/federal templates, and verified DOCX/PDF/text exports.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
@@ -36,9 +37,33 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 .\veridex.ps1 status
 .\veridex.ps1 restart
 .\veridex.ps1 stop
+.\veridex.ps1 tailscale
 .\veridex.ps1 gmail-connect
 .\veridex.ps1 gmail-status
 ```
+
+`tailscale` keeps the backend on localhost, exposes it only through the computer's
+private Tailscale HTTPS address, and prints a one-time phone pairing URL. The phone
+stores an HTTP-only pairing cookie; unpaired remote devices cannot use the UI or APIs.
+
+## Museum
+
+Enter **Museum** to work with Leo. Take or attach item photos, select
+them, then choose **Quick research** for in-store triage or **Deep research** for a
+broader evidence pass. Useful views include the complete front, signature or maker's
+mark, back and labels, frame joints, surface texture, and any damage.
+
+Google Lens image uploads require confirmation for each research run unless you say
+`Leo, start shopping mode`. Shopping mode is session- and room-scoped, remains visibly
+active, and ends when you say `Leo, end shopping mode`, leave the room, or stop using
+it for four hours. Veridex keeps the original locally and sends a resized copy with
+EXIF metadata removed. Every completed item is automatically saved as a revisioned
+Antiques case.
+
+Leo separates observations, sourced matches, and inference. Values use sold evidence
+when available and show the lower of the editable profit calculation or the default
+25% conservative-value acquisition cap. Results are research guidance, not certified
+authentication or professional appraisal.
 
 ## Voice controls
 
