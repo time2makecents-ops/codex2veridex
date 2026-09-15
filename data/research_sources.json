@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "findartinfo",
+      "name": "FindArtInfo",
+      "url": "https://findartinfo.com/",
+      "category": "artist_and_auction_research",
+      "uses": [
+        "artist name searches",
+        "auction and price-history leads",
+        "medium and subject comparisons"
+      ],
+      "access": "manual_or_browser",
+      "automation_status": "blocked_by_site_403",
+      "caution": "Treat records as leads requiring verification against the auction house, museum, library, or other primary source."
+    }
+  ]
+}
