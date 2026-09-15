@@ -33,6 +33,7 @@ from google_chrome_search import (
     wants_google_search,
 )
 from request_control import ActiveRequestRegistry, RequestCancelled
+from museum_visual_analysis import MuseumVisualAnalyzer
 from resume_studio import (
     ResumeStudio,
     export_bundle,
@@ -134,6 +135,8 @@ RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
 ART = ArtStudio(DATA_ROOT)
 ANTIQUES = AntiquesDepartment(DATA_ROOT)
 ART_JOBS = ArtJobManager()
+MUSEUM_JOBS = ArtJobManager(workers=1, prefix="museumjob", label="Museum analysis")
+MUSEUM_VISUAL = MuseumVisualAnalyzer(DATA_ROOT)
 GMAIL = GmailGateway()
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
@@ -324,7 +327,7 @@ def room_file_library_id(value: Any) -> str:
     room_id = str(value or "").strip()
     room = room_by_id(room_id)
     if not room or room_id in {"lobby", "art_department"}:
-        raise ValueError("The Files library is available only in non-Lobby rooms outside Art Department.")
+        raise ValueError("The Files library is available only in non-Lobby rooms outside Visual Design.")
     return room_id
 
 
@@ -605,7 +608,7 @@ def art_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
     if str(session.get("workspace_id") or "") != str(workspace.get("workspace_id") or ""):
         raise KeyError("Session does not belong to workspace")
     if str(session.get("active_room") or "") != "art_department":
-        raise ValueError("Art Studio is available only in Art Department.")
+        raise ValueError("Art Studio is available only in Visual Design.")
     return {"workspace": workspace, "session": session}
 
 
@@ -644,7 +647,7 @@ def codex_art_text(prompt: str, *, system_prompt: str, attachment_paths: list[st
         "system_prompt": system_prompt,
         "user_prompt": str(prompt or "").strip(),
         "context": {
-            "current_room": {"id": "art_department", "title": "Art Department", "active_persona": "Creative Director"},
+            "current_room": {"id": "art_department", "title": "Visual Design", "active_persona": "Creative Director"},
             "computer_access": runtime_status(),
         },
         "attachment_paths": list(attachment_paths or []),
@@ -693,13 +696,13 @@ def codex_art_assets(
     result = invoke_codex({
         "task_type": "media",
         "system_prompt": (
-            "You are the Art Studio production renderer in the Art Department. "
+            "You are the Art Studio production renderer in Visual Design. "
             "Use the built-in image generation tool and honor the requested subject, style, canvas, variant count, and references. "
             "Do not merely describe an image; create the requested files."
         ),
         "user_prompt": user_prompt,
         "context": {
-            "current_room": {"id": "art_department", "title": "Art Department", "active_persona": "Creative Director"},
+            "current_room": {"id": "art_department", "title": "Visual Design", "active_persona": "Creative Director"},
             "computer_access": runtime_status(),
             "required_artifact_output_dir": str(output_dir),
             "artifact_storage_policy": {
@@ -884,7 +887,7 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 metadata={"art": art_metadata},
             )
             files.append({**public_art_image(saved), "source_session_id": session_id})
-        progress(96, "Updating Art Department")
+        progress(96, "Updating Visual Design")
         return {"kind": "images", "files": files}
 
     return ART_JOBS.submit(safe_payload, runner)
@@ -1496,6 +1499,179 @@ def _antiques_model_analysis(prompt: str, attachments: list[Dict[str, Any]], tas
     }
     result = invoke_codex(request)
     return _antiques_json_result(result, {}), result
+
+
+def _museum_unique_strings(values: Any, limit: int = 30) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    rows = []
+    for value in values:
+        text = " ".join(str(value or "").split())[:1000]
+        if text and text not in rows:
+            rows.append(text)
+    return rows[:limit]
+
+
+def _museum_assessment(value: Any, allowed: set[str] | None = None) -> Dict[str, Any]:
+    row = value if isinstance(value, dict) else {}
+    assessment = " ".join(str(row.get("assessment") or "undetermined").split())[:500]
+    if allowed and assessment not in allowed:
+        assessment = "undetermined"
+    confidence = str(row.get("confidence") or "low").lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+    return {
+        "assessment": assessment,
+        "confidence": confidence,
+        "evidence": _museum_unique_strings(row.get("evidence"), 12),
+        "limitations": _museum_unique_strings(row.get("limitations"), 12),
+    }
+
+
+def _museum_interpretation(prompt_context: Dict[str, Any], attachments: list[Dict[str, Any]]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    prompt = (
+        "Examine the attached original and derived views using the deterministic evidence below. Derived edge, threshold, "
+        "and contrast images are processing aids and must not be described as physical details by themselves. Return JSON with: "
+        "identification, category, confidence (low|medium|high), observations (array of directly visible facts), interpretations "
+        "(array of cautious inferences), medium {assessment,confidence,evidence,limitations}, support with the same shape, "
+        "production_method {assessment one of original_hand_applied|print_or_reproduction|mixed_or_embellished|undetermined,"
+        "confidence,evidence,limitations}, signature {application one of hand_applied|printed_or_reproduced|obscured|undetermined,"
+        "transcription_candidates array,confidence,evidence,limitations}, frame {assessment,confidence,evidence,limitations}, "
+        "limitations array, and recommended_next_photos array. Never authenticate, attribute authorship, appraise value, or "
+        "infer medium from color alone. A flat frontal photograph cannot establish surface relief.\n\nEvidence:\n"
+        + json.dumps(prompt_context, ensure_ascii=False)[:45000]
+    )
+    value, route = _antiques_model_analysis(prompt, attachments, "media")
+    return value if isinstance(value, dict) else {}, route
+
+
+def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    session = STORE.find_session(session_id)
+    workspace_id = str(payload.get("workspace_id") or session.get("workspace_id") or "").strip()
+    antiques_context(workspace_id, session_id)
+    attachment_ids = list(dict.fromkeys(str(value) for value in payload.get("attachment_ids", []) if str(value).strip()))[:12]
+    attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
+    if not attachments or len(attachments) != len(attachment_ids):
+        raise ValueError("Select at least one available Museum photograph")
+    if any(not str(row.get("content_type") or "").startswith("image/") for row in attachments):
+        raise ValueError("Museum visual analysis accepts image attachments only")
+    safe_payload = {
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "attachment_ids": attachment_ids,
+        "mode": "detailed" if str(payload.get("mode") or "").lower() in {"deep", "detailed"} else "quick",
+        "focus": str(payload.get("focus") or "all"),
+        "photo_roles": payload.get("photo_roles") if isinstance(payload.get("photo_roles"), dict) else {},
+        "regions": payload.get("regions") if isinstance(payload.get("regions"), dict) else {},
+        "comparison_pairs": payload.get("comparison_pairs") if isinstance(payload.get("comparison_pairs"), list) else [],
+        "notes": str(payload.get("notes") or "")[:4000],
+        "case_id": str(payload.get("case_id") or ""),
+        "operation": "visual_analysis",
+    }
+
+    def runner(job_id: str, progress: Any, cancelled: Any) -> Dict[str, Any]:
+        progress(10, "Preparing local visual evidence")
+        core = MUSEUM_VISUAL.analyze(
+            attachments,
+            mode=safe_payload["mode"],
+            focus=safe_payload["focus"],
+            photo_roles=safe_payload["photo_roles"],
+            regions=safe_payload["regions"],
+            comparison_pairs=safe_payload["comparison_pairs"],
+            progress=progress,
+            cancelled=cancelled,
+        )
+        progress(62, "Saving derived evidence")
+        evidence_files = []
+        artifact_paths = []
+        for artifact in core.pop("artifacts", []):
+            if cancelled():
+                raise RuntimeError("Museum analysis canceled")
+            saved = STORE.save_file(
+                workspace_id,
+                session_id,
+                str(artifact["name"]),
+                bytes(artifact["content"]),
+                str(artifact["content_type"]),
+                source="generated",
+                kind="generated_image",
+                scope="room",
+                scope_ref=ANTIQUES_ROOM_ID,
+                description=f"Museum derived evidence: {artifact['label']}",
+                uploaded_by_session_id=session_id,
+                metadata={"museum_analysis": {
+                    "job_id": job_id,
+                    "derived": True,
+                    "kind": artifact["kind"],
+                    "label": artifact["label"],
+                    "source_file_id": artifact["source_file_id"],
+                    "region_normalized": artifact.get("region_normalized"),
+                    "region_pixels": artifact.get("region_pixels"),
+                }},
+            )
+            evidence_files.append(public_file(saved))
+            if artifact["kind"] in {"normalized_overview", "region_01", "region_01_contrast", "adaptive_threshold", "local_contrast"}:
+                artifact_paths.append({**saved, "path": saved["path"]})
+        progress(78, "Interpreting visible evidence")
+        model_context = {**core, "notes": safe_payload["notes"]}
+        model_attachments = attachments[:4] + artifact_paths[:max(0, 8 - min(4, len(attachments)))]
+        route: Dict[str, Any] = {}
+        try:
+            interpreted, route = _museum_interpretation(model_context, model_attachments)
+        except Exception as exc:
+            interpreted = {"limitations": [f"Model interpretation was unavailable: {str(exc)[:300]}"]}
+        confidence = str(interpreted.get("confidence") or "low").lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        signature_value = interpreted.get("signature") if isinstance(interpreted.get("signature"), dict) else {}
+        signature_application = str(signature_value.get("application") or "undetermined")
+        if signature_application not in {"hand_applied", "printed_or_reproduced", "obscured", "undetermined"}:
+            signature_application = "undetermined"
+        report = {
+            "analysis_version": 1,
+            "identification": " ".join(str(interpreted.get("identification") or "Unidentified artwork or object").split())[:500],
+            "category": " ".join(str(interpreted.get("category") or "unknown").split())[:120],
+            "confidence": confidence,
+            "analysis_mode": core["mode"],
+            "focus": core["focus"],
+            "evidence": {"photos": core["photos"], "matches": core["matches"]},
+            "observations": _museum_unique_strings(interpreted.get("observations")),
+            "interpretations": _museum_unique_strings(interpreted.get("interpretations")),
+            "medium": _museum_assessment(interpreted.get("medium")),
+            "support": _museum_assessment(interpreted.get("support")),
+            "production_method": _museum_assessment(interpreted.get("production_method"), {"original_hand_applied", "print_or_reproduction", "mixed_or_embellished", "undetermined"}),
+            "signature": {
+                "application": signature_application,
+                "transcription_candidates": _museum_unique_strings(signature_value.get("transcription_candidates"), 10),
+                "confidence": str(signature_value.get("confidence") or "low") if str(signature_value.get("confidence") or "low") in {"low", "medium", "high"} else "low",
+                "evidence": _museum_unique_strings(signature_value.get("evidence"), 12),
+                "limitations": _museum_unique_strings(signature_value.get("limitations"), 12),
+            },
+            "frame": _museum_assessment(interpreted.get("frame")),
+            "recommended_next_photos": core["recommended_next_photos"] + _museum_unique_strings(interpreted.get("recommended_next_photos"), 12),
+            "limitations": core["limitations"] + _museum_unique_strings(interpreted.get("limitations"), 20),
+            "evidence_artifacts": evidence_files,
+            "visual_disclaimer": "Visual evidence only; not authentication, authorship attribution, appraisal, or conservation treatment advice.",
+        }
+        progress(94, "Saving Museum case revision")
+        case = ANTIQUES.save_case(
+            workspace_id,
+            session_id,
+            attachment_ids,
+            report,
+            core["mode"],
+            safe_payload["notes"],
+            safe_payload["case_id"],
+        )
+        return {
+            "status": "completed",
+            "case": case,
+            "report": report,
+            "route": {key: route.get(key) for key in ("provider", "model", "reasoning_effort", "task_type")},
+        }
+
+    return MUSEUM_JOBS.submit(safe_payload, runner)
 
 
 def _antiques_source_excerpt(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -2709,6 +2885,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 session_id = str(query.get("session_id", [""])[0]).strip()
                 session = antiques_context(workspace_id, session_id)
                 self._json(ANTIQUES.bootstrap(workspace_id, session_id, str(session.get("active_room") or "")))
+            elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+", parsed.path):
+                self._json(MUSEUM_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(ART_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif parsed.path == "/api/art/images":
@@ -2839,6 +3017,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(save_resume_exports(payload), HTTPStatus.CREATED)
             elif parsed.path == "/api/art/jobs":
                 self._json(submit_art_job(payload), HTTPStatus.ACCEPTED)
+            elif parsed.path == "/api/antiques/analysis":
+                self._json(submit_museum_analysis(payload), HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/antiques/research":
                 self._json(antiques_research(payload))
             elif parsed.path == "/api/antiques/shopping/start":
@@ -2858,6 +3038,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"settings": ANTIQUES.update_settings(workspace_id, payload.get("settings") if isinstance(payload.get("settings"), dict) else {})})
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
                 self._json(ART_JOBS.cancel(parsed.path.split("/")[-2]))
+            elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
+                self._json(MUSEUM_JOBS.cancel(parsed.path.split("/")[-2]))
             elif parsed.path == "/api/art/projects/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 art_context(workspace_id, str(payload.get("session_id") or ""))

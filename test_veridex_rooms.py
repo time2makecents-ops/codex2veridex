@@ -8,9 +8,11 @@ from veridex_rooms import resolve_room, room_directory_text, route_room_request,
 class VeridexRoomTests(unittest.TestCase):
     def test_registry_matches_expected_governed_rooms(self) -> None:
         rooms = rooms_payload()
-        self.assertEqual(len(rooms), 17)
+        self.assertEqual(len(rooms), 18)
         self.assertEqual(rooms[0]["id"], "lobby")
         self.assertEqual(resolve_room("art room")["id"], "art_department")
+        self.assertEqual(resolve_room("Visual Design")["title"], "Visual Design")
+        self.assertEqual(resolve_room("Museum")["id"], "antiques_department")
         self.assertEqual(resolve_room("Marketing & Advertising")["id"], "marketing_room")
 
     def test_only_explicit_navigation_routes_to_room_change(self) -> None:

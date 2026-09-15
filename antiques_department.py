@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable
 
 from PIL import Image, ImageOps
 
+from museum_visual_analysis import FOCUS_OPTIONS, PHOTO_ROLES
+
 
 ROOM_ID = "antiques_department"
 SHOPPING_MODE_HOURS = 4
@@ -374,4 +376,10 @@ class AntiquesDepartment:
             "sources": list(SOURCE_REGISTRY),
             "cases": self.list_cases(workspace_id),
             "external_uploads": self.external_uploads(workspace_id, 25),
+            "visual_analysis": {
+                "modes": ["quick", "detailed"],
+                "focus_options": list(FOCUS_OPTIONS),
+                "photo_roles": list(PHOTO_ROLES),
+                "external_uploads_required": False,
+            },
         }

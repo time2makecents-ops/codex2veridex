@@ -84,6 +84,20 @@ const state = {
     currentProjectId: "",
     route: null,
   },
+  museum: {
+    loaded: false,
+    mode: "quick",
+    cases: [],
+    settings: {},
+    shoppingMode: { active: false },
+    photoRoles: {},
+    regions: {},
+    cropFileId: "",
+    cropStart: null,
+    activeJob: null,
+    pollTimer: null,
+    result: null,
+  },
 };
 
 const el = (id) => document.getElementById(id);
@@ -133,6 +147,10 @@ function applyState(value, preserveRoute = false) {
     state.selectedFiles.clear();
     state.emailAttachments = [];
     state.deliveryAlerts = [];
+    state.museum.photoRoles = {};
+    state.museum.regions = {};
+    state.museum.cropFileId = "";
+    state.museum.result = null;
   }
   if (workspaceChanged) {
     state.artImages = [];
@@ -153,6 +171,15 @@ function applyState(value, preserveRoute = false) {
     state.resume.projects = [];
     state.resume.draft = null;
     state.resume.review = null;
+    state.museum.loaded = false;
+    state.museum.cases = [];
+    state.museum.settings = {};
+    state.museum.shoppingMode = { active: false };
+    state.museum.photoRoles = {};
+    state.museum.regions = {};
+    state.museum.cropFileId = "";
+    state.museum.activeJob = null;
+    state.museum.result = null;
   }
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
@@ -1095,7 +1122,7 @@ function renderArtGallery() {
   preview.replaceChildren();
   el("art-gallery-summary").textContent = state.artImagesLoading
     ? "Loading verified artworkâ€¦"
-    : `${state.artImages.length} verified ${state.artImages.length === 1 ? "image" : "images"} across Art Department sessions`;
+    : `${state.artImages.length} verified ${state.artImages.length === 1 ? "image" : "images"} across Visual Design sessions`;
   empty.hidden = state.artImagesLoading || state.artImages.length > 0;
   el("art-gallery-content").hidden = state.artImagesLoading || !state.artImages.length;
   if (state.artImagesLoading || !state.artImages.length) return;
@@ -2230,6 +2257,346 @@ async function exportResumeFiles() {
   finally { state.resume.busy = false; renderResumeStudio(); }
 }
 
+const MUSEUM_PHOTO_ROLES = [
+  ["front", "Front overview"], ["back", "Back"], ["signature", "Signature or mark"],
+  ["surface_raking_light", "Surface · raking light"], ["edge_support", "Edge or support"],
+  ["frame_front", "Frame front"], ["frame_back", "Frame back"], ["label_or_mark", "Label or maker's mark"],
+  ["other", "Other view"],
+];
+
+function museumSelectedPhotos() {
+  return state.files.filter((file) => state.selectedFiles.has(file.file_id) && String(file.content_type || "").startsWith("image/"));
+}
+
+function museumFileUrl(file) {
+  return artImageContentUrl({ ...file, source_session_id: state.session.session_id });
+}
+
+function defaultMuseumRole(file, index) {
+  const name = String(file.name || "").toLowerCase();
+  if (/sign|mark/.test(name)) return "signature";
+  if (/frame.*back|back.*frame/.test(name)) return "frame_back";
+  if (/frame/.test(name)) return "frame_front";
+  if (/label|stamp/.test(name)) return "label_or_mark";
+  if (/back|reverse/.test(name)) return "back";
+  if (/edge|side/.test(name)) return "edge_support";
+  return index === 0 ? "front" : "other";
+}
+
+async function loadMuseumBootstrap() {
+  if (!state.workspace || !state.session) return;
+  const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+  const result = await api(`/api/antiques?${query}`);
+  state.museum.loaded = true;
+  state.museum.cases = result.cases || [];
+  state.museum.settings = result.settings || {};
+  state.museum.shoppingMode = result.shopping_mode || { active: false };
+  const settings = state.museum.settings;
+  el("antiques-fee").value = settings.fee_percent ?? 15;
+  el("antiques-shipping").value = settings.packing_shipping_allowance ?? 15;
+  el("antiques-reserve").value = settings.uncertainty_reserve_percent ?? 10;
+  el("antiques-profit").value = settings.minimum_target_profit ?? 30;
+  el("antiques-cap").value = settings.quick_buy_cap_percent ?? 25;
+}
+
+function renderMuseumPhotoRoles() {
+  const photos = museumSelectedPhotos();
+  const container = el("museum-photo-roles");
+  container.replaceChildren();
+  photos.forEach((file, index) => {
+    if (!state.museum.photoRoles[file.file_id]) state.museum.photoRoles[file.file_id] = defaultMuseumRole(file, index);
+    const row = document.createElement("label");
+    row.className = "museum-photo-role";
+    const name = document.createElement("strong");
+    name.textContent = file.name || `Photo ${index + 1}`;
+    const select = document.createElement("select");
+    MUSEUM_PHOTO_ROLES.forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    });
+    select.value = state.museum.photoRoles[file.file_id];
+    select.addEventListener("change", () => { state.museum.photoRoles[file.file_id] = select.value; });
+    row.append(name, select);
+    container.append(row);
+  });
+}
+
+function renderMuseumCrop() {
+  const photos = museumSelectedPhotos();
+  const selector = el("museum-crop-file");
+  const prior = state.museum.cropFileId;
+  selector.replaceChildren();
+  photos.forEach((file) => {
+    const option = document.createElement("option");
+    option.value = file.file_id;
+    option.textContent = file.name;
+    selector.append(option);
+  });
+  state.museum.cropFileId = photos.some((file) => file.file_id === prior) ? prior : (photos[0]?.file_id || "");
+  selector.value = state.museum.cropFileId;
+  const file = photos.find((row) => row.file_id === state.museum.cropFileId);
+  const image = el("museum-crop-image");
+  if ((image.dataset.fileId || "") !== (file?.file_id || "")) {
+    image.dataset.fileId = file?.file_id || "";
+    image.src = file ? museumFileUrl(file) : "";
+  }
+  const region = state.museum.regions[state.museum.cropFileId]?.[0];
+  const box = el("museum-crop-box");
+  if (!file || !region || !image.clientWidth) {
+    box.hidden = true;
+    return;
+  }
+  const stageRect = el("museum-crop-stage").getBoundingClientRect();
+  const imageRect = image.getBoundingClientRect();
+  box.hidden = false;
+  box.style.left = `${imageRect.left - stageRect.left + region.x * imageRect.width}px`;
+  box.style.top = `${imageRect.top - stageRect.top + region.y * imageRect.height}px`;
+  box.style.width = `${region.width * imageRect.width}px`;
+  box.style.height = `${region.height * imageRect.height}px`;
+}
+
+function museumPointerPosition(event) {
+  const rect = el("museum-crop-image").getBoundingClientRect();
+  return {
+    x: Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width))),
+    y: Math.min(1, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height))),
+  };
+}
+
+function updateMuseumCrop(event, finish = false) {
+  if (!state.museum.cropStart || !state.museum.cropFileId) return;
+  const current = museumPointerPosition(event);
+  const start = state.museum.cropStart;
+  const region = {
+    label: el("museum-focus").value === "signature" ? "Signature or mark" : "Selected detail",
+    x: Math.min(start.x, current.x),
+    y: Math.min(start.y, current.y),
+    width: Math.abs(start.x - current.x),
+    height: Math.abs(start.y - current.y),
+  };
+  if (region.width >= 0.01 && region.height >= 0.01) state.museum.regions[state.museum.cropFileId] = [region];
+  if (finish) state.museum.cropStart = null;
+  renderMuseumCrop();
+}
+
+function museumEvidenceTitle(file) {
+  const metadata = file.metadata?.museum_analysis || {};
+  return metadata.label || file.name || "Derived evidence";
+}
+
+function appendMuseumList(card, title, values) {
+  const rows = (values || []).map((value) => typeof value === "string" ? value : (value.reason || value.role || JSON.stringify(value))).filter(Boolean);
+  if (!rows.length) return;
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  rows.forEach((value) => { const item = document.createElement("li"); item.textContent = value; list.append(item); });
+  card.append(heading, list);
+}
+
+function renderMuseumResult() {
+  const container = el("museum-analysis-result");
+  container.replaceChildren();
+  const report = state.museum.result?.report;
+  if (!report) return;
+  const summary = document.createElement("section");
+  summary.className = "museum-result-card";
+  const title = document.createElement("h4");
+  title.textContent = report.identification || "Unidentified artwork or object";
+  const confidence = document.createElement("p");
+  confidence.textContent = `Confidence: ${report.confidence || "low"} · ${report.visual_disclaimer}`;
+  summary.append(title, confidence);
+  const assessments = [
+    ["Medium", report.medium?.assessment], ["Support", report.support?.assessment],
+    ["Production", report.production_method?.assessment], ["Signature", report.signature?.application],
+    ["Frame", report.frame?.assessment],
+  ].filter((row) => row[1]);
+  assessments.forEach(([label, value]) => { const line = document.createElement("p"); line.textContent = `${label}: ${value}`; summary.append(line); });
+  appendMuseumList(summary, "Visible observations", report.observations);
+  appendMuseumList(summary, "Cautious interpretations", report.interpretations);
+  appendMuseumList(summary, "Limitations", report.limitations);
+  appendMuseumList(summary, "Helpful next photographs", report.recommended_next_photos);
+  container.append(summary);
+  if (report.signature?.transcription_candidates?.length) {
+    const signature = document.createElement("section");
+    signature.className = "museum-result-card";
+    const heading = document.createElement("h4");
+    heading.textContent = "Signature transcription candidates";
+    signature.append(heading);
+    appendMuseumList(signature, "Possible readings", report.signature.transcription_candidates);
+    container.append(signature);
+  }
+  if (report.evidence_artifacts?.length) {
+    const evidence = document.createElement("section");
+    evidence.className = "museum-result-card";
+    const heading = document.createElement("h4");
+    heading.textContent = "Derived evidence views";
+    const grid = document.createElement("div");
+    grid.className = "museum-evidence-grid";
+    report.evidence_artifacts.slice(0, 24).forEach((file) => {
+      const link = document.createElement("a");
+      link.href = museumFileUrl(file);
+      link.target = "_blank";
+      link.rel = "noopener";
+      const image = document.createElement("img");
+      image.src = link.href;
+      image.alt = museumEvidenceTitle(file);
+      const label = document.createElement("span");
+      label.textContent = museumEvidenceTitle(file);
+      link.append(image, label);
+      grid.append(link);
+    });
+    evidence.append(heading, grid);
+    container.append(evidence);
+  }
+}
+
+function renderMuseumJob() {
+  const job = state.museum.activeJob;
+  const active = job && !["completed", "failed", "canceled"].includes(job.status);
+  el("museum-job-progress").hidden = !job;
+  if (job) {
+    el("museum-job-message").textContent = job.error || job.message || job.status;
+    el("museum-job-percent").textContent = `${job.progress || 0}%`;
+    el("museum-job-meter").value = job.progress || 0;
+    el("museum-job-progress").classList.toggle("failed", job.status === "failed");
+    el("museum-job-cancel").hidden = !active;
+  }
+  el("museum-analysis-start").disabled = Boolean(active);
+  renderMuseumResult();
+}
+
+function renderMuseumAnalysis() {
+  el("museum-analysis-title").textContent = state.museum.mode === "detailed" ? "Detailed visual analysis" : "Quick visual check";
+  el("museum-analysis-start").textContent = state.museum.mode === "detailed" ? "Start detailed analysis" : "Start quick check";
+  renderMuseumPhotoRoles();
+  renderMuseumCrop();
+  renderMuseumJob();
+}
+
+async function openMuseumAnalysis(mode) {
+  const photos = museumSelectedPhotos();
+  if (!photos.length) {
+    showError("Select at least one image in the file tray, or take Museum photos first.");
+    return;
+  }
+  state.museum.mode = mode === "detailed" ? "detailed" : "quick";
+  state.museum.result = null;
+  if (!state.museum.cropFileId) state.museum.cropFileId = photos[0].file_id;
+  const dialog = el("museum-analysis-dialog");
+  if (!dialog.open) dialog.showModal();
+  renderMuseumAnalysis();
+}
+
+function closeMuseumAnalysis() {
+  if (el("museum-analysis-dialog").open) el("museum-analysis-dialog").close();
+}
+
+async function pollMuseumJob(jobId) {
+  window.clearTimeout(state.museum.pollTimer);
+  try {
+    const job = await api(`/api/antiques/analysis/jobs/${encodeURIComponent(jobId)}`);
+    state.museum.activeJob = job;
+    if (job.status === "completed") {
+      state.museum.result = job.result;
+      await loadMuseumBootstrap();
+      renderMuseumAnalysis();
+      return;
+    }
+    if (["failed", "canceled"].includes(job.status)) {
+      renderMuseumAnalysis();
+      return;
+    }
+    renderMuseumJob();
+    state.museum.pollTimer = window.setTimeout(() => pollMuseumJob(jobId), 900);
+  } catch (error) {
+    showError(error.message || String(error));
+  }
+}
+
+async function startMuseumAnalysis() {
+  const photos = museumSelectedPhotos();
+  if (!photos.length) return;
+  const focus = el("museum-focus").value;
+  const comparisonPairs = focus === "match" && photos.length > 1
+    ? photos.slice(1).map((file) => ({ source_file_id: photos[0].file_id, candidate_file_id: file.file_id }))
+    : [];
+  state.museum.result = null;
+  try {
+    const job = await api("/api/antiques/analysis", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      attachment_ids: photos.map((file) => file.file_id),
+      mode: state.museum.mode,
+      focus,
+      notes: el("museum-notes").value.trim(),
+      photo_roles: state.museum.photoRoles,
+      regions: state.museum.regions,
+      comparison_pairs: comparisonPairs,
+    }) });
+    state.museum.activeJob = job;
+    renderMuseumJob();
+    pollMuseumJob(job.job_id);
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+function renderMuseumCases() {
+  const container = el("antiques-cases-content");
+  container.replaceChildren();
+  if (!state.museum.cases.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No saved Museum items yet.";
+    container.append(empty);
+    return;
+  }
+  state.museum.cases.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "antiques-case";
+    const title = document.createElement("strong");
+    title.textContent = item.title || "Unidentified item";
+    const meta = document.createElement("span");
+    meta.textContent = `${item.category || "unknown"} · ${item.revisions?.length || 0} revision${item.revisions?.length === 1 ? "" : "s"} · ${readableEmailDate(item.updated_at)}`;
+    row.append(title, meta);
+    container.append(row);
+  });
+}
+
+async function openMuseumCases() {
+  try {
+    await loadMuseumBootstrap();
+    renderMuseumCases();
+    if (!el("antiques-cases-dialog").open) el("antiques-cases-dialog").showModal();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+function closeMuseumCases() {
+  if (el("antiques-cases-dialog").open) el("antiques-cases-dialog").close();
+}
+
+async function toggleMuseumShoppingMode() {
+  const action = state.museum.shoppingMode?.active ? "end" : "start";
+  try {
+    const result = await api(`/api/antiques/shopping/${action}`, { method: "POST", body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id }) });
+    state.museum.shoppingMode = result.shopping_mode || { active: false };
+    renderMuseumTools();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+function renderMuseumTools() {
+  const isMuseum = state.session?.active_room === "antiques_department";
+  const busy = state.sending || state.uploading || state.switchingRoom;
+  el("antiques-actions").hidden = !isMuseum;
+  ["antiques-camera", "antiques-quick", "antiques-deep", "antiques-cases", "antiques-shopping-toggle"].forEach((id) => { el(id).disabled = busy; });
+  el("antiques-shopping-toggle").textContent = state.museum.shoppingMode?.active ? "End shopping mode" : "Start shopping mode";
+  el("antiques-mode-label").textContent = state.museum.shoppingMode?.active ? "Shopping-mode consent is active for later external research" : "Visual analysis stays local; external research requires consent";
+  if (!isMuseum) {
+    closeMuseumAnalysis();
+    closeMuseumCases();
+  }
+}
+
 function renderResumeTools() {
   const isHr = state.session?.active_room === "hr_department";
   el("resume-actions").hidden = !isHr;
@@ -2531,6 +2898,7 @@ function render() {
   renderRoomControl();
   renderEmailTools();
   renderArtTools();
+  renderMuseumTools();
   renderRoomFileTools();
   renderResumeTools();
   renderGovernance();
@@ -2690,6 +3058,53 @@ el("voice-input").addEventListener("click", toggleDictation);
 
 el("compose-email").addEventListener("click", () => openEmailComposer());
 el("address-book").addEventListener("click", openAddressBook);
+el("antiques-camera").addEventListener("click", () => el("antiques-camera-input").click());
+el("antiques-camera-input").addEventListener("change", (event) => uploadFiles(event.target.files, "museum"));
+el("antiques-quick").addEventListener("click", () => openMuseumAnalysis("quick"));
+el("antiques-deep").addEventListener("click", () => openMuseumAnalysis("detailed"));
+el("antiques-cases").addEventListener("click", openMuseumCases);
+el("antiques-shopping-toggle").addEventListener("click", toggleMuseumShoppingMode);
+el("museum-analysis-close").addEventListener("click", closeMuseumAnalysis);
+el("museum-analysis-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeMuseumAnalysis(); });
+el("antiques-cases-close").addEventListener("click", closeMuseumCases);
+el("antiques-cases-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeMuseumCases(); });
+el("museum-analysis-start").addEventListener("click", startMuseumAnalysis);
+el("museum-crop-file").addEventListener("change", (event) => { state.museum.cropFileId = event.target.value; renderMuseumCrop(); });
+el("museum-crop-image").addEventListener("load", renderMuseumCrop);
+el("museum-crop-clear").addEventListener("click", () => { delete state.museum.regions[state.museum.cropFileId]; renderMuseumCrop(); });
+el("museum-crop-stage").addEventListener("pointerdown", (event) => {
+  if (!state.museum.cropFileId) return;
+  state.museum.cropStart = museumPointerPosition(event);
+  el("museum-crop-stage").setPointerCapture(event.pointerId);
+});
+el("museum-crop-stage").addEventListener("pointermove", (event) => updateMuseumCrop(event));
+el("museum-crop-stage").addEventListener("pointerup", (event) => updateMuseumCrop(event, true));
+el("museum-job-cancel").addEventListener("click", async () => {
+  const job = state.museum.activeJob;
+  if (!job?.job_id) return;
+  try {
+    state.museum.activeJob = await api(`/api/antiques/analysis/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST", body: "{}" });
+    renderMuseumJob();
+  } catch (error) { showError(error.message || String(error)); }
+});
+el("antiques-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const result = await api("/api/antiques/settings", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      settings: {
+        fee_percent: Number(el("antiques-fee").value),
+        packing_shipping_allowance: Number(el("antiques-shipping").value),
+        uncertainty_reserve_percent: Number(el("antiques-reserve").value),
+        minimum_target_profit: Number(el("antiques-profit").value),
+        quick_buy_cap_percent: Number(el("antiques-cap").value),
+      },
+    }) });
+    state.museum.settings = result.settings || state.museum.settings;
+    showToast("Museum buying defaults saved.");
+  } catch (error) { showError(error.message || String(error)); }
+});
 el("open-art-studio").addEventListener("click", openArtStudio);
 el("art-studio-close").addEventListener("click", closeArtStudio);
 el("art-studio-dialog").addEventListener("cancel", (event) => {
@@ -2868,14 +3283,16 @@ async function uploadFiles(fileList, target = "chat") {
       return;
     }
   }
-  if (target === "art") {
+  if (target === "art" || target === "museum") {
     const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
     const supportedExtensions = /\.(?:png|jpe?g|webp)$/i;
     if (files.some((file) => !supportedTypes.has(file.type) && !supportedExtensions.test(file.name))) {
-      showError("Art Studio references must be PNG, JPEG, or WebP images.");
-      el("art-reference-input").value = "";
+      showError(target === "art" ? "Art Studio references must be PNG, JPEG, or WebP images." : "Museum analysis requires image files.");
+      el(target === "art" ? "art-reference-input" : "antiques-camera-input").value = "";
       return;
     }
+  }
+  if (target === "art") {
     const availableSlots = Math.max(0, 4 - state.artStudio.referenceIds.size);
     if (!availableSlots) {
       showError("Remove a reference before adding another. Art Studio supports up to four images.");
@@ -2917,7 +3334,7 @@ async function uploadFiles(fileList, target = "chat") {
   } finally {
     state.uploading = false;
     state.uploadTarget = "";
-    const inputId = target === "email" ? "email-file-input" : target === "art" ? "art-reference-input" : "file-input";
+    const inputId = target === "email" ? "email-file-input" : target === "art" ? "art-reference-input" : target === "museum" ? "antiques-camera-input" : "file-input";
     el(inputId).value = "";
     render();
     if (target === "art") renderArtStudio();

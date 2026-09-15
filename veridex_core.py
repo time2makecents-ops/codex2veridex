@@ -863,7 +863,7 @@ class VeridexStore:
             if session.get("workspace_id") != workspace_id:
                 raise KeyError("Session does not belong to workspace")
             if str(session.get("active_room") or "") != room_id:
-                raise ValueError("Generated Art Department images can only be attached from the Art Department.")
+                raise ValueError("Generated Visual Design images can only be attached from Visual Design.")
             normalized_file_id = str(file_id or "").strip()
             image = next(
                 (
@@ -873,7 +873,7 @@ class VeridexStore:
                 None,
             )
             if not image:
-                raise KeyError("Unknown Art Department image")
+                raise KeyError("Unknown Visual Design image")
             existing = next(
                 (
                     row for row in self.list_files(workspace_id, session_id)

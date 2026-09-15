@@ -283,6 +283,8 @@ class GovernanceRegistry:
         text = str(request_text or "")
         if str(task_type or "") == "media":
             return bool(MEDIA_CREATION_REQUEST.search(text) or (MEDIA_FILE_REFERENCE.search(text) and MEDIA_TRANSFORM_INTENT.search(text)))
+        if str(task_type or "") not in {"document", "file_creation"}:
+            return False
         return bool(DOCUMENT_CREATION_REQUEST.search(text))
 
     def postflight(

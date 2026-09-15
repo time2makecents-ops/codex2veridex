@@ -1,4 +1,4 @@
-"""Free-only Art Department providers, finishing tools, projects, and jobs."""
+"""Free-only Visual Design providers, finishing tools, projects, and jobs."""
 
 from __future__ import annotations
 
@@ -574,14 +574,16 @@ class ArtStudio:
 
 
 class ArtJobManager:
-    def __init__(self, workers: int = 2):
+    def __init__(self, workers: int = 2, prefix: str = "artjob", label: str = "Art Studio"):
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._cancelled: set[str] = set()
         self._lock = threading.RLock()
-        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="veridex-art")
+        self._prefix = re.sub(r"[^A-Za-z0-9_-]+", "", prefix) or "job"
+        self._label = str(label or "Job")
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"veridex-{self._prefix}")
 
     def submit(self, payload: Dict[str, Any], runner: Callable[[str, Callable[[int, str], None], Callable[[], bool]], Dict[str, Any]]) -> Dict[str, Any]:
-        job_id = f"artjob_{uuid.uuid4().hex[:16]}"
+        job_id = f"{self._prefix}_{uuid.uuid4().hex[:16]}"
         now = utc_now()
         with self._lock:
             self._jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": 0, "message": "Queued", "created_at": now, "updated_at": now, "operation": str(payload.get("operation") or "generate")}
@@ -616,13 +618,13 @@ class ArtJobManager:
     def get(self, job_id: str) -> Dict[str, Any]:
         with self._lock:
             if job_id not in self._jobs:
-                raise KeyError("Unknown Art Studio job")
+                raise KeyError(f"Unknown {self._label} job")
             return dict(self._jobs[job_id])
 
     def cancel(self, job_id: str) -> Dict[str, Any]:
         with self._lock:
             if job_id not in self._jobs:
-                raise KeyError("Unknown Art Studio job")
+                raise KeyError(f"Unknown {self._label} job")
             if self._jobs[job_id].get("status") in {"completed", "failed", "canceled"}:
                 return dict(self._jobs[job_id])
             self._cancelled.add(job_id)

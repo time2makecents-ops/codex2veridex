@@ -17,7 +17,7 @@ ROOMS: List[Dict[str, Any]] = [
     {"id": "marketing_room", "title": "Marketing & Advertising", "default_persona": "Marketing Director", "is_active": True},
     {"id": "hr_department", "title": "HR Department", "default_persona": "HR Manager", "is_active": True},
     {"id": "it_department", "title": "IT Department", "default_persona": "IT Administrator", "is_active": True},
-    {"id": "art_department", "title": "Art Department", "default_persona": "Creative Director", "is_active": True},
+    {"id": "art_department", "title": "Visual Design", "default_persona": "Creative Director", "is_active": True},
     {
         "id": "antiques_department",
         "title": "Museum",
@@ -58,7 +58,11 @@ def _configured_rooms() -> List[Dict[str, Any]]:
             value = json.loads(_ROOM_CATALOG_PATH.read_text(encoding="utf-8"))
             rows = value.get("rooms") if isinstance(value, dict) else None
             if isinstance(rows, list):
-                return [dict(row) for row in rows if isinstance(row, dict)]
+                configured = [dict(row) for row in rows if isinstance(row, dict)]
+                for room in configured:
+                    if room.get("id") == "art_department" and room.get("title") == "Art Department":
+                        room["title"] = "Visual Design"
+                return configured
         except (OSError, json.JSONDecodeError):
             pass
     return [dict(room) for room in ROOMS]
@@ -73,7 +77,7 @@ ROOM_ALIASES = {
     "marketing_room": ("marketing", "marketing room", "marketing and advertising", "advertising"),
     "hr_department": ("hr", "h r", "hr department", "hr room", "human resources"),
     "it_department": ("it", "i t", "it department", "it room", "information technology"),
-    "art_department": ("art", "art department", "art room", "creative department"),
+    "art_department": ("art", "art department", "art room", "creative department", "visual design"),
     "antiques_department": ("museum", "antiques", "antiques department", "antique department", "collectables", "collectibles", "vintage collectibles"),
     "law_office": ("law", "law office", "law room", "legal office"),
     "finance_department": ("finance", "finance department", "finance room"),
@@ -148,7 +152,7 @@ def route_room_request(text: str) -> Optional[Dict[str, Any]]:
 
 def room_directory_text() -> str:
     lines = [
-        "Use the room selector beneath the session title, or type a direct command such as 'go to Art Department'.",
+        "Use the room selector beneath the session title, or type a direct command such as 'go to Visual Design'.",
         "",
         "Available rooms:",
     ]

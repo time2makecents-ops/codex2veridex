@@ -90,7 +90,7 @@
             </div>
           </div>
           <div id="art-actions" class="art-actions" hidden>
-            <span><strong>Art Department</strong><small>Create, finish, and browse verified workspace artwork</small></span>
+            <span><strong>Visual Design</strong><small>Create, finish, and browse verified workspace artwork</small></span>
             <div class="email-action-buttons"><button id="open-art-studio" type="button">Art Studio</button><button id="open-art-gallery" type="button">Images</button></div>
           </div>
           <div id="antiques-actions" class="art-actions antiques-actions" hidden>
@@ -98,8 +98,8 @@
             <div class="email-action-buttons">
               <input id="antiques-camera-input" type="file" accept="image/*" capture="environment" multiple hidden />
               <button id="antiques-camera" type="button">Take photos</button>
-              <button id="antiques-quick" type="button">Quick research</button>
-              <button id="antiques-deep" type="button">Deep research</button>
+              <button id="antiques-quick" type="button">Quick visual check</button>
+              <button id="antiques-deep" type="button">Detailed visual analysis</button>
               <button id="antiques-cases" type="button">Saved items</button>
               <button id="antiques-shopping-toggle" type="button">Start shopping mode</button>
             </div>
@@ -185,7 +185,7 @@
     <dialog id="art-gallery-dialog" class="art-gallery-dialog" aria-labelledby="art-gallery-title">
       <section class="art-gallery-shell">
         <header>
-          <div><div class="eyebrow">Art Department</div><h2 id="art-gallery-title">Generated images</h2><p id="art-gallery-summary">Verified workspace artwork</p></div>
+          <div><div class="eyebrow">Visual Design</div><h2 id="art-gallery-title">Generated images</h2><p id="art-gallery-summary">Verified workspace artwork</p></div>
           <button id="art-gallery-close" class="dialog-close" type="button" aria-label="Close image gallery">&times;</button>
         </header>
         <div id="art-gallery-content" class="art-gallery-content">
@@ -193,7 +193,7 @@
           <aside id="art-gallery-preview" class="art-gallery-preview" aria-live="polite"></aside>
         </div>
         <div id="art-gallery-empty" class="art-gallery-empty" hidden>
-          <strong>No Art Department images yet</strong>
+          <strong>No Visual Design images yet</strong>
           <span>Images created here will appear in this gallery after Veridex verifies them.</span>
         </div>
       </section>
@@ -201,7 +201,7 @@
     <dialog id="art-studio-dialog" class="art-studio-dialog" aria-labelledby="art-studio-title">
       <section class="art-studio-shell">
         <header class="art-studio-header">
-          <div><div class="eyebrow">Art Department</div><h2 id="art-studio-title">Art Studio</h2><p>Account and free-provider routes. Verified outputs. Every revision preserved.</p></div>
+          <div><div class="eyebrow">Visual Design</div><h2 id="art-studio-title">Art Studio</h2><p>Account and free-provider routes. Verified outputs. Every revision preserved.</p></div>
           <div class="art-studio-header-status"><span id="art-provider-status">Checking providers</span><button id="art-studio-close" class="dialog-close" type="button" aria-label="Close Art Studio">&times;</button></div>
         </header>
         <nav class="art-mode-rail" aria-label="Art Studio modes">
@@ -291,10 +291,39 @@
         </div>
       </section>
     </dialog>
+    <dialog id="museum-analysis-dialog" class="museum-analysis-dialog" aria-labelledby="museum-analysis-title">
+      <section class="museum-analysis-shell">
+        <header>
+          <div><div class="eyebrow">Museum · Leo</div><h2 id="museum-analysis-title">Visual analysis</h2><p>Local evidence first. No photos are sent to external search services.</p></div>
+          <button id="museum-analysis-close" class="dialog-close" type="button" aria-label="Close Museum analysis">&times;</button>
+        </header>
+        <div class="museum-analysis-layout">
+          <aside class="museum-photo-guide">
+            <h3>Useful photographs</h3>
+            <ol><li>Straight, evenly lit front</li><li>Back and labels</li><li>Signature macro</li><li>Low-angle raking light</li><li>Edge and support</li><li>Frame front and back</li></ol>
+            <p>Do not clean the item to improve a photograph.</p>
+          </aside>
+          <main>
+            <div class="museum-analysis-controls">
+              <label>Focus<select id="museum-focus"><option value="all">Everything visible</option><option value="medium">Medium and support</option><option value="signature">Signature or mark</option><option value="frame">Frame</option><option value="match">Compare selected images</option></select></label>
+              <label>Notes<textarea id="museum-notes" rows="3" placeholder="Dimensions, where it was found, or details not visible in the photos"></textarea></label>
+            </div>
+            <section><h3>Selected photographs and roles</h3><div id="museum-photo-roles" class="museum-photo-roles"></div></section>
+            <section class="museum-crop-section">
+              <div class="museum-crop-heading"><div><h3>Optional detail crop</h3><p>Drag over a signature, label, texture, or frame detail.</p></div><label>Photo<select id="museum-crop-file"></select></label><button id="museum-crop-clear" type="button">Clear crop</button></div>
+              <div id="museum-crop-stage" class="museum-crop-stage"><img id="museum-crop-image" alt="Selected Museum photograph" draggable="false" /><span id="museum-crop-box" class="museum-crop-box" hidden></span></div>
+            </section>
+            <div id="museum-job-progress" class="art-job-progress" hidden><div><span id="museum-job-message">Preparing</span><strong id="museum-job-percent">0%</strong></div><progress id="museum-job-meter" max="100" value="0"></progress><button id="museum-job-cancel" type="button">Cancel</button></div>
+            <div id="museum-analysis-result" class="museum-analysis-result" aria-live="polite"></div>
+          </main>
+        </div>
+        <footer><span>Visual findings are not authentication or an appraisal.</span><button id="museum-analysis-start" class="primary-action" type="button">Start visual analysis</button></footer>
+      </section>
+    </dialog>
     <dialog id="antiques-cases-dialog" class="art-gallery-dialog antiques-cases-dialog" aria-labelledby="antiques-cases-title">
       <section class="art-gallery-shell">
         <header>
-          <div><div class="eyebrow">Museum</div><h2 id="antiques-cases-title">Leo’s saved item research</h2><p>Every completed quick or deep research run is retained with its evidence.</p></div>
+          <div><div class="eyebrow">Museum</div><h2 id="antiques-cases-title">Leo’s saved items</h2><p>Visual-analysis and later research revisions remain attached to each case.</p></div>
           <button id="antiques-cases-close" class="dialog-close" type="button" aria-label="Close saved antiques">&times;</button>
         </header>
         <form id="antiques-settings-form" class="antiques-settings-form">

@@ -19,7 +19,8 @@ After activation:
 - Use `veridex_call` for explicit Veridex tools.
 - Use `office.room_list` to inspect the authoritative room directory and
   `office.room_set` for an explicit room transition. Natural-language commands
-  such as `go to Art Department` are handled by the same governed transition.
+  such as `go to Visual Design` are handled by the same governed transition.
+- Route artwork examination, signature, frame, and local visual-matching requests to Museum; keep image creation and editing in Visual Design's Art Studio.
 - Use `office.governance_status` to inspect Navigator's exact rule source and
   active gates, `office.governance_incident_list` for blocked-breach evidence,
   and `office.compliance_check` for the current pending-gate state.

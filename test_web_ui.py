@@ -136,6 +136,29 @@ class WebUiTests(unittest.TestCase):
         self.assertIn(".art-reference-state", styles)
         self.assertIn(".art-canvas-empty[hidden], .art-canvas[hidden], .art-job-progress[hidden]", styles)
 
+    def test_museum_visual_analysis_workflow_is_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="museum-analysis-dialog"', html)
+        self.assertIn('id="museum-photo-roles"', html)
+        self.assertIn('id="museum-crop-stage"', html)
+        self.assertIn("function renderMuseumTools", script)
+        self.assertIn("function startMuseumAnalysis", script)
+        self.assertIn('api("/api/antiques/analysis"', script)
+        self.assertIn('uploadFiles(event.target.files, "museum")', script)
+        self.assertIn("comparison_pairs: comparisonPairs", script)
+        self.assertIn(".museum-analysis-dialog", styles)
+        self.assertIn(".museum-crop-box", styles)
+        self.assertIn(".museum-evidence-grid", styles)
+
+    def test_visual_design_and_museum_are_distinct(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("<strong>Visual Design</strong>", html)
+        self.assertIn("Museum · Leo", html)
+        self.assertIn("Quick visual check", html)
+
     def test_room_file_libraries_and_four_file_tray_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

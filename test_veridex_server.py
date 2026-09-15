@@ -11,11 +11,62 @@ from PIL import Image
 
 import veridex_server
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio
+from antiques_department import AntiquesDepartment
+from museum_visual_analysis import MuseumVisualAnalyzer
 from resume_studio import ResumeStudio
 from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_museum_visual_job_saves_evidence_and_case_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "antiques_department")
+            source = store.save_file(workspace_id, session_id, "painting.png", self._sample_png(), "image/png")
+            manager = ArtJobManager(workers=1, prefix="museumjob", label="Museum analysis")
+            museum = AntiquesDepartment(root)
+            analyzer = MuseumVisualAnalyzer(root)
+            interpretation = {
+                "identification": "Small painted study",
+                "category": "painting",
+                "confidence": "medium",
+                "observations": ["A blue-green field is visible."],
+                "interpretations": ["The image may show hand-applied color."],
+                "medium": {"assessment": "paint, type undetermined", "confidence": "low", "evidence": [], "limitations": []},
+                "support": {"assessment": "undetermined", "confidence": "low", "evidence": [], "limitations": []},
+                "production_method": {"assessment": "undetermined", "confidence": "low", "evidence": [], "limitations": []},
+                "signature": {"application": "undetermined", "transcription_candidates": [], "confidence": "low", "evidence": [], "limitations": []},
+                "frame": {"assessment": "not visible", "confidence": "low", "evidence": [], "limitations": []},
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANTIQUES", museum), patch.object(
+                veridex_server, "MUSEUM_VISUAL", analyzer
+            ), patch.object(veridex_server, "MUSEUM_JOBS", manager), patch.object(
+                veridex_server, "_museum_interpretation", return_value=(interpretation, {"model": "test-model", "provider": "test"})
+            ):
+                job = veridex_server.submit_museum_analysis({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "attachment_ids": [source["file_id"]],
+                    "mode": "quick",
+                    "photo_roles": {source["file_id"]: "front"},
+                })
+                for _ in range(100):
+                    job = manager.get(job["job_id"])
+                    if job["status"] in {"completed", "failed"}:
+                        break
+                    time.sleep(0.01)
+            self.assertEqual(job["status"], "completed", job.get("error"))
+            result = job["result"]
+            self.assertEqual(result["report"]["identification"], "Small painted study")
+            self.assertTrue(result["report"]["evidence_artifacts"])
+            self.assertTrue(all(row["scope_ref"] == "antiques_department" for row in result["report"]["evidence_artifacts"]))
+            self.assertEqual(result["case"]["revisions"][-1]["mode"], "quick")
+            self.assertEqual(museum.list_cases(workspace_id)[0]["case_id"], result["case"]["case_id"])
+
     def test_art_bootstrap_includes_existing_codex_image_route(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -339,7 +390,7 @@ class VeridexServerTests(unittest.TestCase):
                 "model": "gpt-5.6-luna",
                 "reasoning_effort": "low",
                 "task_type": "simple",
-                "text": "Hello from Art Department.",
+                "text": "Hello from Visual Design.",
                 "evidence": [],
             }
             with patch.object(veridex_server, "STORE", store), patch.object(
@@ -648,7 +699,7 @@ class VeridexServerTests(unittest.TestCase):
             rows = store.load_messages(workspace_id, session_id)
             self.assertEqual(rows[0]["room"], "lobby")
             self.assertEqual(rows[1]["room"], "art_department")
-            self.assertIn("You're now in Art Department", rows[1]["text"])
+            self.assertIn("You're now in Visual Design", rows[1]["text"])
 
     def test_room_directory_is_complete_and_does_not_call_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -662,7 +713,7 @@ class VeridexServerTests(unittest.TestCase):
                 )
             invoke.assert_not_called()
             self.assertEqual(result["task_type"], "room_directory")
-            self.assertIn("Art Department", result["message"]["text"])
+            self.assertIn("Visual Design", result["message"]["text"])
             self.assertIn("Records Archive", result["message"]["text"])
 
     def test_visible_room_control_uses_same_persistent_transition(self) -> None:

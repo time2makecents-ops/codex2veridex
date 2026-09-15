@@ -178,3 +178,11 @@ def google_profile_status() -> Dict[str, Any]:
 
 def search_google(text: str, messages: Iterable[Dict[str, Any]] = (), cancel_event: Any = None) -> Dict[str, Any]:
     return _run("search", resolve_google_query(text, messages), timeout=90, cancel_event=cancel_event)
+
+
+def search_google_lens(image_path: Path, cancel_event: Any = None) -> Dict[str, Any]:
+    raise GoogleChromeSearchError("Google Lens automation is not enabled in this Museum release.")
+
+
+def search_ebay_product_research(text: str, cancel_event: Any = None) -> Dict[str, Any]:
+    raise GoogleChromeSearchError("eBay Product Research automation is not enabled in this Museum release.")
