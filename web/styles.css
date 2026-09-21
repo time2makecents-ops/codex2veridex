@@ -249,6 +249,47 @@ button { cursor: pointer; }
 .room-file-document-preview { min-height: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: #9fd2aa; background: radial-gradient(circle at center, #1d2a20 0, #080c09 68%); animation: fade-in 180ms ease both; }
 .room-file-document-preview strong { font: 600 clamp(36px, 8vw, 84px)/1 Georgia, serif; letter-spacing: .08em; }
 .room-file-document-preview span { color: #9faea3; font-size: 10px; }
+
+.antiques-actions { border-color: #8b6f43; background: linear-gradient(135deg, #18140d, #221b10); }
+.antiques-actions > span strong { color: #e8c98f; }
+.antiques-actions .email-action-buttons { flex-wrap: wrap; justify-content: flex-end; }
+.antiques-actions button { border-color: #705a37; }
+.antiques-cases-dialog .art-gallery-shell { width: min(880px, calc(100vw - 32px)); }
+.antiques-cases-content { display: grid; gap: 12px; padding: 20px; overflow: auto; }
+.antiques-settings-form { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)) auto; gap: 10px; align-items: end; padding: 16px 20px; border-bottom: 1px solid #3c3527; }
+.antiques-settings-form label { display: grid; gap: 5px; color: #a89d87; font-size: 11px; }
+.antiques-settings-form input { width: 100%; }
+.antiques-case-card { display: grid; gap: 8px; padding: 16px; border: 1px solid #4e432e; border-radius: 10px; background: #15130e; color: #d9d4c8; }
+.antiques-case-card div { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.antiques-case-card strong { color: #f0d7a3; font: 600 18px/1.2 Georgia, serif; }
+.antiques-case-card small { color: #a89d87; }
+.antiques-case-card p { margin: 0; color: #bdb6a8; }
+.antiques-case-card .antiques-price-summary { color: #d8bd88; font-size: 11px; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+.antiques-price-evidence { display: grid; gap: 7px; border-top: 1px solid #3c3527; padding-top: 10px; }
+.antiques-price-evidence h4 { margin: 0; color: #e8c98f; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.antiques-price-evidence ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.antiques-price-evidence li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; color: #c9c2b4; font-size: 11px; }
+.antiques-price-evidence a { color: #e0bd78; }
+.antiques-case-card .antiques-similar-prompt { border-left: 3px solid #b88b45; padding: 8px 10px; color: #ead7b2; background: #211c13; }
+.antiques-case-card .antiques-price-search-controls { display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 8px; border-top: 1px solid #3c3527; padding-top: 10px; }
+.antiques-price-search-controls select { min-width: 120px; max-width: 230px; }
+.antiques-price-search-controls span { color: #c9c2b4; font-size: 12px; }
+.antiques-price-search-controls .error { color: #ef9d91; }
+.antiques-message { border-color: #6f5a37; }
+.antiques-evidence { margin-top: 12px; padding: 10px; border: 1px solid #4e432e; border-radius: 8px; }
+.antiques-evidence > div { display: grid; gap: 8px; margin-top: 10px; }
+.antiques-evidence > div > div { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.antiques-evidence a { color: #e0bd78; }
+
+@media (max-width: 720px) {
+  .antiques-actions { align-items: stretch; }
+  .antiques-actions > span { display: grid; gap: 3px; }
+  .antiques-actions .email-action-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .antiques-actions button { min-height: 46px; }
+  .antiques-case-card div { display: grid; gap: 5px; }
+  .antiques-settings-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .antiques-settings-form button { grid-column: 1 / -1; min-height: 44px; }
+}
 .art-gallery-preview figcaption { padding: 13px 15px; border-top: 1px solid rgba(220, 235, 224, .14); background: #171e19; }
 .art-gallery-preview h3 { margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: white; font: 600 19px/1.2 Georgia, serif; }
 .art-gallery-preview p { margin: 0; color: #9faea3; font-size: 9px; line-height: 1.5; }
@@ -513,6 +554,47 @@ button { cursor: pointer; }
 .antiques-case { padding: 13px 0; border-bottom: 1px solid var(--line); }
 .antiques-case strong, .antiques-case span { display: block; }
 .antiques-case span { margin-top: 4px; color: var(--muted); font-size: 10px; }
+
+.connected-accounts-trigger { display: inline-flex; align-items: center; gap: 7px; margin: 6px 0 8px; border: 1px solid #d5ddd7; border-radius: 999px; padding: 6px 10px; color: #34523f; background: #fff; font-size: 10px; font-weight: 800; letter-spacing: .03em; }
+.connection-indicator { width: 7px; height: 7px; border-radius: 50%; background: #a9b2ab; box-shadow: 0 0 0 3px #edf0ed; }
+.connected-accounts-trigger.has-connection .connection-indicator { background: #2f9d55; box-shadow: 0 0 0 3px #def1e3; }
+.connected-accounts-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100svh - 32px); border: 0; border-radius: 13px; padding: 0; color: var(--ink); background: #fafbf8; box-shadow: 0 28px 90px rgba(15,30,20,.3); }
+.connected-accounts-dialog[open] { animation: dialog-in .16s ease-out; }
+.connected-accounts-dialog::backdrop { background: rgba(13,24,17,.64); backdrop-filter: blur(3px); }
+.connected-accounts-shell { padding: 27px 30px 30px; }
+.connected-accounts-shell > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.connected-accounts-shell > header h2 { margin: 4px 0 6px; font: 500 30px/1.08 Georgia, serif; }
+.connected-accounts-shell > header p { margin: 0; color: var(--muted); font-size: 11px; }
+.connected-accounts-shell > header button { border: 0; padding: 0; color: var(--muted); background: transparent; font-size: 28px; }
+.account-isolation-note { display: flex; gap: 11px; align-items: center; margin: 18px 0; border-left: 3px solid #55956b; padding: 10px 12px; background: #eef5ef; }
+.account-isolation-note > span { color: #37774e; font-size: 20px; }
+.account-isolation-note p { display: grid; gap: 2px; margin: 0; color: #4f5f54; font-size: 10px; line-height: 1.45; }
+.account-isolation-note strong { color: #263d2e; }
+.connected-account-card { margin-top: 12px; border: 1px solid #dbe1dc; border-radius: 9px; padding: 17px; background: #fff; }
+.connected-account-heading, .connected-account-heading > div, .connected-account-actions { display: flex; align-items: center; }
+.connected-account-heading { justify-content: space-between; gap: 18px; }
+.connected-account-heading > div { gap: 11px; }
+.account-monogram { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; color: white; font-size: 10px; font-weight: 900; }
+.account-monogram.instagram { background: #7e486a; }
+.account-monogram.gmail { color: #a1382f; background: #f7e8e5; }
+.account-monogram.ebay { color: #1d458a; background: #fff3c4; }
+.connected-account-heading h3 { margin: 0; font-size: 13px; }
+.connected-account-heading p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
+.account-state { border-radius: 999px; padding: 5px 8px; color: #68736c; background: #eef1ee; font-size: 9px; font-weight: 850; text-transform: uppercase; letter-spacing: .06em; }
+.account-state.connected { color: #22633a; background: #e4f4e8; }
+.account-state.attention { color: #8a551b; background: #fff1d9; }
+.active-account { margin-top: 14px; border: 1px solid #cfe0d3; border-radius: 6px; padding: 9px 11px; color: #28533a; background: #f1f8f3; font-size: 11px; font-weight: 750; }
+.connected-account-form { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 15px; }
+.connected-account-form label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.connected-account-form input, .connected-account-form select { width: 100%; border: 1px solid #d5ddd7; border-radius: 6px; padding: 9px 10px; color: var(--ink); background: #fff; font: 500 11px/1.4 Inter,Arial,sans-serif; letter-spacing: normal; text-transform: none; }
+.field-note, .connected-account-actions { grid-column: 1 / -1; }
+.field-note { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.connected-account-actions { flex-wrap: wrap; gap: 7px; }
+.connected-account-actions button { border: 1px solid #ccd5ce; border-radius: 5px; padding: 8px 10px; color: #31533d; background: white; font-size: 9px; font-weight: 850; }
+.connected-account-actions .primary-action { border-color: #276443; color: white; background: #276443; }
+.connected-account-actions .danger-action { margin-left: auto; color: #8b341e; }
+.connected-accounts-message { min-height: 18px; margin: 14px 0 0; color: #3c5545; font-size: 10px; }
+@media (max-width: 620px) { .connected-accounts-shell { padding: 22px 18px; } .connected-account-form { grid-template-columns: 1fr; } }
 
 @keyframes pulse { from { opacity: .3; transform: scale(.75); } to { opacity: 1; transform: scale(1.15); } }
 @keyframes reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }

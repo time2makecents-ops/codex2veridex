@@ -8,6 +8,36 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    def test_antiques_mobile_research_and_consent_controls_are_present(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="antiques-camera-input"', html)
+        self.assertIn('capture="environment"', html)
+        self.assertIn('id="antiques-shopping-toggle"', html)
+        self.assertIn('id="antiques-cases-dialog"', html)
+        self.assertIn("function startAntiquesResearch", script)
+        self.assertIn("function appendPriceEvidenceGroup", script)
+        self.assertIn("Exact sold evidence", script)
+        self.assertIn("Exact asking and estimate context", script)
+        self.assertIn("No exact match found. Search similar items?", script)
+        self.assertIn("function startPriceSearch", script)
+        self.assertIn('api("/api/antiques/price-search"', script)
+        self.assertIn("All likeness (exact first)", script)
+        self.assertIn("Similar results (not used for exact valuation)", script)
+        self.assertIn("confirm_external: confirmExternal", script)
+        self.assertIn("/api/antiques/shopping/", script)
+        self.assertIn(".antiques-actions", styles)
+        self.assertIn(".antiques-price-evidence", styles)
+        self.assertIn(".antiques-price-search-controls", styles)
+
+        launcher = (ROOT / "veridex.ps1").read_text(encoding="utf-8")
+        server = (ROOT / "veridex_server.py").read_text(encoding="utf-8")
+        self.assertIn('"tailscale" { Enable-TailscaleAccess }', launcher)
+        self.assertIn("veridex_remote_session", server)
+        self.assertIn("SameSite=Strict", server)
+
     def test_composer_send_control_becomes_a_server_side_stop_control(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -32,6 +62,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('sendMessage("confirm send", { attachments: [] })', script)
         self.assertIn(".email-card", styles)
         self.assertIn(".email-review", styles)
+
+    def test_connected_accounts_exposes_workspace_scoped_ebay_oauth(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="ebay-account-title"', html)
+        self.assertIn('id="ebay-environment"', html)
+        self.assertIn('id="ebay-connect"', html)
+        self.assertIn("function connectEbay", script)
+        self.assertIn('api("/api/integrations/ebay/connect"', script)
+        self.assertIn(".account-monogram.ebay", styles)
 
     def test_chat_and_nancy_email_drag_drop_controls_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")

@@ -16,6 +16,7 @@ const state = {
   rooms: [],
   contacts: [],
   contactSync: { completed: false },
+  connectedAccounts: null,
   artImages: [],
   artImagesLoading: false,
   artImagesLoaded: false,
@@ -46,6 +47,7 @@ const state = {
   attachingRoomFileId: "",
   deliveryAlerts: [],
   governance: {},
+  antiques: { shopping_mode: { active: false }, settings: {}, sources: [], cases: [], external_uploads: [] },
   administration: { versions: {}, proposals: [], audit: [], rooms: [] },
   adminTokens: {},
   selectedFiles: new Set(),
@@ -98,6 +100,10 @@ const state = {
     pollTimer: null,
     result: null,
   },
+  priceSearch: {
+    activeJob: null,
+    pollTimer: null,
+  },
 };
 
 const el = (id) => document.getElementById(id);
@@ -142,6 +148,7 @@ function applyState(value, preserveRoute = false) {
   state.rooms = value.rooms || state.rooms;
   state.runtime = value.runtime || state.runtime;
   state.governance = value.governance || state.governance;
+  state.antiques = value.antiques || state.antiques;
   state.administration = value.administration || state.administration;
   if (sessionChanged) {
     state.selectedFiles.clear();
@@ -151,8 +158,12 @@ function applyState(value, preserveRoute = false) {
     state.museum.regions = {};
     state.museum.cropFileId = "";
     state.museum.result = null;
+    window.clearTimeout(state.priceSearch.pollTimer);
+    state.priceSearch.activeJob = null;
+    state.priceSearch.pollTimer = null;
   }
   if (workspaceChanged) {
+    state.connectedAccounts = null;
     state.artImages = [];
     state.artImagesLoaded = false;
     state.selectedArtImageId = "";
@@ -401,7 +412,8 @@ function closeEmailComposer({ clearAttachments = true } = {}) {
 }
 
 async function loadContacts() {
-  const result = await api("/api/contacts");
+  const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+  const result = await api(`/api/contacts?${query}`);
   state.contacts = result.contacts || [];
   state.contactSync = result.sync || state.contactSync;
   renderContacts();
@@ -443,7 +455,7 @@ async function deleteContact(contact) {
   try {
     const result = await api("/api/contacts/delete", {
       method: "POST",
-      body: JSON.stringify({ contact_id: contact.contact_id }),
+      body: accountRequestBody({ contact_id: contact.contact_id }),
     });
     state.contacts = result.contacts || state.contacts.filter((row) => row.contact_id !== contact.contact_id);
     if (el("contact-id").value === contact.contact_id) hideContactForm();
@@ -515,7 +527,7 @@ async function syncContacts() {
   el("contact-sync").disabled = true;
   el("contact-sync-status").textContent = "Nancy is reading the 500 most recent Sent messages...";
   try {
-    const result = await api("/api/contacts/sync", { method: "POST", body: "{}" });
+    const result = await api("/api/contacts/sync", { method: "POST", body: accountRequestBody() });
     state.contacts = result.contacts || [];
     state.contactSync = result.sync || { completed: true };
     el("contact-sync-status").textContent = `Scanned ${result.messages_scanned || 0} messages and added ${result.contact_events_added || 0} new contact records.`;
@@ -886,6 +898,63 @@ function renderNavigation() {
   )));
 }
 
+function renderAntiquesMessage(row, article) {
+  const antiques = row.antiques || {};
+  if (!String(row.message_kind || "").startsWith("antiques_")) return;
+  article.classList.add("antiques-message");
+  if (antiques.status === "confirmation_required") {
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "primary-action";
+    confirm.textContent = "Confirm Google Lens upload";
+    confirm.addEventListener("click", () => sendMessage("confirm Google Lens research", { attachments: [] }));
+    article.append(confirm);
+    return;
+  }
+  const sources = Array.isArray(antiques.sources) ? antiques.sources : [];
+  const errors = Array.isArray(antiques.source_errors) ? antiques.source_errors : [];
+  if (!sources.length && !errors.length) return;
+  const details = document.createElement("details");
+  details.className = "antiques-evidence";
+  const summary = document.createElement("summary");
+  summary.textContent = `${sources.length} research source${sources.length === 1 ? "" : "s"} · ${errors.length} unavailable`;
+  const list = document.createElement("div");
+  sources.forEach((source) => {
+    const line = document.createElement("div");
+    const label = document.createElement("strong");
+    const sourceStatus = source.status ? ` · ${String(source.status).replaceAll("_", " ")}` : "";
+    label.textContent = `${String(source.source_id || source.provider || "source").replaceAll("_", " ")}${sourceStatus}`;
+    line.append(label);
+    const urls = [source.page_url, ...(source.links || []).map((link) => link.url)].filter(Boolean);
+    [...new Set(urls)].slice(0, 4).forEach((url, index) => {
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = index ? `Source ${index + 1}` : "Open evidence";
+      line.append(link);
+    });
+    list.append(line);
+  });
+  errors.forEach((error) => {
+    const line = document.createElement("div");
+    const label = document.createElement("span");
+    label.textContent = `${String(error.source_id || "source").replaceAll("_", " ")}: ${error.error || "Unavailable"}`;
+    line.append(label);
+    if (error.manual_url) {
+      const link = document.createElement("a");
+      link.href = error.manual_url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Open manually";
+      line.append(link);
+    }
+    list.append(line);
+  });
+  details.append(summary, list);
+  article.append(details);
+}
+
 function renderMessages() {
   const container = el("messages");
   container.replaceChildren();
@@ -907,6 +976,7 @@ function renderMessages() {
       body.textContent = row.text || "";
       article.append(role, body);
       renderGmailMessage(row, article, body);
+      renderAntiquesMessage(row, article);
       if (Array.isArray(row.attachments) && row.attachments.length) {
         const attachments = document.createElement("div");
         attachments.className = "message-attachments";
@@ -2419,13 +2489,24 @@ function renderMuseumResult() {
   appendMuseumList(summary, "Limitations", report.limitations);
   appendMuseumList(summary, "Helpful next photographs", report.recommended_next_photos);
   container.append(summary);
-  if (report.signature?.transcription_candidates?.length) {
+  if (report.signature && (report.signature.transcription_candidates?.length || report.signature.ocr_status !== "not_requested")) {
     const signature = document.createElement("section");
     signature.className = "museum-result-card";
     const heading = document.createElement("h4");
     heading.textContent = "Signature transcription candidates";
     signature.append(heading);
-    appendMuseumList(signature, "Possible readings", report.signature.transcription_candidates);
+    const ocrStatus = document.createElement("p");
+    ocrStatus.textContent = `Optional OCR: ${String(report.signature.ocr_status || "not requested").replaceAll("_", " ")}`;
+    signature.append(ocrStatus);
+    const readings = (report.signature.transcription_candidates || []).map((candidate) => {
+      if (!candidate || typeof candidate !== "object") return String(candidate || "");
+      const provenance = [candidate.kind, candidate.source, candidate.confidence && `${candidate.confidence} confidence`]
+        .filter(Boolean).join(" · ");
+      return provenance ? `${candidate.text} — ${provenance}` : String(candidate.text || "");
+    }).filter(Boolean);
+    appendMuseumList(signature, "Possible readings", readings);
+    appendMuseumList(signature, "Search suggestions", report.signature.query_suggestions);
+    appendMuseumList(signature, "Reading limitations", report.signature.limitations);
     container.append(signature);
   }
   if (report.evidence_artifacts?.length) {
@@ -2638,6 +2719,280 @@ function renderArtTools() {
   if (el("art-studio-dialog").open) renderArtStudio();
 }
 
+function renderAntiquesTools() {
+  const active = state.session?.active_room === "antiques_department";
+  const actions = el("antiques-actions");
+  actions.hidden = !active;
+  const shopping = Boolean(state.antiques?.shopping_mode?.active);
+  el("antiques-mode-label").textContent = shopping
+    ? "Shopping mode active · Google Lens consent continues until ended"
+    : "Google Lens photo sharing requires confirmation for each run";
+  el("antiques-shopping-toggle").textContent = shopping ? "End shopping mode" : "Start shopping mode";
+  ["antiques-camera", "antiques-quick", "antiques-deep", "antiques-cases", "antiques-shopping-toggle"].forEach((id) => {
+    el(id).disabled = state.sending || state.uploading || state.switchingRoom;
+  });
+  if (!active && el("antiques-cases-dialog").open) el("antiques-cases-dialog").close();
+}
+
+function priceObservationText(row) {
+  const tier = row.match_tier === "same_item_candidate" ? "Same-item candidate" : "Same model / edition";
+  const amount = row.amount == null ? "Price unavailable" : `${row.currency || "USD"} ${row.amount}`;
+  const basis = String(row.price_basis || row.sale_status || "evidence").replaceAll("_", " ");
+  const date = row.sold_at ? String(row.sold_at).split("T", 1)[0] : "date unavailable";
+  const venue = row.venue || row.platform || row.source_id || "source";
+  const support = row.evidence_status === "supported" ? "source supported" : "limited source evidence";
+  return `${tier} · ${amount} · ${basis} · ${date} · ${venue} · ${support}`;
+}
+
+function appendPriceEvidenceGroup(card, headingText, rows) {
+  if (!rows.length) return;
+  const section = document.createElement("section");
+  section.className = "antiques-price-evidence";
+  const heading = document.createElement("h4");
+  heading.textContent = headingText;
+  const list = document.createElement("ul");
+  rows.slice(0, 8).forEach((row) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = priceObservationText(row);
+    item.append(label);
+    if (row.source_url) {
+      const link = document.createElement("a");
+      link.href = row.source_url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Open source";
+      item.append(link);
+    }
+    list.append(item);
+  });
+  section.append(heading, list);
+  card.append(section);
+}
+
+async function refreshAntiquesCases() {
+  const query = new URLSearchParams({
+    workspace_id: state.workspace.workspace_id,
+    session_id: state.session.session_id,
+  });
+  state.antiques = await api(`/api/antiques?${query}`);
+}
+
+async function pollPriceSearchJob(jobId) {
+  window.clearTimeout(state.priceSearch.pollTimer);
+  try {
+    const job = await api(`/api/antiques/price-search/jobs/${encodeURIComponent(jobId)}`);
+    state.priceSearch.activeJob = job;
+    if (["completed", "failed", "canceled"].includes(job.status)) {
+      if (job.status === "completed") {
+        await refreshAntiquesCases();
+        const result = job.result || {};
+        if (result.status === "similar_approval_required") {
+          showToast("No exact match found. You can now choose Search similar.");
+        } else if (result.status === "timed_out") {
+          showToast("Price search reached its time budget; partial results were not saved.");
+        } else {
+          showToast(`Price search complete: ${(result.exact_results || []).length} exact, ${(result.similar_results || []).length} similar.`);
+        }
+      }
+      renderAntiquesCases();
+      return;
+    }
+    renderAntiquesCases();
+    state.priceSearch.pollTimer = window.setTimeout(() => pollPriceSearchJob(jobId), 900);
+  } catch (error) {
+    showError(error.message || String(error));
+  }
+}
+
+async function startPriceSearch(caseId, scope = "exact", preset = "standard") {
+  try {
+    const job = await api("/api/antiques/price-search", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        case_id: caseId,
+        scope,
+        preset,
+      }),
+    });
+    state.priceSearch.activeJob = job;
+    renderAntiquesCases();
+    pollPriceSearchJob(job.job_id);
+  } catch (error) {
+    showError(error.message || String(error));
+  }
+}
+
+function appendPriceSearchControls(card, item) {
+  const activeJob = state.priceSearch.activeJob;
+  const busy = activeJob && !["completed", "failed", "canceled"].includes(activeJob.status);
+  const active = busy && activeJob.item_id === item.case_id;
+  const controls = document.createElement("div");
+  controls.className = "antiques-price-search-controls";
+  const scope = document.createElement("select");
+  scope.setAttribute("aria-label", "Price search scope");
+  [["exact", "Exact only"], ["all_likeness", "All likeness (exact first)"]].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    scope.append(option);
+  });
+  const preset = document.createElement("select");
+  preset.setAttribute("aria-label", "Price search depth");
+  [["fast", "Fast"], ["standard", "Standard"], ["extended", "Extended"]].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === "standard";
+    preset.append(option);
+  });
+  const run = document.createElement("button");
+  run.type = "button";
+  run.textContent = "Find prices";
+  run.disabled = Boolean(busy);
+  run.addEventListener("click", () => startPriceSearch(item.case_id, scope.value, preset.value));
+  controls.append(scope, preset, run);
+  if (active) {
+    const progress = document.createElement("span");
+    progress.textContent = `${activeJob.progress || 0}% · ${activeJob.message || activeJob.status}`;
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", async () => {
+      state.priceSearch.activeJob = await api(`/api/antiques/price-search/jobs/${encodeURIComponent(activeJob.job_id)}/cancel`, {
+        method: "POST",
+        body: "{}",
+      });
+      renderAntiquesCases();
+    });
+    controls.append(progress, cancel);
+  } else if (activeJob && activeJob.item_id === item.case_id && activeJob.status === "failed") {
+    const failure = document.createElement("span");
+    failure.className = "error";
+    failure.textContent = activeJob.error || activeJob.message || "Price search failed";
+    controls.append(failure);
+  }
+  card.append(controls);
+}
+
+function renderAntiquesCases() {
+  const container = el("antiques-cases-content");
+  container.replaceChildren();
+  const cases = state.antiques?.cases || [];
+  const settings = state.antiques?.settings || {};
+  el("antiques-fee").value = settings.fee_percent ?? 15;
+  el("antiques-shipping").value = settings.packing_shipping_allowance ?? 15;
+  el("antiques-reserve").value = settings.uncertainty_reserve_percent ?? 10;
+  el("antiques-profit").value = settings.minimum_target_profit ?? 30;
+  el("antiques-cap").value = settings.quick_buy_cap_percent ?? 25;
+  if (!cases.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No researched items yet. Attach photos and ask Leo for quick research.";
+    container.append(empty);
+    return;
+  }
+  cases.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "antiques-case-card";
+    const heading = document.createElement("div");
+    const title = document.createElement("strong");
+    const meta = document.createElement("small");
+    const report = item.latest_report || {};
+    const valuation = report.valuation || {};
+    const buying = report.buying || {};
+    const priceEvaluation = report.price_evaluation || {};
+    const priceSearch = report.price_search || {};
+    const expected = priceEvaluation.expected_resale || {};
+    const evidenceSummary = priceEvaluation.evidence_summary || {};
+    const exactResults = Array.isArray(priceEvaluation.exact_results) ? priceEvaluation.exact_results : [];
+    title.textContent = item.title || "Unidentified item";
+    meta.textContent = `${item.category || "unknown"} · ${report.confidence || "low"} confidence · ${(item.revisions || []).length} report(s)`;
+    heading.append(title, meta);
+    const facts = document.createElement("p");
+    const rangeLow = Object.hasOwn(expected, "low") ? expected.low : valuation.conservative_low;
+    const rangeHigh = Object.hasOwn(expected, "high") ? expected.high : valuation.likely_high;
+    const rangeCurrency = expected.currency || valuation.currency || "USD";
+    const range = rangeLow == null
+      ? "Expected resale not established"
+      : `Expected resale ${rangeCurrency} ${rangeLow}–${rangeHigh ?? "?"}`;
+    const maxBuy = buying.recommended_max_buy == null ? "Max buy withheld" : `Max buy ${buying.currency || "USD"} ${buying.recommended_max_buy}`;
+    facts.textContent = `${range} · ${maxBuy}`;
+    const evidence = document.createElement("p");
+    evidence.className = "antiques-price-summary";
+    evidence.textContent = `${evidenceSummary.exact || 0} exact · ${evidenceSummary.exact_sold || 0} exact sold · ${evidenceSummary.exact_active_asking || 0} exact active asking`;
+    const notes = document.createElement("p");
+    notes.textContent = [report.artist_or_maker, report.medium_or_material, report.frame?.assessment].filter(Boolean).join(" · ") || "Open the related chat entry for full evidence.";
+    const deepen = document.createElement("button");
+    deepen.type = "button";
+    deepen.textContent = "Deepen research";
+    deepen.addEventListener("click", async () => {
+      const available = new Set(state.files.map((file) => file.file_id));
+      state.selectedFiles = new Set((item.attachment_ids || []).filter((fileId) => available.has(fileId)));
+      if (!state.selectedFiles.size) {
+        showError("Reattach this item’s photos in the current session before deep research.");
+        return;
+      }
+      el("antiques-cases-dialog").close();
+      await startAntiquesResearch("deep", item.case_id);
+    });
+    card.append(heading, facts, evidence, notes);
+    appendPriceEvidenceGroup(card, "Exact sold evidence", exactResults.filter((row) => row.sale_status === "sold"));
+    appendPriceEvidenceGroup(card, "Exact asking and estimate context", exactResults.filter((row) => row.sale_status !== "sold"));
+    if (priceSearch.scope === "all_likeness") {
+      const similarResults = Array.isArray(priceEvaluation.similar_candidates) ? priceEvaluation.similar_candidates : [];
+      appendPriceEvidenceGroup(card, "Similar results (not used for exact valuation)", similarResults);
+    }
+    if (!exactResults.length) {
+      const prompt = document.createElement("p");
+      prompt.className = "antiques-similar-prompt";
+      prompt.textContent = priceEvaluation.similar_search_prompt || "No exact match found. Search similar items?";
+      card.append(prompt);
+      const similar = document.createElement("button");
+      similar.type = "button";
+      similar.textContent = "Search similar (exact first)";
+      similar.disabled = Boolean(state.priceSearch.activeJob && !["completed", "failed", "canceled"].includes(state.priceSearch.activeJob.status));
+      similar.addEventListener("click", () => startPriceSearch(item.case_id, "all_likeness", "standard"));
+      card.append(similar);
+    }
+    appendPriceSearchControls(card, item);
+    card.append(deepen);
+    container.append(card);
+  });
+}
+
+async function toggleAntiquesShoppingMode() {
+  const active = Boolean(state.antiques?.shopping_mode?.active);
+  try {
+    const result = await api(`/api/antiques/shopping/${active ? "end" : "start"}`, {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id }),
+    });
+    state.antiques.shopping_mode = result.shopping_mode;
+    showToast(active ? "Shopping mode ended" : "Shopping mode active for this Antiques session");
+    render();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+async function startAntiquesResearch(mode, caseId = "") {
+  const photos = state.files.filter((file) => state.selectedFiles.has(file.file_id) && String(file.content_type || "").startsWith("image/"));
+  if (!photos.length) {
+    showError("Take or attach at least one item photo, then select it for Leo.");
+    return;
+  }
+  let confirmExternal = false;
+  if (!state.antiques?.shopping_mode?.active) {
+    confirmExternal = window.confirm(`Send sanitized copies of ${photos.length} selected photo${photos.length === 1 ? "" : "s"} to Google Lens for this research run?`);
+    if (!confirmExternal) return;
+  }
+  await sendMessage(`Leo, ${mode} research this thrift-store item. Identify signatures or marks, medium or material, condition, frame value, sold comparables, and a conservative maximum buy.`, {
+    attachments: photos,
+    confirmExternal,
+    antiquesCaseId: caseId,
+  });
+}
+
 function renderRoomFileTools() {
   const room = currentRoom();
   const hasFileLibrary = Boolean(room && !["lobby", "art_department"].includes(room.id));
@@ -2848,7 +3203,7 @@ function renderRoute() {
     el("route-notice").textContent = "";
     return;
   }
-  const deterministic = ["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router"].includes(state.route.provider);
+  const deterministic = ["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router", "veridex_antiques_router"].includes(state.route.provider);
   el("route-model").textContent = deterministic
     ? `Veridex · deterministic ${state.route.task_type.replaceAll("_", " ")}`
     : `Codex CLI · ${state.route.model}`;
@@ -2909,7 +3264,130 @@ function render() {
   renderRoute();
 }
 
+function accountRequestBody(extra = {}) {
+  return JSON.stringify({
+    workspace_id: state.workspace?.workspace_id || "",
+    session_id: state.session?.session_id || "",
+    ...extra,
+  });
+}
+
+function renderConnectedAccounts() {
+  const value = state.connectedAccounts || {};
+  const instagram = value.instagram || {};
+  const gmail = value.gmail || {};
+  const ebay = value.ebay || {};
+  el("connected-accounts-workspace").textContent = `${state.workspace?.label || "This workspace"} · accounts assigned here only`;
+
+  const instagramState = el("instagram-connection-state");
+  instagramState.className = `account-state ${instagram.connected ? "connected" : instagram.assigned ? "attention" : ""}`;
+  instagramState.textContent = instagram.connected ? "Connected" : instagram.assigned ? "Needs attention" : "Not connected";
+  el("instagram-username").value = instagram.username || "";
+  el("instagram-active-account").hidden = !instagram.assigned;
+  el("instagram-active-account").textContent = instagram.connected
+    ? `Active for this workspace: @${instagram.username}`
+    : instagram.assigned ? `Assigned here: @${instagram.username} · sign-in not yet verified` : "";
+  el("instagram-disconnect").hidden = !instagram.assigned;
+
+  const gmailState = el("gmail-connection-state");
+  gmailState.className = `account-state ${gmail.connected ? "connected" : gmail.assigned ? "attention" : ""}`;
+  gmailState.textContent = gmail.connected ? "Connected" : gmail.assigned ? "Needs attention" : "Not connected";
+  el("gmail-active-account").hidden = !gmail.assigned;
+  el("gmail-active-account").textContent = gmail.connected
+    ? `Active for this workspace: ${gmail.account_email}`
+    : gmail.assigned ? `Assigned here: ${gmail.account_email || "Google account"} · authorization incomplete` : "";
+  if (gmail.oauth_error) el("connected-accounts-message").textContent = `Google connection failed: ${gmail.oauth_error}`;
+  el("gmail-disconnect").hidden = !gmail.assigned;
+
+  const ebayState = el("ebay-connection-state");
+  ebayState.className = `account-state ${ebay.connected ? "connected" : ebay.assigned ? "attention" : ""}`;
+  ebayState.textContent = ebay.connected ? "Connected" : ebay.assigned ? "Needs attention" : "Not connected";
+  el("ebay-username").value = ebay.username || "";
+  el("ebay-environment").value = ebay.environment || "sandbox";
+  el("ebay-marketplace").value = ebay.marketplace_id || "EBAY_US";
+  el("ebay-active-account").hidden = !ebay.assigned;
+  el("ebay-active-account").textContent = ebay.connected
+    ? `Active for this workspace: ${ebay.username} · ${ebay.environment} · ${ebay.marketplace_id}`
+    : ebay.assigned ? `Assigned here: ${ebay.username || "eBay seller"} · authorization incomplete` : "";
+  if (ebay.oauth_error) el("connected-accounts-message").textContent = `eBay connection failed: ${ebay.oauth_error}`;
+  el("ebay-disconnect").hidden = !ebay.assigned;
+  el("open-connected-accounts").classList.toggle("has-connection", Boolean(instagram.connected || gmail.connected || ebay.connected));
+}
+
+async function refreshConnectedAccounts(message = "") {
+  if (!state.workspace || !state.session) return;
+  const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+  state.connectedAccounts = await api(`/api/integrations?${query}`);
+  renderConnectedAccounts();
+  el("connected-accounts-message").textContent = message;
+}
+
+async function openConnectedAccounts() {
+  el("connected-accounts-message").textContent = "Checking this workspace’s account assignments…";
+  el("connected-accounts-dialog").showModal();
+  try { await refreshConnectedAccounts(); }
+  catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+}
+
+async function connectInstagram(event) {
+  event.preventDefault();
+  const button = event.submitter || event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  el("connected-accounts-message").textContent = "Opening the dedicated Instagram session for this workspace…";
+  try {
+    const result = await api("/api/integrations/instagram/connect", { method: "POST", body: accountRequestBody({ username: el("instagram-username").value.trim(), password: el("instagram-password").value }) });
+    el("instagram-password").value = "";
+    await refreshConnectedAccounts(result.instagram?.requires_interaction ? "Complete Instagram’s security prompt in the opened Chrome window, then refresh status." : "Instagram is connected to this workspace.");
+  } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+  finally { button.disabled = false; }
+}
+
+async function integrationAction(path, message) {
+  el("connected-accounts-message").textContent = "Working…";
+  try {
+    await api(path, { method: "POST", body: accountRequestBody() });
+    await refreshConnectedAccounts(message);
+  } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+}
+
+async function connectGmail() {
+  el("connected-accounts-message").textContent = "Opening Google authorization in your browser…";
+  try {
+    await api("/api/integrations/gmail/connect", { method: "POST", body: accountRequestBody({ account_email: el("gmail-account-email").value.trim() }) });
+    const email = el("gmail-account-email").value.trim();
+    el("connected-accounts-message").textContent = `Complete Google authorization in the opened browser, then choose Refresh status.${email ? ` If Google shows 403 access_denied, add ${email} under Google Auth Platform → Audience → Test users.` : ""}`;
+  } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+}
+
+async function connectEbay() {
+  el("connected-accounts-message").textContent = "Opening eBay authorization in your browser…";
+  try {
+    await api("/api/integrations/ebay/connect", {
+      method: "POST",
+      body: accountRequestBody({
+        username: el("ebay-username").value.trim(),
+        environment: el("ebay-environment").value,
+        marketplace_id: el("ebay-marketplace").value.trim() || "EBAY_US",
+      }),
+    });
+    el("connected-accounts-message").textContent = "Complete eBay authorization in the opened browser, then choose Refresh status.";
+  } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+}
+
 async function loadState(workspaceId = "", sessionId = "", preserveRoute = false) {
+  const leavingActiveShoppingSession = Boolean(
+    state.antiques?.shopping_mode?.active
+    && state.session?.active_room === "antiques_department"
+    && ((sessionId && sessionId !== state.session.session_id) || (workspaceId && workspaceId !== state.workspace?.workspace_id))
+  );
+  if (leavingActiveShoppingSession) {
+    try {
+      await api("/api/antiques/shopping/end", {
+        method: "POST",
+        body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id }),
+      });
+    } catch { /* Expiry and room-exit enforcement still protect the consent scope. */ }
+  }
   const query = new URLSearchParams();
   if (workspaceId) query.set("workspace_id", workspaceId);
   if (sessionId) query.set("session_id", sessionId);
@@ -2926,7 +3404,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
 }
 
 function routeNotice(next) {
-  if (["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router"].includes(next.provider)) return "Handled deterministically by Veridex governance; no model call was needed.";
+  if (["veridex_router", "veridex_governance", "veridex_admin", "veridex_google_router", "veridex_gmail_router", "veridex_antiques_router"].includes(next.provider)) return "Handled through Veridex's governed room workflow.";
   if (!state.route) return `Model selected: ${next.model} · ${next.reasoning_effort} reasoning.`;
   if (state.route.model !== next.model || state.route.reasoning_effort !== next.reasoning_effort) {
     return `Model changed: ${state.route.model} → ${next.model} · ${next.reasoning_effort} reasoning.`;
@@ -2937,7 +3415,7 @@ function routeNotice(next) {
   return `Continuing with ${next.model} · ${next.reasoning_effort} reasoning.`;
 }
 
-async function sendMessage(text, { attachments, emailDraft } = {}) {
+async function sendMessage(text, { attachments, emailDraft, confirmExternal = false, antiquesCaseId = "", valuationOverrides = {} } = {}) {
   if (state.listening && state.recognition) {
     state.dictationBase = "";
     state.dictationFinal = "";
@@ -2968,6 +3446,9 @@ async function sendMessage(text, { attachments, emailDraft } = {}) {
         request_id: state.activeRequestId,
         attachment_ids: selectedAttachments.map((file) => file.file_id),
         email_draft: emailDraft,
+        confirm_external: confirmExternal,
+        antiques_case_id: antiquesCaseId,
+        valuation_overrides: valuationOverrides,
       }),
     });
     const nextRoute = {
@@ -3160,6 +3641,32 @@ el("art-gallery-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeArtGallery();
 });
+el("antiques-camera").addEventListener("click", () => el("antiques-camera-input").click());
+el("antiques-camera-input").addEventListener("change", (event) => uploadFiles(event.target.files, "antiques"));
+el("antiques-quick").addEventListener("click", () => startAntiquesResearch("quick"));
+el("antiques-deep").addEventListener("click", () => startAntiquesResearch("deep"));
+el("antiques-shopping-toggle").addEventListener("click", toggleAntiquesShoppingMode);
+el("antiques-cases").addEventListener("click", () => { renderAntiquesCases(); el("antiques-cases-dialog").showModal(); });
+el("antiques-cases-close").addEventListener("click", () => el("antiques-cases-dialog").close());
+el("antiques-cases-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("antiques-cases-dialog").close(); });
+el("antiques-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const result = await api("/api/antiques/settings", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      settings: {
+        fee_percent: Number(el("antiques-fee").value),
+        packing_shipping_allowance: Number(el("antiques-shipping").value),
+        uncertainty_reserve_percent: Number(el("antiques-reserve").value),
+        minimum_target_profit: Number(el("antiques-profit").value),
+        quick_buy_cap_percent: Number(el("antiques-cap").value),
+      },
+    }) });
+    state.antiques.settings = result.settings;
+    showToast("Leo’s buying defaults were saved");
+  } catch (error) { showError(error.message || String(error)); }
+});
 el("open-room-files").addEventListener("click", openRoomFileLibrary);
 el("room-file-close").addEventListener("click", closeRoomFileLibrary);
 el("room-file-dialog").addEventListener("cancel", (event) => {
@@ -3206,6 +3713,8 @@ el("contact-form").addEventListener("submit", async (event) => {
     const result = await api("/api/contacts/save", {
       method: "POST",
       body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
         contact_id: el("contact-id").value,
         name: el("contact-name").value.trim(),
         email: el("contact-email").value.trim(),
@@ -3564,6 +4073,19 @@ el("new-workspace").addEventListener("click", async () => {
     renderRoute();
   } catch (error) { showError(error.message || String(error)); }
 });
+
+el("open-connected-accounts").addEventListener("click", openConnectedAccounts);
+el("connected-accounts-close").addEventListener("click", () => el("connected-accounts-dialog").close());
+el("connected-accounts-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("connected-accounts-dialog").close(); });
+el("instagram-connect-form").addEventListener("submit", connectInstagram);
+el("instagram-verify").addEventListener("click", () => integrationAction("/api/integrations/instagram/verify", "Instagram status refreshed."));
+el("instagram-disconnect").addEventListener("click", () => integrationAction("/api/integrations/instagram/disconnect", "Instagram was unassigned. Its local browser profile was preserved."));
+el("gmail-connect").addEventListener("click", connectGmail);
+el("gmail-refresh").addEventListener("click", () => refreshConnectedAccounts("Gmail status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
+el("gmail-disconnect").addEventListener("click", () => integrationAction("/api/integrations/gmail/disconnect", "Gmail was unassigned from this workspace."));
+el("ebay-connect").addEventListener("click", connectEbay);
+el("ebay-refresh").addEventListener("click", () => refreshConnectedAccounts("eBay status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
+el("ebay-disconnect").addEventListener("click", () => integrationAction("/api/integrations/ebay/disconnect", "eBay was disconnected from this workspace."));
 
 el("new-session").addEventListener("click", async () => {
   const title = window.prompt("Session name", "New session")?.trim();

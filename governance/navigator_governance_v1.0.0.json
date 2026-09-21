@@ -31,6 +31,7 @@
     {"id": "USER-CANCEL-AUTHORITY", "text": "The user may stop an active chat request. Veridex must terminate cancellable browser and model work, save a truthful stopped status, and must not claim the unfinished task completed."},
     {"id": "PERSISTENCE-TRUTH", "text": "The system must not imply durable memory, canon mutation, or product-memory persistence without a verified governed path."},
     {"id": "NO-UNRELATED-DESTRUCTION", "text": "Local computer authority is limited to the user's requested scope and does not authorize unrelated destructive changes."},
+    {"id": "MARKETPLACE-MUTATION-CONFIRMATION", "text": "Publishing, revising, or withdrawing marketplace listings; sending offers; marking fulfillment; issuing refunds; purchases; and bids require the app's explicit confirmation path and matching execution evidence."},
     {"id": "FREE-ART-ROUTE", "text": "Art Studio may use the existing ChatGPT-authenticated Codex built-in image route without enabling API billing, configured Cloudflare Workers AI models within a Workers Free account, or explicitly allowlisted Pollinations free models; it must not select paid-only models or enable billing."}
   ],
   "workspace_gate_defaults": {
@@ -108,6 +109,13 @@
       "status": "active",
       "applicability": "implemented_for_active_chat_requests",
       "definition": "A stop request targets one active request ID, terminates cancellable work, and records cancellation without a false completion claim."
+    },
+    {
+      "id": "EBAY-MARKETPLACE-MUTATION-GATE",
+      "version": "standalone-1.0.0",
+      "status": "active",
+      "applicability": "implemented_for_ebay_seller_tools",
+      "definition": "eBay listing publication or withdrawal, shipment fulfillment, refunds, and seller-initiated buyer offers require confirm=true; previews and read-only account data do not authorize a mutation."
     },
     {
       "id": "GATE-CONFLICT",

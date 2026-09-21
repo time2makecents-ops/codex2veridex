@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("start", "stop", "restart", "status", "google-profile", "google-status", "gmail-connect", "gmail-status")]
+  [ValidateSet("start", "stop", "restart", "status", "tailscale", "google-profile", "google-status", "instagram-profile", "instagram-login", "instagram-status", "facebook-profile", "facebook-login", "facebook-status", "gmail-connect", "gmail-status")]
   [string]$Action = "start",
   [switch]$NoBrowser,
   [switch]$FullAccess,
@@ -121,6 +121,25 @@ function Start-Veridex {
   if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
 }
 
+function Enable-TailscaleAccess {
+  $OpenBrowser = -not $NoBrowser
+  $NoBrowser = $true
+  Start-Veridex
+  $Tailscale = (Get-Command tailscale -ErrorAction Stop).Source
+  & $Tailscale serve --bg "http://127.0.0.1:$Port"
+  if ($LASTEXITCODE -ne 0) { throw "Tailscale Serve could not expose Veridex to your private tailnet." }
+  $Status = (& $Tailscale status --json | ConvertFrom-Json)
+  $DnsName = ([string]$Status.Self.DNSName).TrimEnd('.')
+  if (-not $DnsName) { throw "Tailscale did not report a private DNS name for this computer." }
+  $RemotePath = Join-Path $RepoRoot "data\system\remote_access.json"
+  if (-not (Test-Path -LiteralPath $RemotePath)) { throw "Veridex did not create its remote pairing token." }
+  $Remote = Get-Content -LiteralPath $RemotePath -Raw | ConvertFrom-Json
+  $PairUrl = "https://$DnsName/pair?token=$($Remote.pairing_token)"
+  Write-Host "Private phone access is ready at https://$DnsName/"
+  Write-Host "Open this one-time pairing URL on your phone: $PairUrl"
+  if ($OpenBrowser) { Start-Process $PairUrl }
+}
+
 switch ($Action) {
   "start" { Start-Veridex }
   "stop" { Stop-Veridex }
@@ -134,6 +153,7 @@ switch ($Action) {
     }
     else { Write-Host "Standalone Veridex is not running." }
   }
+  "tailscale" { Enable-TailscaleAccess }
   "google-profile" {
     $Node = (Get-Command node -ErrorAction Stop).Source
     $Bridge = Join-Path $RepoRoot "google_chrome_search.js"
@@ -144,6 +164,44 @@ switch ($Action) {
     $Node = (Get-Command node -ErrorAction Stop).Source
     $Bridge = Join-Path $RepoRoot "google_chrome_search.js"
     & $Node $Bridge status
+  }
+  "instagram-profile" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "instagram_chrome_bridge.js"
+    & $Node $Bridge setup
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host "A dedicated Instagram Chrome window is ready. Its session is kept locally outside Git."
+  }
+  "instagram-login" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "instagram_chrome_bridge.js"
+    & $Node $Bridge login
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+  "instagram-status" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "instagram_chrome_bridge.js"
+    & $Node $Bridge status
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+  "facebook-profile" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "facebook_chrome_bridge.js"
+    & $Node $Bridge setup
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host "A dedicated Facebook Chrome window is ready. Its session is kept locally outside Git."
+  }
+  "facebook-login" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "facebook_chrome_bridge.js"
+    & $Node $Bridge login
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  }
+  "facebook-status" {
+    $Node = (Get-Command node -ErrorAction Stop).Source
+    $Bridge = Join-Path $RepoRoot "facebook_chrome_bridge.js"
+    & $Node $Bridge status
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   }
   "gmail-connect" {
     $Python = (Get-Command python -ErrorAction Stop).Source

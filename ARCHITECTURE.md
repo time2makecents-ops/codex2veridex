@@ -100,6 +100,23 @@ plain-text versions, reopen them, verify readable text and PDF page bounds, and
 then register them as HR room artifacts. Suggested facts remain separate
 unconfirmed claims and block export until the user resolves them.
 
+The Museum's Antiques cases keep revisioned reports beneath the workspace boundary and
+append normalized price observations to a per-case NDJSON ledger. A deterministic
+normalizer accepts only bounded records tied to source evidence captured in the same
+research run, separates exact-item candidates from exact model/edition matches and
+similar comparables, and prevents asking prices or estimates from affecting expected
+resale. Case JSON stores the latest derived summary while the observation ledger remains
+append-only and deduplicated by source listing, source URL, or a stable fallback
+fingerprint.
+
+`price_search_controller.py` is the provider-neutral scope and execution boundary for
+saved-case price rechecks. It validates exact versus explicitly approved all-likeness
+scope, owns Fast/Standard/Extended budgets, runs exact before similar, deduplicates and
+orders candidates, and exposes cooperative background-job progress and cancellation.
+`veridex_server.py` supplies the browser-search and evidence-classification adapters;
+only completed, non-timeout source-bound observations are handed back to the Antiques
+case/ledger abstraction. Price-only rechecks do not transmit case photographs.
+
 Art Studio is a native Art Department subsystem. `art_studio.py` owns a small
 provider registry, free-model allowlists, asynchronous job state, deterministic
 finishing operations, and versioned project JSON. Cloudflare Workers AI is the
@@ -166,6 +183,46 @@ Chrome bridge records bounded result text, links, and up to three opened-source
 records with `completed`, `limited`, or `failed` status. Opened page text has
 higher evidentiary weight than snippets; unavailable pages do not erase useful
 indexed snippets.
+
+### Instagram browser bridge
+
+`instagram_chrome_bridge.js` uses the same loopback-only CDP boundary with a
+different ignored Chrome profile and debugging port. Its Python wrapper is an
+importable program interface for status checks, bounded profile reads,
+confirmation-gated follows, visible message composition, and explicit sends.
+`.env.local` supplies credentials
+without placing them in command arguments or repository files. Instagram
+security and 2FA prompts remain visible for the user to complete. The
+`office.instagram_message_send` tool does not invoke the send action unless
+`confirm=true`; drafting and sending are separate bridge operations.
+
+### Facebook browser bridge
+
+`facebook_chrome_bridge.js` owns a separate repository-local Chrome profile and
+loopback-only debugging port. It reads credentials from ignored `local.env` or
+`.env.local` without putting them in command arguments or source. Its Python
+wrapper exposes status, bounded profile inspection, visible message composition,
+and confirmation-gated sends. Facebook security and two-factor prompts remain in
+the visible Chrome window for the user to complete. Drafting never sends, and
+`office.facebook_message_send` requires `confirm=true` before invoking the bridge's
+send action.
+
+### eBay seller boundary
+
+`ebay_gateway.py` uses eBay's official OAuth and Sell APIs. Each workspace has an
+independent encrypted token database beneath `integrations/` and a non-secret account
+assignment in `connected_accounts.json`. Client credentials remain in ignored local
+configuration; neither tokens nor secrets enter source, transcripts, tool responses,
+or command arguments.
+
+Status, inventory, offers, policies, orders, and transaction reads are non-mutating.
+Listing preview performs local validation only and accepts fixed-price Inventory API
+listings; auction creation is outside this integration. Publishing or withdrawing a listing,
+recording shipment fulfillment, issuing a refund, or sending a seller-initiated offer
+requires `confirm=true` at the gateway boundary. Successful mutation responses carry
+the matching eBay identifiers; partial listing creation stops and reports the last
+verified offer or listing boundary instead of claiming completion. Buyer purchases
+and bids are outside this integration.
 
 ## Active request cancellation
 

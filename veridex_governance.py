@@ -281,9 +281,16 @@ class GovernanceRegistry:
     @staticmethod
     def requires_file_artifact(request_text: str, task_type: str) -> bool:
         text = str(request_text or "")
-        if str(task_type or "") == "media":
+        normalized_task_type = str(task_type or "")
+        if normalized_task_type == "media":
             return bool(MEDIA_CREATION_REQUEST.search(text) or (MEDIA_FILE_REFERENCE.search(text) and MEDIA_TRANSFORM_INTENT.search(text)))
-        if str(task_type or "") not in {"document", "file_creation"}:
+        if normalized_task_type not in {
+            "document",
+            "file_creation",
+            "resume_generation",
+            "search_synthesis",
+            "search_deep",
+        }:
             return False
         return bool(DOCUMENT_CREATION_REQUEST.search(text))
 

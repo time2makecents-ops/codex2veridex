@@ -14,6 +14,10 @@ class VeridexRoomTests(unittest.TestCase):
         self.assertEqual(resolve_room("Visual Design")["title"], "Visual Design")
         self.assertEqual(resolve_room("Museum")["id"], "antiques_department")
         self.assertEqual(resolve_room("Marketing & Advertising")["id"], "marketing_room")
+        antiques = resolve_room("antiques")
+        self.assertEqual(antiques["id"], "antiques_department")
+        self.assertEqual(antiques["default_persona"], "Leo")
+        self.assertIn("inventory and provenance tracking", antiques["capabilities"])
 
     def test_only_explicit_navigation_routes_to_room_change(self) -> None:
         routed = route_room_request("take me to art room")

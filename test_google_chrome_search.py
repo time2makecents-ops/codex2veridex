@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import google_chrome_search
@@ -113,11 +115,72 @@ class GoogleChromeSearchTests(unittest.TestCase):
         }
         run.return_value = subprocess.CompletedProcess([], 0, json.dumps(payload), "")
 
-        result = google_chrome_search.search_google("search Google for Stella Jones Eugene Oregon show")
+        result = google_chrome_search.search_google("search Google for Stella Jones Eugene Oregon show", timeout=17)
 
         self.assertEqual(result["provider"], "google_chrome_profile")
         self.assertEqual(run.call_args.args[0][-2:], ["search", "Stella Jones Eugene Oregon show"])
         self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 17)
+
+    @patch("google_chrome_search.subprocess.run")
+    @patch("google_chrome_search.subprocess.Popen")
+    @patch("google_chrome_search.shutil.which", return_value=r"C:\Program Files\nodejs\node.exe")
+    def test_cancel_callback_exception_terminates_bridge_and_runs_cleanup(self, _which, popen, run) -> None:
+        class Process:
+            returncode = None
+            stdout = None
+            stderr = None
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        class Deadline:
+            def is_set(self):
+                raise RuntimeError("deadline reached")
+
+        process = Process()
+        popen.return_value = process
+        with self.assertRaisesRegex(RuntimeError, "deadline reached"):
+            google_chrome_search.search_google("test query", cancel_event=Deadline(), timeout=9)
+        self.assertTrue(process.terminated)
+        self.assertIsNot(popen.call_args.kwargs["stdout"], subprocess.PIPE)
+        self.assertIsNot(popen.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertTrue(any(call.args[0][-1] == "cleanup" for call in run.call_args_list))
+
+    @patch("google_chrome_search.subprocess.run")
+    @patch("google_chrome_search.shutil.which", return_value=r"C:\Program Files\nodejs\node.exe")
+    def test_lens_and_ebay_actions_use_the_dedicated_bridge(self, _which, run) -> None:
+        run.return_value = subprocess.CompletedProcess([], 0, json.dumps({
+            "ok": True,
+            "provider": "test",
+            "links": [{"title": "Visual match", "url": "https://example.com/art"}],
+            "date_range": {"applied": True, "label": "Last 3 years"},
+        }), "")
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "item.jpg"
+            image.write_bytes(b"photo")
+            result = google_chrome_search.search_google_lens(image)
+            self.assertEqual(run.call_args.args[0][-2:], ["lens", str(image.resolve())])
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["results"][0]["rank"], 1)
+        google_chrome_search.search_ebay_product_research("studio pottery bowl")
+        self.assertEqual(run.call_args.args[0][-2:], ["ebay", "studio pottery bowl"])
+
+    @patch("google_chrome_search._run", return_value={"ok": True, "provider": "test"})
+    def test_ebay_research_rejects_unverified_default_date_range(self, _run) -> None:
+        with self.assertRaisesRegex(
+            google_chrome_search.GoogleChromeSearchError,
+            "maximum three-year sold-history range",
+        ):
+            google_chrome_search.search_ebay_product_research("studio pottery bowl")
 
 
 if __name__ == "__main__":

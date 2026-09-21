@@ -46,9 +46,13 @@ class MuseumVisualAnalysisTests(unittest.TestCase):
             kinds = {row["kind"] for row in result["artifacts"]}
             self.assertIn("normalized_overview", kinds)
             self.assertIn("adaptive_threshold", kinds)
+            self.assertIn("signature_otsu_threshold", kinds)
             self.assertIn("region_01", kinds)
             self.assertTrue(all(row["derived"] for row in result["artifacts"]))
             self.assertEqual(result["photos"][0]["role"], "signature")
+            self.assertIn(result["signature_evidence"]["ocr_status"], {"completed", "no_text", "unavailable", "failed"})
+            self.assertTrue(result["signature_evidence"]["evidence_artifacts"])
+            self.assertLessEqual(len(result["signature_evidence"]["query_suggestions"]), 5)
             self.assertTrue(result["recommended_next_photos"])
 
     def test_matching_accepts_perspective_variant_and_rejects_unrelated_image(self) -> None:

@@ -52,6 +52,10 @@
           <div>
             <div class="eyebrow" id="workspace-name">Workspace</div>
             <h1 id="session-title">New session</h1>
+            <button id="open-connected-accounts" class="connected-accounts-trigger" type="button">
+              <span class="connection-indicator" aria-hidden="true"></span>
+              Connected accounts
+            </button>
             <div class="room-control">
               <label for="room-selector">Room</label>
               <select id="room-selector" aria-label="Active room">
@@ -399,6 +403,55 @@
           </section>
         </div>
       </section>
+    </dialog>
+    <dialog id="connected-accounts-dialog" class="connected-accounts-dialog">
+      <div class="connected-accounts-shell">
+        <header>
+          <div><div class="eyebrow">Workspace security</div><h2>Connected accounts</h2><p id="connected-accounts-workspace">Accounts assigned to this workspace only.</p></div>
+          <button id="connected-accounts-close" type="button" aria-label="Close connected accounts">×</button>
+        </header>
+        <div class="account-isolation-note"><span aria-hidden="true">◎</span><p><strong>Strict workspace isolation</strong>This workspace will never use an account assigned to another workspace.</p></div>
+        <section class="connected-account-card" aria-labelledby="instagram-account-title">
+          <div class="connected-account-heading">
+            <div><span class="account-monogram instagram">IG</span><div><h3 id="instagram-account-title">Instagram</h3><p>Posts, follows, research, and messages</p></div></div>
+            <span id="instagram-connection-state" class="account-state">Not connected</span>
+          </div>
+          <div id="instagram-active-account" class="active-account" hidden></div>
+          <form id="instagram-connect-form" class="connected-account-form">
+            <label>Username<input id="instagram-username" name="username" autocomplete="username" placeholder="provenancepending" required /></label>
+            <label>Password<input id="instagram-password" name="password" type="password" autocomplete="current-password" placeholder="Enter once to create the session" required /></label>
+            <p class="field-note">Your password is used for this sign-in and is not saved by Veridex. Instagram may open a security or 2FA prompt in Chrome.</p>
+            <div class="connected-account-actions"><button class="primary-action" type="submit">Connect Instagram</button><button id="instagram-verify" type="button">Refresh status</button><button id="instagram-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
+          </form>
+        </section>
+        <section class="connected-account-card" aria-labelledby="gmail-account-title">
+          <div class="connected-account-heading">
+            <div><span class="account-monogram gmail">G</span><div><h3 id="gmail-account-title">Gmail</h3><p>Search, drafts, contacts, and confirmed sends</p></div></div>
+            <span id="gmail-connection-state" class="account-state">Not connected</span>
+          </div>
+          <div id="gmail-active-account" class="active-account" hidden></div>
+          <div class="connected-account-form">
+            <label>Google account (optional hint)<input id="gmail-account-email" type="email" autocomplete="email" placeholder="name@gmail.com" /></label>
+            <p class="field-note">Gmail uses Google’s authorization screen. Veridex never asks for or stores your Google password.</p>
+            <div class="connected-account-actions"><button id="gmail-connect" class="primary-action" type="button">Connect Google account</button><button id="gmail-refresh" type="button">Refresh status</button><button id="gmail-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
+          </div>
+        </section>
+        <section class="connected-account-card" aria-labelledby="ebay-account-title">
+          <div class="connected-account-heading">
+            <div><span class="account-monogram ebay">e</span><div><h3 id="ebay-account-title">eBay</h3><p>Inventory, listings, orders, offers, and finances</p></div></div>
+            <span id="ebay-connection-state" class="account-state">Not connected</span>
+          </div>
+          <div id="ebay-active-account" class="active-account" hidden></div>
+          <div class="connected-account-form">
+            <label>Seller username (optional safety check)<input id="ebay-username" autocomplete="username" placeholder="seller name" /></label>
+            <label>Environment<select id="ebay-environment"><option value="sandbox">Sandbox</option><option value="production">Production</option></select></label>
+            <label>Marketplace<input id="ebay-marketplace" value="EBAY_US" autocomplete="off" /></label>
+            <p class="field-note">Veridex uses eBay OAuth and never stores your eBay password. Start in Sandbox; live listings and other consequential actions still require explicit confirmation.</p>
+            <div class="connected-account-actions"><button id="ebay-connect" class="primary-action" type="button">Connect eBay</button><button id="ebay-refresh" type="button">Refresh status</button><button id="ebay-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
+          </div>
+        </section>
+        <p id="connected-accounts-message" class="connected-accounts-message" aria-live="polite"></p>
+      </div>
     </dialog>
     <aside id="governance-panel" class="governance-panel" hidden aria-label="Navigator governance status">
       <div class="governance-panel-header">

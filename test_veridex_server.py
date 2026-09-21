@@ -13,11 +13,207 @@ import veridex_server
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio
 from antiques_department import AntiquesDepartment
 from museum_visual_analysis import MuseumVisualAnalyzer
+from price_search_controller import PriceSearchJobManager, SearchPhaseContext, SearchRequest
 from resume_studio import ResumeStudio
 from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_price_search_adapter_falls_back_to_partial_exact_query_once(self) -> None:
+        request = SearchRequest(
+            item_id="mj-program",
+            query="Michael Jackson Cirque du Soleil magazine",
+            scope="exact",
+            preset="standard",
+        )
+        started = time.monotonic()
+        context = SearchPhaseContext(
+            "exact",
+            request,
+            started,
+            started + 180,
+            started + 180,
+            lambda: False,
+        )
+        empty = {
+            "provider": "test_browser",
+            "page_url": "https://example.test/empty",
+            "result_text": "No results",
+            "results": [],
+        }
+        candidate = {
+            "provider": "test_browser",
+            "page_url": "https://example.test/search",
+            "result_text": "Michael Jackson ONE souvenir program",
+            "results": [{
+                "url": "https://example.test/program",
+                "listing_or_lot_id": "program-1",
+                "title": "Michael Jackson ONE souvenir program",
+            }],
+        }
+
+        def ebay_search(query, **_kwargs):
+            return empty if query.endswith("magazine") else candidate
+
+        with patch.object(veridex_server, "search_ebay_product_research", side_effect=ebay_search) as ebay, patch.object(
+            veridex_server, "search_google", return_value=empty
+        ) as google, patch.object(
+            veridex_server,
+            "_antiques_model_analysis",
+            return_value=({"price_observations": [], "warnings": []}, {"model": "test", "provider": "test"}),
+        ) as model_analysis:
+            result = veridex_server._price_search_adapter("exact", request, context)
+
+        self.assertEqual(ebay.call_count, 2)
+        self.assertEqual(google.call_count, 2)
+        self.assertEqual(model_analysis.call_count, 1)
+        self.assertEqual(result["variant_stop_reason"], "candidate_evidence_found")
+        self.assertEqual(
+            [row["query"] for row in result["query_variants"]],
+            ["Michael Jackson Cirque du Soleil magazine", "Michael Jackson Cirque du Soleil"],
+        )
+        self.assertEqual(result["sources"][-2]["query_variant_kind"], "soft_term_removed")
+
+    def test_price_search_adapter_tries_google_spelling_suggestion_next(self) -> None:
+        request = SearchRequest(
+            item_id="golf-chiller",
+            query="Sport Chef Golf Bag Wine Chiller",
+            scope="exact",
+            preset="standard",
+        )
+        started = time.monotonic()
+        context = SearchPhaseContext(
+            "exact",
+            request,
+            started,
+            started + 180,
+            started + 180,
+            lambda: False,
+        )
+        empty = {
+            "provider": "test_browser",
+            "page_url": "https://example.test/empty",
+            "result_text": "No results",
+            "results": [],
+        }
+        candidate = {
+            "provider": "test_browser",
+            "page_url": "https://example.test/search",
+            "result_text": "matching image candidate",
+            "results": [{"url": "https://example.test/item", "title": "Golf bag wine chiller"}],
+        }
+
+        def ebay_search(query, **_kwargs):
+            return candidate if "Sport Chek" in query else empty
+
+        def google_search(query, **_kwargs):
+            if "Sport Chef" in query:
+                return {**empty, "spelling_suggestion": "Sport Chek Golf Bag Wine Chiller sold price"}
+            return empty
+
+        with patch.object(veridex_server, "search_ebay_product_research", side_effect=ebay_search) as ebay, patch.object(
+            veridex_server, "search_google", side_effect=google_search
+        ) as google, patch.object(
+            veridex_server,
+            "_antiques_model_analysis",
+            return_value=({"price_observations": [], "warnings": []}, {"model": "test", "provider": "test"}),
+        ):
+            result = veridex_server._price_search_adapter("exact", request, context)
+
+        self.assertEqual(ebay.call_count, 2)
+        self.assertEqual(google.call_count, 2)
+        self.assertEqual(result["variant_stop_reason"], "candidate_evidence_found")
+        self.assertEqual(result["query_variants"][1]["query"], "Sport Chek Golf Bag Wine Chiller")
+        self.assertEqual(result["query_variants"][1]["kind"], "provider_spelling_suggestion")
+        self.assertEqual(result["query_variants"][1]["suggested_by"], "google")
+
+    def test_price_search_job_defaults_to_exact_and_saves_supported_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "antiques_department")
+            museum = AntiquesDepartment(root)
+            case = museum.save_case(
+                workspace_id,
+                session_id,
+                ["file_test"],
+                {
+                    "identification": "Test pattern ceramic bowl",
+                    "category": "pottery",
+                    "artist_or_maker": "Example Works",
+                    "medium_or_material": "stoneware",
+                },
+                "quick",
+            )
+            manager = PriceSearchJobManager(workers=1)
+            listing_url = "https://example.test/listing/exact-1"
+            browser_result = {
+                "provider": "test_browser",
+                "page_url": "https://example.test/search",
+                "result_text": "Sold $200.00",
+                "results": [{
+                    "url": listing_url,
+                    "listing_or_lot_id": "exact-1",
+                    "amount": 200,
+                    "sale_status": "sold",
+                    "title": "Example Works Test Pattern Bowl",
+                }],
+            }
+            analysis = {
+                "price_observations": [{
+                    "match_tier": "same_model_or_edition",
+                    "match_confidence": "high",
+                    "match_reasons": ["Matching maker, pattern, material, and dimensions"],
+                    "differences": ["A different physical example"],
+                    "source_id": "ebay",
+                    "platform": "eBay",
+                    "source_url": listing_url,
+                    "listing_or_lot_id": "exact-1",
+                    "title": "Example Works Test Pattern Bowl",
+                    "sale_status": "sold",
+                    "price_basis": "sold_price",
+                    "amount": 200,
+                    "currency": "USD",
+                    "sold_at": "2026-08-01T00:00:00Z",
+                    "engagement": {"watchers": 7},
+                }],
+            }
+            route = {"provider": "test", "model": "test", "reasoning_effort": "high", "task_type": "search_deep"}
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "ANTIQUES", museum
+            ), patch.object(veridex_server, "PRICE_SEARCH_JOBS", manager), patch.object(
+                veridex_server, "search_ebay_product_research", return_value=browser_result
+            ) as ebay_search, patch.object(
+                veridex_server, "search_google", return_value=browser_result
+            ) as google_search, patch.object(
+                veridex_server, "search_google_lens"
+            ) as lens_search, patch.object(
+                veridex_server, "_antiques_model_analysis", return_value=(analysis, route)
+            ) as model_analysis:
+                job = veridex_server.submit_price_search({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "case_id": case["case_id"],
+                })
+                job = manager.wait(job["job_id"], timeout=5)
+            self.assertEqual(job["status"], "completed", job.get("error"))
+            self.assertEqual(job["result"]["scope"], "exact")
+            self.assertTrue(job["result"]["saved"])
+            self.assertEqual(len(job["result"]["exact_results"]), 1)
+            self.assertEqual([phase["phase"] for phase in job["result"]["phases"]], ["exact"])
+            self.assertEqual(model_analysis.call_count, 1)
+            self.assertEqual(ebay_search.call_count, 1)
+            self.assertLessEqual(ebay_search.call_args.kwargs["timeout"], 45)
+            self.assertLessEqual(google_search.call_args.kwargs["timeout"], 45)
+            lens_search.assert_not_called()
+            saved = museum.get_case(workspace_id, case["case_id"])
+            evaluation = saved["latest_report"]["price_evaluation"]
+            self.assertEqual(evaluation["expected_resale"]["low"], 200.0)
+            self.assertEqual(evaluation["exact_results"][0]["engagement"]["watchers"], 7)
+
     def test_museum_visual_job_saves_evidence_and_case_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -39,7 +235,7 @@ class VeridexServerTests(unittest.TestCase):
                 "medium": {"assessment": "paint, type undetermined", "confidence": "low", "evidence": [], "limitations": []},
                 "support": {"assessment": "undetermined", "confidence": "low", "evidence": [], "limitations": []},
                 "production_method": {"assessment": "undetermined", "confidence": "low", "evidence": [], "limitations": []},
-                "signature": {"application": "undetermined", "transcription_candidates": [], "confidence": "low", "evidence": [], "limitations": []},
+                "signature": {"application": "undetermined", "transcription_candidates": ["J. Test"], "confidence": "low", "evidence": ["A dark cursive mark is visible."], "limitations": ["Final letters are unclear."]},
                 "frame": {"assessment": "not visible", "confidence": "low", "evidence": [], "limitations": []},
             }
             with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANTIQUES", museum), patch.object(
@@ -52,18 +248,21 @@ class VeridexServerTests(unittest.TestCase):
                     "session_id": session_id,
                     "attachment_ids": [source["file_id"]],
                     "mode": "quick",
-                    "photo_roles": {source["file_id"]: "front"},
+                    "focus": "signature",
+                    "photo_roles": {source["file_id"]: "signature"},
                 })
-                for _ in range(100):
-                    job = manager.get(job["job_id"])
-                    if job["status"] in {"completed", "failed"}:
-                        break
-                    time.sleep(0.01)
+                job = manager.wait(job["job_id"], timeout=5)
             self.assertEqual(job["status"], "completed", job.get("error"))
             result = job["result"]
             self.assertEqual(result["report"]["identification"], "Small painted study")
             self.assertTrue(result["report"]["evidence_artifacts"])
             self.assertTrue(all(row["scope_ref"] == "antiques_department" for row in result["report"]["evidence_artifacts"]))
+            signature = result["report"]["signature"]
+            model_candidate = next(row for row in signature["transcription_candidates"] if row["text"] == "J. Test")
+            self.assertEqual(model_candidate["kind"], "hypothesis")
+            self.assertEqual(model_candidate["source"], "vision_llm")
+            self.assertTrue(signature["evidence_artifacts"])
+            self.assertLessEqual(len(signature["query_suggestions"]), 5)
             self.assertEqual(result["case"]["revisions"][-1]["mode"], "quick")
             self.assertEqual(museum.list_cases(workspace_id)[0]["case_id"], result["case"]["case_id"])
 
@@ -488,7 +687,7 @@ class VeridexServerTests(unittest.TestCase):
                     "snippet": "Latest status",
                 }
             ]
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "search", return_value=messages
             ) as search, patch.object(veridex_server, "invoke_gemini") as gemini, patch.object(
                 veridex_server, "invoke_codex"
@@ -522,7 +721,7 @@ class VeridexServerTests(unittest.TestCase):
                 "date": "Fri, 14 Aug 2026 11:00:00 -0700",
                 "snippet": "The latest update",
             }]
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "search", return_value=messages
             ) as search:
                 result = veridex_server.chat_response({
@@ -542,7 +741,7 @@ class VeridexServerTests(unittest.TestCase):
             initial = store.ensure_default()
             workspace_id = initial["workspace"]["workspace_id"]
             session_id = initial["session"]["session_id"]
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "send"
             ) as send:
                 result = veridex_server.chat_response(
@@ -582,7 +781,7 @@ class VeridexServerTests(unittest.TestCase):
                 session_id,
                 {"to": ["test@example.com"], "subject": "Hello", "body": "Checking in"},
             )
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "send", return_value={"id": "sent_1", "threadId": "thr_1"}
             ) as send:
                 result = veridex_server.chat_response(
@@ -610,7 +809,7 @@ class VeridexServerTests(unittest.TestCase):
             attached = store.save_file(
                 workspace_id, session_id, "report.txt", b"attachment body", "text/plain"
             )
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "send"
             ) as send:
                 review = veridex_server.chat_response({
@@ -630,7 +829,7 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(draft["attachments"][0]["name"], "report.txt")
             self.assertEqual(store.pending_email(workspace_id, session_id)["attachment_ids"], [attached["file_id"]])
 
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "send", return_value={"id": "sent_attachment"}
             ) as send:
                 result = veridex_server.chat_response({
@@ -667,7 +866,7 @@ class VeridexServerTests(unittest.TestCase):
                 "workspace_id": workspace_id,
                 "session_id": session_id,
             }
-            with patch.object(veridex_server, "STORE", store), patch.object(
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "workspace_gmail", return_value=veridex_server.GMAIL), patch.object(
                 veridex_server.GMAIL, "check_delivery_failures", return_value={"new_failures": [failure]}
             ), patch.object(
                 veridex_server.GMAIL, "list_delivery_failures", return_value=[failure]

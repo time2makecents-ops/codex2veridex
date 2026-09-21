@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms, ImageEnhance, ImageOps
 
+from signature_analysis import SignatureAnalyzer, combine_signature_evidence
+
 
 MAX_PIXELS = 50_000_000
 MAX_ANALYSIS_EDGE = 2400
@@ -203,8 +205,9 @@ def compare_images(source_path: Path, candidate_path: Path) -> Dict[str, Any]:
 
 
 class MuseumVisualAnalyzer:
-    def __init__(self, data_root: Path):
+    def __init__(self, data_root: Path, signature_analyzer: SignatureAnalyzer | None = None):
         self.data_root = Path(data_root).resolve()
+        self.signature_analyzer = signature_analyzer or SignatureAnalyzer()
 
     @staticmethod
     def _artifact(image: Image.Image, file_id: str, kind: str, label: str, suffix: str = ".jpg") -> Dict[str, Any]:
@@ -260,6 +263,37 @@ class MuseumVisualAnalyzer:
             artifacts.append(MuseumVisualAnalyzer._artifact(enhanced.convert("RGB"), file_id, f"region_{index:02d}_contrast", f"{label} — contrast view"))
         return artifacts
 
+    @staticmethod
+    def _signature_crop(
+        image: Image.Image,
+        regions: Iterable[Dict[str, Any]],
+    ) -> tuple[Image.Image, Dict[str, float] | None]:
+        rows = [row for row in regions if isinstance(row, dict)]
+        selected = next(
+            (row for row in rows if re.search(r"signature|signed|artist|mark", str(row.get("label") or ""), re.IGNORECASE)),
+            rows[0] if rows else None,
+        )
+        if not selected:
+            working = image.copy()
+            working.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            return working, None
+        try:
+            x = min(1.0, max(0.0, float(selected.get("x", 0))))
+            y = min(1.0, max(0.0, float(selected.get("y", 0))))
+            width = min(1.0 - x, max(0.01, float(selected.get("width", 0))))
+            height = min(1.0 - y, max(0.01, float(selected.get("height", 0))))
+        except (TypeError, ValueError):
+            working = image.copy()
+            working.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            return working, None
+        box = (
+            round(x * image.width), round(y * image.height),
+            round((x + width) * image.width), round((y + height) * image.height),
+        )
+        crop = image.crop(box)
+        crop.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+        return crop, {"x": x, "y": y, "width": width, "height": height}
+
     def analyze(
         self,
         attachments: list[Dict[str, Any]],
@@ -278,6 +312,7 @@ class MuseumVisualAnalyzer:
         regions = regions or {}
         artifacts: list[Dict[str, Any]] = []
         photos: list[Dict[str, Any]] = []
+        signature_analyses: list[Dict[str, Any]] = []
         paths = {str(row.get("file_id")): Path(str(row.get("path") or "")) for row in attachments}
         for index, row in enumerate(attachments, start=1):
             if cancelled and cancelled():
@@ -301,6 +336,14 @@ class MuseumVisualAnalyzer:
             artifacts.append(self._artifact(Image.fromarray(edges).convert("RGB"), file_id, "edge_map", "Computed edge map"))
             if role in {"signature", "label_or_mark"} or focus == "signature":
                 artifacts.append(self._artifact(Image.fromarray(threshold).convert("RGB"), file_id, "adaptive_threshold", "Adaptive threshold view"))
+                signature_image, signature_region = self._signature_crop(image, regions.get(file_id, []))
+                signature_analysis = self.signature_analyzer.analyze_image(
+                    signature_image,
+                    file_id,
+                    region_normalized=signature_region,
+                )
+                artifacts.extend(signature_analysis.pop("artifacts", []))
+                signature_analyses.append(signature_analysis)
             artifacts.extend(self._region_artifacts(image, file_id, regions.get(file_id, [])))
             if mode == "detailed":
                 artifacts.extend(self._tiles(image, file_id))
@@ -341,7 +384,7 @@ class MuseumVisualAnalyzer:
             if role not in present_roles:
                 recommended.append({"role": role, "reason": reason})
         return {
-            "analysis_version": 1,
+            "analysis_version": 2,
             "mode": mode,
             "focus": focus,
             "photos": photos,
@@ -349,6 +392,7 @@ class MuseumVisualAnalyzer:
             "recommended_next_photos": recommended,
             "observations": [],
             "interpretations": [],
+            "signature_evidence": combine_signature_evidence(signature_analyses),
             "limitations": [
                 "Derived contrast, threshold, and edge views are processing aids, not newly observed physical detail.",
                 "Color values are camera-dependent unless a neutral reference or color target was photographed.",

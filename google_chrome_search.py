@@ -7,11 +7,13 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from request_control import RequestCancelled
+from visual_evidence import normalize_lens_payload
 
 
 ROOT = Path(__file__).resolve().parent
@@ -129,24 +131,34 @@ def _run(action: str, *arguments: str, timeout: int = 60, cancel_event: Any = No
             creationflags=creation_flags,
         )
     else:
-        process = subprocess.Popen(
-            command,
-            cwd=str(ROOT),
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creation_flags,
-        )
-        deadline = time.monotonic() + timeout
-        while process.poll() is None:
-            if cancel_event.is_set():
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as stdout_buffer, tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stderr_buffer:
+            process = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=stdout_buffer,
+                stderr=stderr_buffer,
+                creationflags=creation_flags,
+            )
+            deadline = time.monotonic() + timeout
+            try:
+                while process.poll() is None:
+                    if cancel_event.is_set():
+                        raise RequestCancelled("The active Google search was stopped by the user.")
+                    if time.monotonic() >= deadline:
+                        raise GoogleChromeSearchError(f"Google Chrome search timed out after {timeout} seconds.")
+                    time.sleep(0.1)
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
                 subprocess.run(
                     [node, str(BRIDGE), "cleanup"],
                     cwd=str(ROOT),
@@ -155,13 +167,15 @@ def _run(action: str, *arguments: str, timeout: int = 60, cancel_event: Any = No
                     check=False,
                     creationflags=creation_flags,
                 )
-                raise RequestCancelled("The active Google search was stopped by the user.")
-            if time.monotonic() >= deadline:
-                process.kill()
-                raise GoogleChromeSearchError(f"Google Chrome search timed out after {timeout} seconds.")
-            time.sleep(0.1)
-        stdout, stderr = process.communicate()
-        completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                raise
+            stdout_buffer.seek(0)
+            stderr_buffer.seek(0)
+            completed = subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout_buffer.read(),
+                stderr_buffer.read(),
+            )
     try:
         payload = json.loads(str(completed.stdout or "").strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError) as exc:
@@ -176,13 +190,31 @@ def google_profile_status() -> Dict[str, Any]:
     return _run("status", timeout=10)
 
 
-def search_google(text: str, messages: Iterable[Dict[str, Any]] = (), cancel_event: Any = None) -> Dict[str, Any]:
-    return _run("search", resolve_google_query(text, messages), timeout=90, cancel_event=cancel_event)
+def search_google(
+    text: str,
+    messages: Iterable[Dict[str, Any]] = (),
+    cancel_event: Any = None,
+    *,
+    timeout: int = 90,
+) -> Dict[str, Any]:
+    return _run("search", resolve_google_query(text, messages), timeout=max(1, int(timeout)), cancel_event=cancel_event)
 
 
 def search_google_lens(image_path: Path, cancel_event: Any = None) -> Dict[str, Any]:
-    raise GoogleChromeSearchError("Google Lens automation is not enabled in this Museum release.")
+    candidate = Path(image_path).resolve()
+    if not candidate.is_file():
+        raise GoogleChromeSearchError("The selected Google Lens image is unavailable.")
+    return normalize_lens_payload(_run("lens", str(candidate), timeout=90, cancel_event=cancel_event))
 
 
-def search_ebay_product_research(text: str, cancel_event: Any = None) -> Dict[str, Any]:
-    raise GoogleChromeSearchError("eBay Product Research automation is not enabled in this Museum release.")
+def search_ebay_product_research(query: str, cancel_event: Any = None, *, timeout: int = 90) -> Dict[str, Any]:
+    value = " ".join(str(query or "").split()).strip()
+    if not value:
+        raise GoogleChromeSearchError("An eBay Product Research query is required.")
+    result = _run("ebay", value, timeout=max(1, int(timeout)), cancel_event=cancel_event)
+    date_range = result.get("date_range") if isinstance(result.get("date_range"), dict) else {}
+    if date_range.get("applied") is not True or str(date_range.get("label") or "") != "Last 3 years":
+        raise GoogleChromeSearchError(
+            "eBay Product Research did not verify its maximum three-year sold-history range."
+        )
+    return result

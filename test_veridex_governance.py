@@ -127,6 +127,9 @@ class VeridexGovernanceTests(unittest.TestCase):
         self.assertTrue(self.registry.requires_file_artifact("create an Excel spreadsheet of event planners", "search_synthesis"))
         self.assertTrue(self.registry.requires_file_artifact("save the results as CSV", "search_synthesis"))
 
+    def test_coding_request_can_name_an_input_format_without_requiring_document_output(self) -> None:
+        self.assertFalse(self.registry.requires_file_artifact("write Python code to parse a CSV", "coding"))
+
     def test_explicit_google_requires_dedicated_provider_without_substitution(self) -> None:
         missing = self.registry.postflight(
             "I found a result.",

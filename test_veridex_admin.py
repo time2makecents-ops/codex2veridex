@@ -41,6 +41,23 @@ class VeridexAdminTests(unittest.TestCase):
             self.assertEqual(service.versions()["room_catalog"], 2)
             self.assertEqual(service.audit_log()[-1]["event"], "proposal_verified")
 
+    def test_existing_catalog_receives_additive_antiques_release_seed_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            first = AdminService(
+                data_root,
+                root,
+                [row for row in ROOMS if row["id"] != "antiques_department"],
+                Path("governance/navigator_governance_v1.0.0.json"),
+            )
+            self.assertNotIn("antiques_department", [row["id"] for row in first.rooms()])
+            second = self.service(root)
+            self.assertIn("antiques_department", [row["id"] for row in second.rooms()])
+            version = second.versions()["room_catalog"]
+            third = self.service(root)
+            self.assertEqual(third.versions()["room_catalog"], version)
+
     def test_stale_room_proposal_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = self.service(Path(temporary))

@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import datetime
 from http import HTTPStatus
@@ -24,6 +25,14 @@ from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
+from connected_accounts import ConnectedAccountError, ConnectedAccounts
+from ebay_gateway import EbayGateway, EbayGatewayError
+from facebook_chrome_bridge import (
+    draft_facebook_message,
+    facebook_profile_status,
+    read_facebook_profile,
+    send_facebook_message,
+)
 from google_chrome_search import (
     GoogleChromeSearchError,
     continues_google_search,
@@ -32,8 +41,27 @@ from google_chrome_search import (
     search_google_lens,
     wants_google_search,
 )
+from instagram_chrome_bridge import (
+    create_instagram_post,
+    draft_instagram_message,
+    follow_instagram_account,
+    instagram_profile_status,
+    login_instagram,
+    read_instagram_profile,
+    send_instagram_message,
+    setup_instagram_profile,
+)
 from request_control import ActiveRequestRegistry, RequestCancelled
 from museum_visual_analysis import MuseumVisualAnalyzer
+from price_search_controller import (
+    PriceSearchJobManager,
+    SearchPhaseContext,
+    SearchRequest,
+    SearchTimedOut,
+    exact_query_variants,
+    provider_spelling_suggestion,
+)
+from signature_analysis import MAX_CANDIDATES, normalize_model_candidates, query_suggestions
 from resume_studio import (
     ResumeStudio,
     export_bundle,
@@ -136,13 +164,58 @@ ART = ArtStudio(DATA_ROOT)
 ANTIQUES = AntiquesDepartment(DATA_ROOT)
 ART_JOBS = ArtJobManager()
 MUSEUM_JOBS = ArtJobManager(workers=1, prefix="museumjob", label="Museum analysis")
+PRICE_SEARCH_JOBS = PriceSearchJobManager(workers=2)
 MUSEUM_VISUAL = MuseumVisualAnalyzer(DATA_ROOT)
 GMAIL = GmailGateway()
+ACCOUNTS = ConnectedAccounts(DATA_ROOT, ROOT)
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
 ACTIVE_REQUESTS = ActiveRequestRegistry()
 REMOTE_ACCESS_PATH = DATA_ROOT / "system" / "remote_access.json"
 REMOTE_COOKIE = "veridex_remote_session"
+
+
+def workspace_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace = STORE.get_workspace(str(workspace_id or "").strip())
+    session = STORE.find_session(str(session_id or "").strip())
+    if str(session.get("workspace_id") or "") != str(workspace.get("workspace_id") or ""):
+        raise KeyError("Session does not belong to workspace")
+    return workspace
+
+
+def workspace_from_args(args: Dict[str, Any]) -> tuple[str, str]:
+    session_id = str(args.get("session_id") or "").strip()
+    session = STORE.find_session(session_id)
+    workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "").strip()
+    workspace_context(workspace_id, session_id)
+    return workspace_id, session_id
+
+
+def workspace_gmail(workspace_id: str) -> GmailGateway:
+    config = ACCOUNTS.read(workspace_id).get("gmail")
+    if not isinstance(config, dict) or not config.get("assigned"):
+        raise GmailGatewayError("Gmail is not assigned to this workspace. Open Connected accounts to connect it.")
+    return ACCOUNTS.gmail(workspace_id)
+
+
+def workspace_ebay(workspace_id: str, *, require_assignment: bool = True) -> EbayGateway:
+    return ACCOUNTS.ebay(workspace_id) if require_assignment else EbayGateway(env=ACCOUNTS.ebay_env(workspace_id))
+
+
+def workspace_instagram_env(workspace_id: str) -> Dict[str, str]:
+    return ACCOUNTS.instagram_env(workspace_id)
+
+
+def verified_instagram_env(workspace_id: str) -> Dict[str, str]:
+    env = workspace_instagram_env(workspace_id)
+    status = instagram_profile_status(env=env)
+    if not status.get("signed_in"):
+        raise ConnectedAccountError("Instagram is not signed in for this workspace. Open Connected accounts to reconnect it.")
+    if not status.get("account_matches"):
+        active = str(status.get("active_username") or "unknown account")
+        expected = str(ACCOUNTS.instagram_config(workspace_id).get("username") or "")
+        raise ConnectedAccountError(f"Instagram safety check stopped this action: Chrome is signed in as @{active}, but this workspace is assigned to @{expected}.")
+    return env
 
 
 def remote_access_state() -> Dict[str, Any]:
@@ -894,9 +967,10 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def delivery_alerts(workspace_id: str = "", session_id: str = "") -> list[Dict[str, Any]]:
+    gmail = workspace_gmail(workspace_id)
     return [
         public_delivery_alert(row, workspace_id, session_id)
-        for row in GMAIL.list_delivery_failures()
+        for row in gmail.list_delivery_failures()
     ]
 
 
@@ -904,8 +978,9 @@ def check_delivery_alerts(workspace_id: str, session_id: str) -> Dict[str, Any]:
     session = STORE.find_session(session_id)
     if str(session.get("workspace_id") or "") != workspace_id:
         raise KeyError("Session does not belong to workspace")
-    result = GMAIL.check_delivery_failures()
-    alerts = GMAIL.list_delivery_failures()
+    gmail = workspace_gmail(workspace_id)
+    result = gmail.check_delivery_failures()
+    alerts = gmail.list_delivery_failures()
     if str(session.get("active_room") or "") == "my_office":
         for row in alerts:
             if str(row.get("notified_session_id") or ""):
@@ -929,7 +1004,7 @@ def check_delivery_alerts(workspace_id: str, session_id: str) -> Dict[str, Any]:
                 message_kind="gmail_delivery_failure",
                 gmail={"provider": "gmail_api", "status": "failed", "delivery_failure": public},
             )
-            GMAIL.mark_failure_notified(str(row.get("failure_id") or ""), session_id)
+            gmail.mark_failure_notified(str(row.get("failure_id") or ""), session_id)
     return {
         "ok": True,
         "new_failure_count": len(result.get("new_failures") or []),
@@ -1084,6 +1159,13 @@ def gmail_chat_response(
     draft_override: Optional[Dict[str, Any]] = None,
     attachments: Optional[list[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    try:
+        gmail = workspace_gmail(workspace_id)
+    except GmailGatewayError as exc:
+        return local_chat_response(
+            workspace_id, session_id, user_message, str(exc), "Nancy", "gmail_unavailable",
+            response_provider="veridex_gmail_router",
+        )
     if GMAIL_CONFIRM_RE.search(str(prompt or "")):
         pending = STORE.pending_email(workspace_id, session_id)
         if not pending:
@@ -1117,9 +1199,9 @@ def gmail_chat_response(
             )
             send_context = {"workspace_id": workspace_id, "session_id": session_id}
             result = (
-                GMAIL.send(*send_args, pending_attachments, context=send_context)
+                gmail.send(*send_args, pending_attachments, context=send_context)
                 if pending_attachments
-                else GMAIL.send(*send_args, context=send_context)
+                else gmail.send(*send_args, context=send_context)
             )
         except (GmailGatewayError, ValueError) as exc:
             return local_chat_response(
@@ -1133,7 +1215,7 @@ def gmail_chat_response(
             )
         retry_failure_id = str(pending.get("retry_failure_id") or "").strip()
         if retry_failure_id:
-            GMAIL.resolve_delivery_failure(retry_failure_id)
+            gmail.resolve_delivery_failure(retry_failure_id)
         STORE.clear_pending_email(workspace_id, session_id)
         return local_chat_response(
             workspace_id,
@@ -1193,7 +1275,7 @@ def gmail_chat_response(
     query = gmail_query_from_prompt(prompt)
     result_limit = gmail_result_limit(prompt)
     try:
-        messages = GMAIL.search(query, max_results=result_limit)
+        messages = gmail.search(query, max_results=result_limit)
     except GmailGatewayError as exc:
         return local_chat_response(
             workspace_id,
@@ -1484,7 +1566,13 @@ def _antiques_json_result(result: Dict[str, Any], fallback: Dict[str, Any]) -> D
     return value if isinstance(value, dict) and value else fallback
 
 
-def _antiques_model_analysis(prompt: str, attachments: list[Dict[str, Any]], task_type: str = "media") -> tuple[Dict[str, Any], Dict[str, Any]]:
+def _antiques_model_analysis(
+    prompt: str,
+    attachments: list[Dict[str, Any]],
+    task_type: str = "media",
+    *,
+    cancel_event: Any = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
     request = {
         "task_type": task_type,
         "system_prompt": (
@@ -1497,6 +1585,8 @@ def _antiques_model_analysis(prompt: str, attachments: list[Dict[str, Any]], tas
         "attachment_paths": [str(row.get("path") or "") for row in attachments],
         "artifact_output_dir": "",
     }
+    if cancel_event is not None:
+        request["cancel_event"] = cancel_event
     result = invoke_codex(request)
     return _antiques_json_result(result, {}), result
 
@@ -1536,9 +1626,12 @@ def _museum_interpretation(prompt_context: Dict[str, Any], attachments: list[Dic
         "(array of cautious inferences), medium {assessment,confidence,evidence,limitations}, support with the same shape, "
         "production_method {assessment one of original_hand_applied|print_or_reproduction|mixed_or_embellished|undetermined,"
         "confidence,evidence,limitations}, signature {application one of hand_applied|printed_or_reproduced|obscured|undetermined,"
-        "transcription_candidates array,confidence,evidence,limitations}, frame {assessment,confidence,evidence,limitations}, "
+        "transcription_candidates array of {text,kind hypothesis,confidence,evidence,limitations},confidence,evidence,limitations}, "
+        "frame {assessment,confidence,evidence,limitations}, "
         "limitations array, and recommended_next_photos array. Never authenticate, attribute authorship, appraise value, or "
-        "infer medium from color alone. A flat frontal photograph cannot establish surface relief.\n\nEvidence:\n"
+        "infer medium from color alone. Treat supplied OCR as uncertain search evidence: preserve literal readings, and label any "
+        "visual interpretation as a hypothesis rather than a name identification. A flat frontal photograph cannot establish "
+        "surface relief.\n\nEvidence:\n"
         + json.dumps(prompt_context, ensure_ascii=False)[:45000]
     )
     value, route = _antiques_model_analysis(prompt, attachments, "media")
@@ -1585,6 +1678,8 @@ def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
         progress(62, "Saving derived evidence")
         evidence_files = []
         artifact_paths = []
+        signature_artifact_files = []
+        signature_artifact_paths = []
         for artifact in core.pop("artifacts", []):
             if cancelled():
                 raise RuntimeError("Museum analysis canceled")
@@ -1611,11 +1706,19 @@ def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
                 }},
             )
             evidence_files.append(public_file(saved))
+            if str(artifact.get("kind") or "").startswith("signature_"):
+                signature_artifact_files.append(public_file(saved))
+                signature_artifact_paths.append({**saved, "path": saved["path"]})
             if artifact["kind"] in {"normalized_overview", "region_01", "region_01_contrast", "adaptive_threshold", "local_contrast"}:
                 artifact_paths.append({**saved, "path": saved["path"]})
         progress(78, "Interpreting visible evidence")
         model_context = {**core, "notes": safe_payload["notes"]}
-        model_attachments = attachments[:4] + artifact_paths[:max(0, 8 - min(4, len(attachments)))]
+        prioritized_artifacts = (
+            signature_artifact_paths + artifact_paths
+            if safe_payload["focus"] == "signature"
+            else artifact_paths + signature_artifact_paths
+        )
+        model_attachments = attachments[:4] + prioritized_artifacts[:max(0, 8 - min(4, len(attachments)))]
         route: Dict[str, Any] = {}
         try:
             interpreted, route = _museum_interpretation(model_context, model_attachments)
@@ -1628,8 +1731,31 @@ def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
         signature_application = str(signature_value.get("application") or "undetermined")
         if signature_application not in {"hand_applied", "printed_or_reproduced", "obscured", "undetermined"}:
             signature_application = "undetermined"
+        signature_evidence = core.get("signature_evidence") if isinstance(core.get("signature_evidence"), dict) else {}
+        signature_confidence = str(signature_value.get("confidence") or "low").lower()
+        if signature_confidence not in {"low", "medium", "high"}:
+            signature_confidence = "low"
+        signature_candidates = [
+            dict(value) for value in signature_evidence.get("transcription_candidates") or []
+            if isinstance(value, dict) and str(value.get("text") or "").strip()
+        ][:MAX_CANDIDATES]
+        known_candidate_text = {str(value.get("text") or "").casefold() for value in signature_candidates}
+        for candidate in normalize_model_candidates(
+            signature_value.get("transcription_candidates"),
+            confidence=signature_confidence,
+            evidence=_museum_unique_strings(signature_value.get("evidence"), 12),
+            limitations=_museum_unique_strings(signature_value.get("limitations"), 12),
+        ):
+            key = str(candidate.get("text") or "").casefold()
+            if key not in known_candidate_text and len(signature_candidates) < MAX_CANDIDATES:
+                known_candidate_text.add(key)
+                signature_candidates.append(candidate)
+        signature_limitations = _museum_unique_strings(
+            list(signature_evidence.get("limitations") or []) + list(signature_value.get("limitations") or []),
+            20,
+        )
         report = {
-            "analysis_version": 1,
+            "analysis_version": 2,
             "identification": " ".join(str(interpreted.get("identification") or "Unidentified artwork or object").split())[:500],
             "category": " ".join(str(interpreted.get("category") or "unknown").split())[:120],
             "confidence": confidence,
@@ -1643,10 +1769,14 @@ def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
             "production_method": _museum_assessment(interpreted.get("production_method"), {"original_hand_applied", "print_or_reproduction", "mixed_or_embellished", "undetermined"}),
             "signature": {
                 "application": signature_application,
-                "transcription_candidates": _museum_unique_strings(signature_value.get("transcription_candidates"), 10),
-                "confidence": str(signature_value.get("confidence") or "low") if str(signature_value.get("confidence") or "low") in {"low", "medium", "high"} else "low",
+                "ocr_status": str(signature_evidence.get("ocr_status") or "not_requested"),
+                "ocr_fragments": list(signature_evidence.get("ocr_fragments") or [])[:30],
+                "transcription_candidates": signature_candidates,
+                "confidence": signature_confidence,
                 "evidence": _museum_unique_strings(signature_value.get("evidence"), 12),
-                "limitations": _museum_unique_strings(signature_value.get("limitations"), 12),
+                "limitations": signature_limitations,
+                "query_suggestions": query_suggestions(signature_candidates),
+                "evidence_artifacts": signature_artifact_files,
             },
             "frame": _museum_assessment(interpreted.get("frame")),
             "recommended_next_photos": core["recommended_next_photos"] + _museum_unique_strings(interpreted.get("recommended_next_photos"), 12),
@@ -1677,13 +1807,265 @@ def submit_museum_analysis(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _antiques_source_excerpt(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "provider": row.get("provider"),
+        "status": row.get("status"),
         "query": row.get("query"),
         "searched_at": row.get("searched_at"),
+        "page_title": row.get("page_title"),
         "page_url": row.get("page_url"),
-        "result_text": str(row.get("result_text") or "")[:10000],
+        "date_range": row.get("date_range") if isinstance(row.get("date_range"), dict) else {},
+        "spelling_suggestion": str(row.get("spelling_suggestion") or "")[:1000],
+        "results": list(row.get("results") or [])[:12],
+        "raw_result_text": str(row.get("raw_result_text") or row.get("result_text") or "")[:10000],
+        "result_text": str(row.get("result_text") or row.get("raw_result_text") or "")[:10000],
         "links": list(row.get("links") or [])[:20],
         "opened_sources": list(row.get("opened_sources") or [])[:5],
     }
+
+
+def _price_search_query(case: Dict[str, Any], requested_query: Any = "") -> str:
+    explicit = " ".join(str(requested_query or "").split())[:1000]
+    if explicit:
+        return explicit
+    report = case.get("latest_report") if isinstance(case.get("latest_report"), dict) else {}
+    signature = report.get("signature") if isinstance(report.get("signature"), dict) else {}
+    candidates = signature.get("transcription_candidates") if isinstance(signature.get("transcription_candidates"), list) else []
+    signature_text = " ".join(
+        str(row.get("text") or "") for row in candidates[:3] if isinstance(row, dict)
+    )
+    medium = report.get("medium")
+    medium_text = str(medium.get("assessment") or "") if isinstance(medium, dict) else str(report.get("medium_or_material") or "")
+    parts = [
+        report.get("artist_or_maker"),
+        report.get("signature_or_mark"),
+        signature_text,
+        report.get("identification"),
+        case.get("title"),
+        medium_text,
+        report.get("likely_period"),
+    ]
+    query = " ".join(dict.fromkeys(" ".join(str(value or "").split()) for value in parts if str(value or "").strip()))
+    return " ".join(query.split())[:1000] or "unidentified vintage collectible exact sold comparable"
+
+
+class _PriceSearchCancelEvent:
+    def __init__(self, context: SearchPhaseContext):
+        self.context = context
+
+    def is_set(self) -> bool:
+        self.context.checkpoint()
+        return False
+
+
+def _price_search_adapter(phase: str, request: SearchRequest, context: SearchPhaseContext) -> Dict[str, Any]:
+    context.checkpoint()
+    query = request.query if phase == "exact" else f"{request.query} similar comparable sold"
+    query_variants = (
+        exact_query_variants(query, limit=3 if request.preset == "fast" else 4)
+        if phase == "exact"
+        else [{"rank": 1, "query": query, "kind": "similar_scope"}]
+    )
+    maximum_variants = 4 if request.preset == "fast" else 5
+    source_results: list[Dict[str, Any]] = []
+    source_errors: list[Dict[str, Any]] = []
+    attempted_variants: list[Dict[str, Any]] = []
+    cancel_event = _PriceSearchCancelEvent(context)
+    synthesis_reserve = (
+        min(90, max(30, int(request.exact_stage_seconds * 0.4)))
+        if phase == "exact"
+        else min(45, max(15, int(context.remaining_seconds * 0.2)))
+    )
+    total_attempts = max(1, maximum_variants * 2)
+    attempt_index = 0
+    stop_reason = "variants_exhausted"
+    queued_variants = [dict(row) for row in query_variants]
+    known_queries = {str(row.get("query") or "").casefold() for row in queued_variants}
+    while queued_variants and len(attempted_variants) < maximum_variants:
+        variant = queued_variants.pop(0)
+        variant_query = str(variant["query"])
+        attempted_variant = {**variant, "rank": len(attempted_variants) + 1}
+        attempted_variants.append(attempted_variant)
+        variant_has_candidates = False
+        searches = (
+            ("ebay", variant_query),
+            (
+                "google",
+                f'"{variant_query}" sold price'
+                if int(attempted_variant.get("rank") or 1) == 1
+                else f"{variant_query} sold price",
+            ),
+        )
+        for source_id, source_query in searches:
+            context.checkpoint()
+            available_for_sources = context.remaining_seconds - synthesis_reserve
+            if available_for_sources < 5:
+                stop_reason = "synthesis_reserve_reached"
+                break
+            remaining_attempts = max(1, total_attempts - attempt_index)
+            source_timeout = max(5, min(45, int(available_for_sources / remaining_attempts)))
+            attempt_index += 1
+            try:
+                found = (
+                    search_ebay_product_research(source_query, cancel_event=cancel_event, timeout=source_timeout)
+                    if source_id == "ebay"
+                    else search_google(f"Google search for {source_query}", cancel_event=cancel_event, timeout=source_timeout)
+                )
+                excerpt = _antiques_source_excerpt(found)
+                excerpt["raw_result_text"] = str(excerpt.get("raw_result_text") or "")[:4000]
+                excerpt["result_text"] = str(excerpt.get("result_text") or "")[:4000]
+                excerpt.update({
+                    "source_id": source_id,
+                    "query_variant": variant_query,
+                    "query_variant_rank": int(attempted_variant.get("rank") or 1),
+                    "query_variant_kind": str(variant.get("kind") or ""),
+                    "provider_query": source_query,
+                })
+                source_results.append(excerpt)
+                if phase == "exact" and source_id == "google":
+                    suggested_query = provider_spelling_suggestion(
+                        excerpt.get("spelling_suggestion"),
+                        request.query,
+                    )
+                    suggestion_key = suggested_query.casefold()
+                    if (
+                        suggested_query
+                        and suggestion_key not in known_queries
+                        and len(attempted_variants) + len(queued_variants) < maximum_variants
+                    ):
+                        known_queries.add(suggestion_key)
+                        queued_variants.insert(0, {
+                            "query": suggested_query,
+                            "kind": "provider_spelling_suggestion",
+                            "suggested_by": "google",
+                        })
+                if excerpt.get("results"):
+                    variant_has_candidates = True
+            except GoogleChromeSearchError as exc:
+                source_errors.append({
+                    "source_id": source_id,
+                    "query_variant": variant_query,
+                    "query_variant_rank": int(attempted_variant.get("rank") or 1),
+                    "error": str(exc),
+                    "manual_url": "https://www.ebay.com/sh/research" if source_id == "ebay" else "https://www.google.com/",
+                })
+        if stop_reason == "synthesis_reserve_reached":
+            break
+        if variant_has_candidates:
+            stop_reason = "candidate_evidence_found"
+            break
+    context.checkpoint()
+    permitted = (
+        "same_item_candidate or same_model_or_edition (or rejected); never label a merely similar item as exact"
+        if phase == "exact"
+        else "similar or rejected; if the evidence unexpectedly proves the same item/model, use the applicable exact tier"
+    )
+    prompt = (
+        f"Evaluate browser price evidence for this original description: {request.query!r}. This is the {phase} phase. "
+        "The original description is a hypothesis, and retrieval query variants are alternate wording only; neither proves identity. "
+        "A shorter query or marketplace alias must not lower the evidence required for an exact match. "
+        f"Return JSON with price_observations (array) and warnings (array). Permitted match tiers: {permitted}. "
+        "Each observation must include match_tier, match_confidence, match_reasons, differences, source_id, platform, "
+        "venue, location, source_url, listing_or_lot_id, title, sale_status, price_basis, amount, currency, shipping, "
+        "buyer_premium, sold_at, item_attributes, and engagement with any visible watchers, likes, favorites, saves, bids, "
+        "unique_bidders, views, or quantity_sold. Use only URLs, identifiers, dates, amounts, and engagement counts present "
+        "in the supplied evidence. Keep sold, active, unsold, and estimate records distinct. Reject uncertain likenesses "
+        "instead of promoting them. Return no invented values.\n\n"
+        + json.dumps({
+            "phase": phase,
+            "original_query": request.query,
+            "query_variants": attempted_variants,
+            "variant_stop_reason": stop_reason,
+            "sources": source_results,
+            "source_errors": source_errors,
+        }, ensure_ascii=False)[:50000]
+    )
+    try:
+        analysis, route = _antiques_model_analysis(
+            prompt,
+            [],
+            "search_deep",
+            cancel_event=cancel_event,
+        )
+    except SearchTimedOut:
+        analysis = {
+            "price_observations": [],
+            "warnings": [
+                "The phase budget expired during evidence synthesis; collected browser evidence was retained, but no match classification was completed."
+            ],
+        }
+        route = {}
+    observations = analysis.get("price_observations") if isinstance(analysis.get("price_observations"), list) else []
+    return {
+        "candidates": observations,
+        "sources": source_results,
+        "errors": source_errors,
+        "warnings": analysis.get("warnings") if isinstance(analysis.get("warnings"), list) else [],
+        "query_variants": attempted_variants,
+        "variant_stop_reason": stop_reason,
+        "route": {key: route.get(key) for key in ("provider", "model", "reasoning_effort", "task_type")},
+    }
+
+
+def submit_price_search(payload: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    session = STORE.find_session(session_id)
+    workspace_id = str(payload.get("workspace_id") or session.get("workspace_id") or "").strip()
+    antiques_context(workspace_id, session_id)
+    case_id = str(payload.get("case_id") or "").strip()
+    if not case_id:
+        raise ValueError("case_id is required")
+    case = ANTIQUES.get_case(workspace_id, case_id)
+    request = SearchRequest.from_value({
+        "item_id": case_id,
+        "query": _price_search_query(case, payload.get("query")),
+        "scope": payload.get("scope") or "exact",
+        "preset": payload.get("preset") or "standard",
+    })
+
+    def exact_search(value: SearchRequest, context: SearchPhaseContext) -> Dict[str, Any]:
+        return _price_search_adapter("exact", value, context)
+
+    def similar_search(value: SearchRequest, context: SearchPhaseContext) -> Dict[str, Any]:
+        return _price_search_adapter("similar", value, context)
+
+    def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
+        if result.get("status") == "timed_out" or not result.get("ordered_results"):
+            return {**result, "saved": False}
+        latest_case = ANTIQUES.get_case(workspace_id, case_id)
+        latest_report = latest_case.get("latest_report") if isinstance(latest_case.get("latest_report"), dict) else {}
+        report = json.loads(json.dumps(latest_report))
+        report["price_observations"] = list(result.get("ordered_results") or [])
+        report["price_search"] = {
+            "scope": result.get("scope"),
+            "preset": result.get("preset"),
+            "query": result.get("query"),
+            "status": result.get("status"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+            "phases": result.get("phases"),
+        }
+        updated = ANTIQUES.save_case(
+            workspace_id,
+            session_id,
+            latest_case.get("attachment_ids") or [],
+            report,
+            "price_search",
+            f"{request.scope.replace('_', ' ')} price search ({request.preset})",
+            case_id,
+            result.get("sources") or [],
+            payload.get("valuation_overrides") or {},
+        )
+        return {
+            **result,
+            "saved": True,
+            "case": updated,
+            "price_evaluation": updated.get("latest_report", {}).get("price_evaluation", {}),
+        }
+
+    return PRICE_SEARCH_JOBS.submit(
+        request,
+        exact_search,
+        similar_search if request.similar_approved else None,
+        finalize=finalize,
+    )
 
 
 def _money(value: Any) -> float | None:
@@ -1699,6 +2081,9 @@ def antiques_report_text(case: Dict[str, Any]) -> str:
     valuation = report.get("valuation") if isinstance(report.get("valuation"), dict) else {}
     buying = report.get("buying") if isinstance(report.get("buying"), dict) else {}
     frame = report.get("frame") if isinstance(report.get("frame"), dict) else {}
+    price_evaluation = report.get("price_evaluation") if isinstance(report.get("price_evaluation"), dict) else {}
+    evidence_summary = price_evaluation.get("evidence_summary") if isinstance(price_evaluation.get("evidence_summary"), dict) else {}
+    last_sold = price_evaluation.get("last_sold") if isinstance(price_evaluation.get("last_sold"), dict) else {}
     confidence = str(report.get("confidence") or "low").title()
     lines = [
         f"Antiques case {case.get('case_id')}: {report.get('identification') or case.get('title') or 'Unidentified item'}",
@@ -1713,6 +2098,20 @@ def antiques_report_text(case: Dict[str, Any]) -> str:
     low, high = valuation.get("conservative_low"), valuation.get("likely_high")
     if low is not None or high is not None:
         lines.append(f"Resale estimate: {valuation.get('currency', 'USD')} {low if low is not None else '?'}–{high if high is not None else '?'}")
+    if last_sold:
+        sold_date = str(last_sold.get("sold_at") or "date unavailable").split("T", 1)[0]
+        lines.append(
+            f"Last supported exact sale: {last_sold.get('currency', 'USD')} {last_sold.get('amount')} "
+            f"on {sold_date} at {last_sold.get('venue') or last_sold.get('platform') or last_sold.get('source_id')}"
+        )
+    if evidence_summary:
+        lines.append(
+            f"Price evidence: {evidence_summary.get('exact', 0)} exact, "
+            f"{evidence_summary.get('exact_sold', 0)} exact sold, "
+            f"{evidence_summary.get('exact_active_asking', 0)} exact active asking."
+        )
+    if price_evaluation.get("similar_search_prompt"):
+        lines.append(str(price_evaluation["similar_search_prompt"]))
     if buying.get("recommended_max_buy") is not None:
         lines.append(f"Conservative maximum buy: {buying.get('currency', 'USD')} {buying['recommended_max_buy']}")
     if frame:
@@ -1809,6 +2208,13 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         "Synthesize the visual observations and browser evidence. Sold evidence is stronger than asking prices. Reject mismatched "
         "comparables and explain uncertainty. Return JSON with: identification, category, artist_or_maker, signature_or_mark, "
         "medium_or_material, likely_period, observed_facts (array), sourced_matches (array of objects with claim,url,source), "
+        "price_observations (array of objects with match_tier, match_confidence, match_reasons, differences, source_id, platform, "
+        "venue, location, source_url, listing_or_lot_id, title, sale_status, price_basis, amount, currency, shipping, buyer_premium "
+        "(the premium amount, not a percentage), "
+        "sold_at as ISO-8601 when known, and item_attributes). Use match_tier same_item_candidate only for a possible repeat appearance "
+        "of the physical item, same_model_or_edition for the same catalog identity but possibly another example, similar only for a "
+        "declared comparable, and rejected for a mismatch. Use only source_id and source_url values present in the supplied browser "
+        "evidence; do not invent a listing, sale, URL, date, or price. Keep sold, active asking, unsold, and estimate records separate. "
         "inferences (array), condition_notes (array), missing_photos (array), confidence (low|medium|high), valuation "
         "{currency,conservative_low,likely_high,comparable_notes}, frame {assessment,currency,resale_low,resale_high,replacement_cost_low,"
         "replacement_cost_high,contribution_notes}, warnings (array). Never claim definitive authentication or appraisal.\n\n"
@@ -1833,12 +2239,6 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
     valuation = report.get("valuation") if isinstance(report.get("valuation"), dict) else {}
     valuation["currency"] = str(valuation.get("currency") or ANTIQUES.settings(workspace_id)["currency"])
     report["valuation"] = valuation
-    conservative = _money(valuation.get("conservative_low"))
-    report["buying"] = (
-        ANTIQUES.calculate_max_buy(conservative, payload.get("valuation_overrides") or {}, workspace_id)
-        if conservative is not None
-        else {"recommended_max_buy": None, "reason": "Insufficient reliable sold-comparable evidence"}
-    )
     report["source_errors"] = source_errors
     report["research_mode"] = mode
     report["research_disclaimer"] = "Research-supported estimate only; not authentication or a professional appraisal."
@@ -1850,6 +2250,8 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         mode,
         str(payload.get("notes") or ""),
         str(payload.get("case_id") or ""),
+        source_results,
+        payload.get("valuation_overrides") or {},
     )
     return {
         "status": "completed",
@@ -2701,9 +3103,33 @@ TOOLS = [
     {"name": "office.admin_apply", "description": "Apply one exact proposal only with confirm=true and its expected version; governance weakening requires a second token."},
     {"name": "office.admin_reject", "description": "Reject one pending administrative proposal without applying it."},
     {"name": "office.admin_rollback", "description": "Rollback one verified proposal only with confirm=true and record the result."},
-    {"name": "office.gmail_status", "description": "Check whether Veridex's local Gmail integration is connected."},
-    {"name": "office.gmail_search", "description": "Search Gmail metadata using the connected veridexcorp@gmail.com account."},
+    {"name": "office.gmail_status", "description": "Check the Gmail account assigned to the active workspace."},
+    {"name": "office.gmail_search", "description": "Search Gmail metadata using only the account assigned to the active workspace."},
     {"name": "office.gmail_send", "description": "Send Gmail, including session attachments when provided, only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.instagram_status", "description": "Check the dedicated Instagram Chrome profile assigned to the active workspace."},
+    {"name": "office.instagram_profile_get", "description": "Read bounded visible profile information for one Instagram handle through the dedicated local Chrome profile."},
+    {"name": "office.instagram_follow", "description": "Follow an Instagram account only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.instagram_post", "description": "Publish one local image and reviewed caption to Instagram only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.instagram_message_draft", "description": "Open an Instagram conversation and compose a message for visible human review without sending it."},
+    {"name": "office.instagram_message_send", "description": "Send an Instagram message only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.facebook_status", "description": "Check the dedicated local Facebook Chrome profile configured through local.env or .env.local."},
+    {"name": "office.facebook_profile_get", "description": "Read bounded visible profile information for one Facebook profile through the dedicated local Chrome profile."},
+    {"name": "office.facebook_message_draft", "description": "Open a Facebook conversation and compose a message for visible human review without sending it."},
+    {"name": "office.facebook_message_send", "description": "Send a Facebook message only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "ebay.status", "description": "Read the workspace-scoped eBay seller connection status without changing the account."},
+    {"name": "ebay.inventory_list", "description": "List eBay inventory items for the seller account assigned to this workspace."},
+    {"name": "ebay.offer_list", "description": "List eBay offers and listings for the seller account assigned to this workspace."},
+    {"name": "ebay.order_list", "description": "List completed-checkout eBay orders for the assigned seller account."},
+    {"name": "ebay.transaction_list", "description": "List eBay seller financial transactions for the assigned account."},
+    {"name": "ebay.policy_list", "description": "List the eBay payment, fulfillment, and return policies required for listings."},
+    {"name": "ebay.listing_preview", "description": "Validate and preview a proposed eBay listing locally without changing eBay."},
+    {"name": "ebay.listing_publish", "description": "Create inventory, offer, and a live eBay listing only when confirm=true."},
+    {"name": "ebay.offer_update", "description": "Replace an existing eBay offer with reviewed offer data only when confirm=true."},
+    {"name": "ebay.listing_withdraw", "description": "Withdraw an eBay offer only when confirm=true."},
+    {"name": "ebay.fulfillment_create", "description": "Submit shipment tracking or fulfillment for an eBay order only when confirm=true."},
+    {"name": "ebay.refund_issue", "description": "Submit an eBay seller refund only when confirm=true."},
+    {"name": "ebay.buyer_offer_eligible", "description": "List eBay listings eligible for seller-initiated offers without sending anything."},
+    {"name": "ebay.buyer_offer_send", "description": "Send a seller-initiated offer to interested eBay buyers only when confirm=true."},
     {"name": "office.contact_list", "description": "List or search Nancy's local Gmail address book."},
     {"name": "office.contact_save", "description": "Create or update one local address-book contact."},
     {"name": "office.contact_sync", "description": "Import recipients from the 500 most recent Sent messages."},
@@ -2726,6 +3152,9 @@ TOOLS = [
     {"name": "antiques.shopping_mode_end", "description": "End Antiques shopping-mode photo-upload consent."},
     {"name": "antiques.shopping_mode_status", "description": "Read current Antiques shopping-mode consent status."},
     {"name": "antiques.research_item", "description": "Research attached item photos using Leo, Google Lens, Google, eBay, and category sources; external uploads require consent."},
+    {"name": "antiques.price_search_start", "description": "Start an asynchronous saved-case price search. Scope defaults to exact; use all_likeness only after explicit user approval."},
+    {"name": "antiques.price_search_get", "description": "Read progress or results for one Museum price-search job."},
+    {"name": "antiques.price_search_cancel", "description": "Request cooperative cancellation of one active Museum price-search job."},
     {"name": "antiques.case_list", "description": "List automatically saved Antiques research cases."},
     {"name": "antiques.case_get", "description": "Read one saved Antiques research case and its revisions."},
     {"name": "antiques.settings_get", "description": "Read Antiques valuation settings."},
@@ -2866,10 +3295,49 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     }
                 )
             elif parsed.path == "/api/contacts":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                gmail = workspace_gmail(workspace_id)
                 self._json({
-                    "contacts": GMAIL.list_contacts(str(query.get("q", [""])[0])),
-                    "sync": GMAIL.contact_sync_status(),
+                    "contacts": gmail.list_contacts(str(query.get("q", [""])[0])),
+                    "sync": gmail.contact_sync_status(),
                 })
+            elif parsed.path == "/api/integrations":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                value = ACCOUNTS.public_status(workspace_id)
+                instagram = ACCOUNTS.instagram_config(workspace_id)
+                if instagram:
+                    try:
+                        bridge_status = instagram_profile_status(env=ACCOUNTS.instagram_env(workspace_id))
+                        value["instagram"].update({
+                            "connected": bool(bridge_status.get("signed_in") and bridge_status.get("account_matches")),
+                            "active_username": str(bridge_status.get("active_username") or ""),
+                            "requires_interaction": bool(bridge_status.get("chrome_debugging") and not bridge_status.get("signed_in")),
+                        })
+                    except Exception as exc:
+                        value["instagram"]["error"] = str(exc)
+                oauth_log = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
+                if not value["gmail"].get("connected") and oauth_log.is_file():
+                    try:
+                        lines = [line.strip() for line in oauth_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                        failure = next((line for line in reversed(lines) if line.startswith("Gmail connection failed:")), "")
+                        if failure:
+                            value["gmail"]["oauth_error"] = failure.removeprefix("Gmail connection failed:").strip()
+                    except OSError:
+                        pass
+                ebay_oauth_log = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
+                if not value["ebay"].get("connected") and ebay_oauth_log.is_file():
+                    try:
+                        lines = [line.strip() for line in ebay_oauth_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                        failure = next((line for line in reversed(lines) if line.startswith("eBay connection failed:")), "")
+                        if failure:
+                            value["ebay"]["oauth_error"] = failure.removeprefix("eBay connection failed:").strip()
+                    except OSError:
+                        pass
+                self._json(value)
             elif parsed.path == "/api/resume":
                 self._json(resume_bootstrap(
                     str(query.get("workspace_id", [""])[0]).strip(),
@@ -2887,6 +3355,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(ANTIQUES.bootstrap(workspace_id, session_id, str(session.get("active_room") or "")))
             elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(MUSEUM_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
+            elif re.fullmatch(r"/api/antiques/price-search/jobs/[A-Za-z0-9_-]+", parsed.path):
+                self._json(PRICE_SEARCH_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(ART_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif parsed.path == "/api/art/images":
@@ -2969,8 +3439,110 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"file": saved, "files": STORE.list_files(workspace_id, session_id)}, HTTPStatus.CREATED)
                 return
             payload = self._body()
-            if parsed.path == "/api/contacts/save":
-                self._json({"contact": GMAIL.save_contact(payload), "contacts": GMAIL.list_contacts()})
+            if parsed.path == "/api/integrations/instagram/connect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                username = str(payload.get("username") or "").strip().lstrip("@")
+                password = str(payload.get("password") or "")
+                if not username or not password:
+                    raise ValueError("Instagram username and password are required.")
+                ACCOUNTS.assign_instagram(workspace_id, username)
+                result = login_instagram(env=ACCOUNTS.instagram_env(workspace_id, username=username, password=password))
+                self._json({"instagram": {"assigned": True, "username": username, **result}})
+            elif parsed.path == "/api/integrations/instagram/verify":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                result = instagram_profile_status(env=workspace_instagram_env(workspace_id))
+                self._json({"instagram": {"assigned": True, "username": ACCOUNTS.instagram_config(workspace_id).get("username"), "connected": bool(result.get("signed_in") and result.get("account_matches")), **result}})
+            elif parsed.path == "/api/integrations/instagram/disconnect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                ACCOUNTS.unassign_instagram(workspace_id)
+                self._json({"ok": True, "instagram": {"assigned": False, "connected": False, "username": ""}})
+            elif parsed.path == "/api/integrations/gmail/connect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                account_email = str(payload.get("account_email") or "").strip()
+                gmail_env = ACCOUNTS.gmail_env(workspace_id, account_email=account_email)
+                if not gmail_env.get("GOOGLE_OAUTH_CLIENT_ID") or not gmail_env.get("GOOGLE_OAUTH_CLIENT_SECRET"):
+                    raise GmailGatewayError("Google OAuth client configuration is missing. Add it once in Veridex's local setup, then connect the workspace account here.")
+                if len(str(gmail_env.get("VERIDEX_INTEGRATION_ENCRYPTION_KEY") or "")) < 32:
+                    raise GmailGatewayError("Veridex's local Gmail encryption key is missing or invalid.")
+                command = [sys.executable, str(ROOT / "gmail_oauth.py"), "--workspace-id", workspace_id]
+                if account_email:
+                    command.extend(["--account-email", account_email])
+                log_path = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("w", encoding="utf-8") as oauth_log:
+                    subprocess.Popen(
+                        command,
+                        cwd=str(ROOT),
+                        stdin=subprocess.DEVNULL,
+                        stdout=oauth_log,
+                        stderr=subprocess.STDOUT,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                self._json({"ok": True, "status": "authorization_started", "message": "Complete Google authorization in the browser, then refresh status."})
+            elif parsed.path == "/api/integrations/gmail/disconnect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                ACCOUNTS.unassign_gmail(workspace_id)
+                self._json({"ok": True, "gmail": {"assigned": False, "connected": False, "account_email": ""}})
+            elif parsed.path == "/api/integrations/ebay/connect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                username = str(payload.get("username") or "").strip()
+                environment = str(payload.get("environment") or "sandbox").strip().lower()
+                marketplace_id = str(payload.get("marketplace_id") or "EBAY_US").strip().upper()
+                ebay_env = ACCOUNTS.ebay_env(
+                    workspace_id,
+                    username=username,
+                    environment=environment,
+                    marketplace_id=marketplace_id,
+                )
+                if not EbayGateway(env=ebay_env).configured():
+                    raise EbayGatewayError(
+                        "eBay OAuth client configuration is missing. Add the eBay client ID, client secret, RuName, "
+                        "loopback redirect, and integration encryption key to .env.local."
+                    )
+                command = [
+                    sys.executable,
+                    str(ROOT / "ebay_oauth.py"),
+                    "--workspace-id",
+                    workspace_id,
+                    "--environment",
+                    environment,
+                    "--marketplace-id",
+                    marketplace_id,
+                ]
+                if username:
+                    command.extend(["--username", username])
+                log_path = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("w", encoding="utf-8") as oauth_log:
+                    subprocess.Popen(
+                        command,
+                        cwd=str(ROOT),
+                        stdin=subprocess.DEVNULL,
+                        stdout=oauth_log,
+                        stderr=subprocess.STDOUT,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                self._json({"ok": True, "status": "authorization_started", "message": "Complete eBay authorization in the browser, then refresh status."})
+            elif parsed.path == "/api/integrations/ebay/disconnect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                config = ACCOUNTS.ebay_config(workspace_id)
+                if config:
+                    ACCOUNTS.ebay(workspace_id).disconnect()
+                ACCOUNTS.unassign_ebay(workspace_id)
+                self._json({"ok": True, "ebay": {"assigned": False, "connected": False, "username": ""}})
+            elif parsed.path == "/api/contacts/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                gmail = workspace_gmail(workspace_id)
+                self._json({"contact": gmail.save_contact(payload), "contacts": gmail.list_contacts()})
             elif parsed.path == "/api/resume/profile/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -3021,6 +3593,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(submit_museum_analysis(payload), HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/antiques/research":
                 self._json(antiques_research(payload))
+            elif parsed.path == "/api/antiques/price-search":
+                self._json(submit_price_search(payload), HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/antiques/shopping/start":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -3040,6 +3614,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(ART_JOBS.cancel(parsed.path.split("/")[-2]))
             elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
                 self._json(MUSEUM_JOBS.cancel(parsed.path.split("/")[-2]))
+            elif re.fullmatch(r"/api/antiques/price-search/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
+                self._json(PRICE_SEARCH_JOBS.cancel(parsed.path.split("/")[-2]))
             elif parsed.path == "/api/art/projects/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 art_context(workspace_id, str(payload.get("session_id") or ""))
@@ -3049,9 +3625,12 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     project = ART.save_project(workspace_id, payload.get("project") if isinstance(payload.get("project"), dict) else {})
                     self._json({"status": "saved", "project": project, "projects": ART.list_projects(workspace_id)})
             elif parsed.path == "/api/contacts/delete":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                gmail = workspace_gmail(workspace_id)
                 self._json({
-                    "deleted": GMAIL.delete_contact(str(payload.get("contact_id") or "")),
-                    "contacts": GMAIL.list_contacts(),
+                    "deleted": gmail.delete_contact(str(payload.get("contact_id") or "")),
+                    "contacts": gmail.list_contacts(),
                 })
             elif parsed.path == "/api/art/images/attach":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -3081,7 +3660,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "files": [public_file(row) for row in STORE.list_files(workspace_id, session_id)],
                 })
             elif parsed.path == "/api/contacts/sync":
-                self._json(GMAIL.sync_contacts(max_messages=500))
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                self._json(workspace_gmail(workspace_id).sync_contacts(max_messages=500))
             elif parsed.path == "/api/mail/check-delivery":
                 self._json(
                     check_delivery_alerts(
@@ -3090,7 +3671,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     )
                 )
             elif parsed.path == "/api/mail/alerts/resolve":
-                GMAIL.resolve_delivery_failure(str(payload.get("failure_id") or ""))
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_gmail(workspace_id).resolve_delivery_failure(str(payload.get("failure_id") or ""))
                 self._json(
                     {
                         "ok": True,
@@ -3198,32 +3780,36 @@ class VeridexHandler(BaseHTTPRequestHandler):
             proposal = ADMIN.rollback(str(args.get("proposal_id") or ""), confirm=bool(args.get("confirm")))
             value = {"status": proposal.get("status"), "proposal": proposal, "administration": ADMIN.bootstrap()}
         elif tool == "office.gmail_status":
-            value = GMAIL.connection_status()
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_gmail(workspace_id).connection_status()
         elif tool == "office.gmail_search":
+            workspace_id, _ = workspace_from_args(args)
             value = {
                 "query": str(args.get("query") or "in:inbox"),
-                "messages": GMAIL.search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
+                "messages": workspace_gmail(workspace_id).search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
             }
         elif tool == "office.contact_list":
-            value = {"contacts": GMAIL.list_contacts(str(args.get("query") or ""))}
+            workspace_id, _ = workspace_from_args(args)
+            value = {"contacts": workspace_gmail(workspace_id).list_contacts(str(args.get("query") or ""))}
         elif tool == "office.contact_save":
-            value = {"contact": GMAIL.save_contact(args)}
+            workspace_id, _ = workspace_from_args(args)
+            value = {"contact": workspace_gmail(workspace_id).save_contact(args)}
         elif tool == "office.contact_sync":
-            value = GMAIL.sync_contacts(max_messages=500)
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_gmail(workspace_id).sync_contacts(max_messages=500)
         elif tool == "office.gmail_delivery_check":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id)
             value = check_delivery_alerts(str(session.get("workspace_id") or ""), session_id)
         elif tool == "office.gmail_send":
+            workspace_id, session_id = workspace_from_args(args)
+            gmail = workspace_gmail(workspace_id)
             recipients = EMAIL_ADDRESS_RE.findall(" ".join(str(value) for value in args.get("to", []))) if isinstance(args.get("to"), list) else EMAIL_ADDRESS_RE.findall(str(args.get("to") or ""))
             subject = str(args.get("subject") or "")
             body = str(args.get("body") or "")
             attachment_ids = args.get("attachment_ids") if isinstance(args.get("attachment_ids"), list) else []
             resolved_attachments: list[Dict[str, Any]] = []
             if attachment_ids:
-                session_id = str(args.get("session_id") or "")
-                session = STORE.find_session(session_id)
-                workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "")
                 resolved_attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
                 if len(resolved_attachments) != len(set(str(file_id) for file_id in attachment_ids)):
                     raise ValueError("one or more email attachments are unavailable in this session")
@@ -3242,9 +3828,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "session_id": str(args.get("session_id") or ""),
                 }
                 sent = (
-                    GMAIL.send(recipients, subject, body, resolved_attachments, context=send_context)
+                    gmail.send(recipients, subject, body, resolved_attachments, context=send_context)
                     if resolved_attachments
-                    else GMAIL.send(recipients, subject, body, context=send_context)
+                    else gmail.send(recipients, subject, body, context=send_context)
                 )
                 value = {
                     "status": "sent",
@@ -3253,6 +3839,121 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "message_id": sent.get("id"),
                     "attachments": [public_file(row) for row in resolved_attachments],
                 }
+        elif tool == "office.instagram_status":
+            workspace_id, _ = workspace_from_args(args)
+            value = instagram_profile_status(env=workspace_instagram_env(workspace_id))
+        elif tool == "office.instagram_profile_get":
+            workspace_id, _ = workspace_from_args(args)
+            value = read_instagram_profile(str(args.get("handle") or ""), env=verified_instagram_env(workspace_id))
+        elif tool == "office.instagram_follow":
+            if not args.get("confirm"):
+                value = follow_instagram_account(str(args.get("handle") or ""), confirmed=False)
+            else:
+                workspace_id, _ = workspace_from_args(args)
+                value = follow_instagram_account(str(args.get("handle") or ""), confirmed=True, env=verified_instagram_env(workspace_id))
+        elif tool == "office.instagram_post":
+            if not args.get("confirm"):
+                value = create_instagram_post(str(args.get("image_path") or ""), str(args.get("caption") or ""), confirmed=False)
+            else:
+                workspace_id, _ = workspace_from_args(args)
+                value = create_instagram_post(str(args.get("image_path") or ""), str(args.get("caption") or ""), confirmed=True, env=verified_instagram_env(workspace_id))
+        elif tool == "office.instagram_message_draft":
+            workspace_id, _ = workspace_from_args(args)
+            value = draft_instagram_message(str(args.get("handle") or ""), str(args.get("message") or ""), env=verified_instagram_env(workspace_id))
+        elif tool == "office.instagram_message_send":
+            if not args.get("confirm"):
+                value = send_instagram_message(str(args.get("handle") or ""), str(args.get("message") or ""), confirmed=False)
+            else:
+                workspace_id, _ = workspace_from_args(args)
+                value = send_instagram_message(str(args.get("handle") or ""), str(args.get("message") or ""), confirmed=True, env=verified_instagram_env(workspace_id))
+        elif tool == "office.facebook_status":
+            workspace_from_args(args)
+            value = facebook_profile_status()
+        elif tool == "office.facebook_profile_get":
+            workspace_from_args(args)
+            value = read_facebook_profile(str(args.get("target") or args.get("profile_url") or ""))
+        elif tool == "office.facebook_message_draft":
+            workspace_from_args(args)
+            value = draft_facebook_message(
+                str(args.get("target") or args.get("profile_url") or ""),
+                str(args.get("message") or ""),
+            )
+        elif tool == "office.facebook_message_send":
+            target = str(args.get("target") or args.get("profile_url") or "")
+            message = str(args.get("message") or "")
+            if not args.get("confirm"):
+                value = send_facebook_message(target, message, confirmed=False)
+            else:
+                workspace_from_args(args)
+                value = send_facebook_message(target, message, confirmed=True)
+        elif tool == "ebay.status":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id, require_assignment=False).connection_status()
+        elif tool == "ebay.inventory_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).inventory_items(
+                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+            )
+        elif tool == "ebay.offer_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).offers(
+                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+            )
+        elif tool == "ebay.order_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).orders(
+                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+            )
+        elif tool == "ebay.transaction_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).transactions(
+                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+            )
+        elif tool == "ebay.policy_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).policies()
+        elif tool == "ebay.listing_preview":
+            workspace_id, _ = workspace_from_args(args)
+            listing = args.get("listing") if isinstance(args.get("listing"), dict) else args
+            value = workspace_ebay(workspace_id, require_assignment=False).preview_listing(listing)
+        elif tool == "ebay.listing_publish":
+            workspace_id, _ = workspace_from_args(args)
+            listing = args.get("listing") if isinstance(args.get("listing"), dict) else args
+            value = workspace_ebay(workspace_id).publish_listing(listing, confirmed=args.get("confirm") is True)
+        elif tool == "ebay.offer_update":
+            workspace_id, _ = workspace_from_args(args)
+            offer = args.get("offer") if isinstance(args.get("offer"), dict) else {}
+            value = workspace_ebay(workspace_id).update_offer(
+                str(args.get("offer_id") or ""), offer, confirmed=args.get("confirm") is True
+            )
+        elif tool == "ebay.listing_withdraw":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).withdraw_listing(
+                str(args.get("offer_id") or ""), confirmed=args.get("confirm") is True
+            )
+        elif tool == "ebay.fulfillment_create":
+            workspace_id, _ = workspace_from_args(args)
+            details = args.get("fulfillment") if isinstance(args.get("fulfillment"), dict) else {}
+            value = workspace_ebay(workspace_id).create_fulfillment(
+                str(args.get("order_id") or ""), details, confirmed=args.get("confirm") is True
+            )
+        elif tool == "ebay.refund_issue":
+            workspace_id, _ = workspace_from_args(args)
+            details = args.get("refund") if isinstance(args.get("refund"), dict) else {}
+            value = workspace_ebay(workspace_id).issue_refund(
+                str(args.get("order_id") or ""), details, confirmed=args.get("confirm") is True
+            )
+        elif tool == "ebay.buyer_offer_eligible":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).eligible_buyer_offer_items(
+                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+            )
+        elif tool == "ebay.buyer_offer_send":
+            workspace_id, _ = workspace_from_args(args)
+            offer = args.get("offer") if isinstance(args.get("offer"), dict) else {}
+            value = workspace_ebay(workspace_id).send_offer_to_buyers(
+                offer, confirmed=args.get("confirm") is True
+            )
         elif tool == "resume.profile_get":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id)
@@ -3327,6 +4028,12 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 value = {"shopping_mode": ANTIQUES.shopping_status(workspace_id, session_id, ANTIQUES_ROOM_ID)}
             elif tool == "antiques.research_item":
                 value = antiques_research({**args, "workspace_id": workspace_id, "session_id": session_id})
+            elif tool == "antiques.price_search_start":
+                value = submit_price_search({**args, "workspace_id": workspace_id, "session_id": session_id})
+            elif tool == "antiques.price_search_get":
+                value = PRICE_SEARCH_JOBS.get(str(args.get("job_id") or ""))
+            elif tool == "antiques.price_search_cancel":
+                value = PRICE_SEARCH_JOBS.cancel(str(args.get("job_id") or ""))
             elif tool == "antiques.case_list":
                 value = {"cases": ANTIQUES.list_cases(workspace_id)}
             elif tool == "antiques.case_get":

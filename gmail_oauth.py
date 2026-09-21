@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -123,12 +124,12 @@ def _json_request(
     return payload
 
 
-def connect() -> Dict[str, object]:
-    env = _read_env(LOCAL_ENV)
+def connect(env_override: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    env = dict(env_override) if env_override is not None else _read_env(LOCAL_ENV)
     client_id = str(env.get("GOOGLE_OAUTH_CLIENT_ID") or "")
     client_secret = str(env.get("GOOGLE_OAUTH_CLIENT_SECRET") or "")
     redirect_uri = str(env.get("GOOGLE_OAUTH_REDIRECT_URI") or "http://127.0.0.1:8078/integrations/google/callback")
-    expected_account = str(env.get("VERIDEX_GOOGLE_ACCOUNT") or "veridexcorp@gmail.com").strip()
+    expected_account = str(env.get("VERIDEX_GOOGLE_ACCOUNT") or "").strip()
     encryption_key = str(env.get("VERIDEX_INTEGRATION_ENCRYPTION_KEY") or "")
     if not client_id or not client_secret or len(encryption_key) < 32:
         raise GmailGatewayError("Veridex Gmail OAuth is not configured in .env.local.")
@@ -152,7 +153,21 @@ def connect() -> Dict[str, object]:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             query = urllib.parse.parse_qs(parsed.query)
-            result["state"] = str(query.get("state", [""])[0])
+            returned_state = str(query.get("state", [""])[0])
+            if returned_state != state:
+                body = (
+                    "<!doctype html><meta charset='utf-8'><title>Expired Gmail connection</title>"
+                    "<style>body{font:18px system-ui;max-width:640px;margin:15vh auto;padding:24px;color:#17211b}</style>"
+                    "<h1>This Gmail connection attempt has expired.</h1>"
+                    "<p>Use the newest Google authorization tab opened by Veridex.</p>"
+                ).encode("utf-8")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            result["state"] = returned_state
             result["code"] = str(query.get("code", [""])[0])
             result["error"] = str(query.get("error", [""])[0])
             ok = bool(result["code"]) and not result["error"]
@@ -174,7 +189,9 @@ def connect() -> Dict[str, object]:
         server = ThreadingHTTPServer((redirect.hostname, redirect.port), CallbackHandler)
     except OSError as exc:
         raise GmailGatewayError(f"The Gmail callback port {redirect.port} is unavailable. Stop the app using it and try again.") from exc
-    server.timeout = 300
+    # Account selection, unverified-app warnings, and 2FA can easily take more
+    # than five minutes when a user is being guided through the first setup.
+    server.timeout = 1
     params = urllib.parse.urlencode(
         {
             "client_id": client_id,
@@ -194,10 +211,12 @@ def connect() -> Dict[str, object]:
     print(f"Opening Google authorization for {expected_account}...", flush=True)
     if not webbrowser.open(authorization_url, new=1):
         print(f"Open this URL in your browser:\n{authorization_url}", flush=True)
-    server.handle_request()
+    deadline = time.monotonic() + 1800
+    while not result and time.monotonic() < deadline:
+        server.handle_request()
     server.server_close()
     if not result:
-        raise GmailGatewayError("Google authorization timed out after five minutes.")
+        raise GmailGatewayError("Google authorization timed out after thirty minutes.")
     if result.get("error"):
         raise GmailGatewayError(f"Google authorization was not completed: {result['error']}")
     if result.get("state") != state or not result.get("code"):
@@ -237,6 +256,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Connect Veridex to a local Gmail account")
     parser.add_argument("--import-env", type=Path, help="One-time source for OAuth client configuration")
     parser.add_argument("--configure-only", action="store_true")
+    parser.add_argument("--workspace-id", help="Store the Gmail grant only for this workspace")
+    parser.add_argument("--account-email", default="", help="Optional Google account hint")
     args = parser.parse_args()
     try:
         if args.import_env:
@@ -244,7 +265,16 @@ def main() -> int:
             print("Imported OAuth client configuration into Veridex's local .env.local.", flush=True)
         if args.configure_only:
             return 0
-        status = connect()
+        env = None
+        if args.workspace_id:
+            from connected_accounts import ConnectedAccounts
+
+            root = Path(__file__).resolve().parent
+            data_root = Path(os.environ.get("VERIDEX_DATA_DIR", str(root / "data"))).resolve()
+            env = ConnectedAccounts(data_root, root).gmail_env(args.workspace_id, account_email=args.account_email)
+        status = connect(env)
+        if args.workspace_id:
+            ConnectedAccounts(data_root, root).assign_gmail(args.workspace_id, str(status.get("account_email") or ""))
         print(f"Connected Veridex Gmail as {status.get('account_email')}.", flush=True)
         return 0
     except (GmailGatewayError, OSError) as exc:

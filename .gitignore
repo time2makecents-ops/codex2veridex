@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 .env.local
+local.env
 .veridex-codex-session
 data/
 .runtime/

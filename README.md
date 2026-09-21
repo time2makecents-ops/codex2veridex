@@ -18,6 +18,7 @@ and does not read from or write to `C:\Office-App`.
 - Generated images verified, ledgered, previewed, and reported with their exact local path and checksum.
 - A full Art Studio with the existing Codex image route, optional free-provider generation, reference editing, local finishing tools, explicit projects, and image lineage.
 - A Museum led by Leo for photo-led identification, evidence-linked value research, frame analysis, and conservative thrift-buy guidance.
+- Workspace-scoped eBay seller tools for inventory, listings, orders, finances, and confirmation-gated marketplace actions.
 - An HR Resume Studio with saved career profiles, job tailoring, ATS review, private/federal templates, and verified DOCX/PDF/text exports.
 - A Codex MCP bridge for governed requests from an interactive Codex session.
 - Independent start, stop, restart, and status commands.
@@ -40,6 +41,12 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 .\veridex.ps1 tailscale
 .\veridex.ps1 gmail-connect
 .\veridex.ps1 gmail-status
+.\veridex.ps1 instagram-profile
+.\veridex.ps1 instagram-login
+.\veridex.ps1 instagram-status
+.\veridex.ps1 facebook-profile
+.\veridex.ps1 facebook-login
+.\veridex.ps1 facebook-status
 ```
 
 `tailscale` keeps the backend on localhost, exposes it only through the computer's
@@ -64,6 +71,105 @@ Leo separates observations, sourced matches, and inference. Values use sold evid
 when available and show the lower of the editable profit calculation or the default
 25% conservative-value acquisition cap. Results are research guidance, not certified
 authentication or professional appraisal.
+
+Saved Antiques cases also keep normalized price evidence. Possible repeat appearances
+of the physical item are labeled separately from same-model or same-edition examples;
+visually similar items are withheld from the expected-resale calculation. Sold records,
+active asking prices, estimates, venue, date, and source stay distinct. Only exact-tier
+sold records linked to captured source evidence can set the expected-resale range or
+maximum-buy guidance. When no exact result is available, Leo asks before expanding to
+similar items.
+
+Each saved case has a background **Find prices** control. The default scope is **Exact
+only**. **All likeness** is an explicit expansion that still searches and displays exact
+matches first, then similar candidates in a separate section that is not used for exact
+valuation. Search depth presets are Fast (90-second exact / 6-minute all-likeness),
+Standard (3-minute / 12-minute), and Extended (5-minute / 20-minute). Jobs report
+progress and can be canceled. Price-only rechecks do not upload the case photographs.
+The same workflow is available through `antiques.price_search_start`,
+`antiques.price_search_get`, and `antiques.price_search_cancel`.
+
+### Video inventory extraction
+
+`video_inventory.py` provides a local, review-first bridge from a table or estate-sale
+video to the existing inventory spreadsheet format. It samples bounded frames, favors
+sharp and stable views, removes only near-identical full-frame duplicates, and writes a
+numbered contact sheet plus a provenance manifest. It does not claim that a candidate
+view is an identified item; a human approves the useful views before workbook creation.
+
+Create a new project folder for one video:
+
+```powershell
+.venv\Scripts\python.exe video_inventory.py extract `
+  "C:\path\to\items.mp4" `
+  "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001"
+```
+
+Create a second-stage review package that groups only similar adjacent scenes, shows
+all four rotation choices, and proposes whole-region lassos:
+
+```powershell
+.venv\Scripts\python.exe video_inventory.py proposals `
+  "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001\manifest.json" `
+  "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001_proposals" `
+  --rotate "view_011=90"
+```
+
+Rotation values are clockwise and must be `0`, `90`, `180`, or `270`. An override on
+any member of a grouped scene applies to that scene; conflicting overrides are
+rejected. `orientation_review.jpg` shows every option, and
+`item_proposals_contact_sheet.jpg` overlays the proposed lassos. Frame-edge and weak
+boundary risks are recorded in `proposal_manifest.json`. These outputs remain
+unverified proposals and do not automatically create spreadsheet rows.
+
+After checking the orientation and full-item boundaries, create a workbook from the
+approved view IDs:
+
+```powershell
+.venv\Scripts\python.exe video_inventory.py workbook `
+  "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001\manifest.json" `
+  "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001.xlsx" `
+  --crops-dir "$env:USERPROFILE\Documents\Veridex\Video Inventory\items_001_crops" `
+  --select "view_001:boxed slot bank" `
+  --select "view_004:glass decanter"
+```
+
+The command-line workbook step uses the complete approved frame. Code callers can pass
+rectangle or freehand points with `VideoInventorySelection` to isolate one item when a
+frame contains several objects and can set `rotation_degrees` for accepted orientation.
+Multiple distinct approved regions may come from one frame. Source videos and candidate
+frames are hash-checked and never overwritten.
+
+### Review database and 50-item queue
+
+Use the SQLite-backed review queue for duplicate removal and crop correction. The
+database is the durable working state; XLSX is a later export of accepted items.
+
+Initialize one database beside the video project:
+
+```powershell
+.venv\Scripts\python.exe video_inventory_review.py init `
+  "C:\path\to\item_proposals\proposal_manifest.json" `
+  "C:\path\to\video_review\review.sqlite3" `
+  --corrections-dir "C:\path\to\video_review\corrected_crops" `
+  --batch-size 50
+```
+
+Start the loopback-only review screen:
+
+```powershell
+.venv\Scripts\python.exe video_inventory_review.py serve `
+  "C:\path\to\video_review\review.sqlite3" `
+  --port 8771
+```
+
+Open <http://127.0.0.1:8771>. Each fixed batch contains up to 50 proposal images.
+Decisions are `Keep`, `Duplicate`, `Partial`, `Trash`, `New crop`, and `Unsure`.
+Duplicate rows require the retained proposal ID. The crop editor draws against the
+accepted frame orientation and saves a new revision without overwriting the original.
+All decisions and crop revisions append audit events in SQLite. This records review
+feedback for later heuristic improvements; it does not claim that a model retrains
+itself automatically.
 
 ## Voice controls
 
@@ -335,6 +441,61 @@ was limited by login/access controls, or failed. Sol/high synthesizes the Google
 page, opened-source text, and URLs; it must prefer opened source text over a
 conflicting snippet and label snippet-only claims. This uses the existing Codex
 desktop authentication and does not add an API-key charge.
+
+## Dedicated Instagram bridge
+
+Veridex can inspect profiles and compose future outreach through a separate,
+repository-local Chrome profile. Put `INSTAGRAM_USERNAME` and
+`INSTAGRAM_PASSWORD` only in ignored `.env.local`, then initialize and sign in:
+
+```powershell
+.\veridex.ps1 instagram-profile
+.\veridex.ps1 instagram-login
+.\veridex.ps1 instagram-status
+```
+
+If Instagram requests a security code or identity check, complete it in the
+visible Chrome window. The resulting session stays under ignored
+`data/browser_profiles/veridex_instagram` and is not pushed to GitHub. Veridex
+tools expose status, bounded profile inspection, confirmation-gated follows,
+message composition, and message sending. Composition leaves the text visible
+for review; following and sending are separate actions that require
+`confirm=true`.
+
+## Dedicated Facebook bridge
+
+Veridex can inspect a Facebook profile and compose outreach through a separate,
+repository-local Chrome profile. Put `FACEBOOK_USERNAME` (or `FACEBOOK_EMAIL`)
+and `FACEBOOK_PASSWORD` only in ignored `local.env` or `.env.local`, then initialize
+and sign in:
+
+```powershell
+.\veridex.ps1 facebook-profile
+.\veridex.ps1 facebook-login
+.\veridex.ps1 facebook-status
+```
+
+If Facebook requests a security code, approval, or identity check, complete it in
+the visible Chrome window. The resulting session remains under ignored
+`data/browser_profiles/veridex_facebook`. Profile reads are bounded, message
+composition leaves the text visible for review, and sending is a separate action
+that requires `confirm=true`.
+
+## eBay seller tools
+
+Connect eBay from **Connected accounts**. Veridex uses eBay OAuth rather than storing
+an eBay password, encrypts reusable tokens in the active workspace, and defaults new
+connections to eBay Sandbox. Configure an eBay Developer keyset and register
+`http://127.0.0.1:8079/integrations/ebay/callback` as the RuName accept URL, then add
+the client ID, client secret, RuName, environment, marketplace, and the shared
+integration-encryption key to ignored `.env.local` using `.env.local.example`.
+
+Read-only tools expose connection status, inventory, offers, orders, policies, and
+financial transactions. Listing preview is local. Publishing and withdrawing
+fixed-price listings, recording fulfillment, issuing refunds, and sending seller offers require
+an explicit confirmed tool call. Buyer purchases and bidding are not supported.
+Inventory API listings remain API-managed and cannot subsequently be revised through
+Seller Hub, so migrate existing live listings only after a deliberate review.
 
 ## Codex MCP bridge
 

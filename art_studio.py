@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable
@@ -576,6 +576,7 @@ class ArtStudio:
 class ArtJobManager:
     def __init__(self, workers: int = 2, prefix: str = "artjob", label: str = "Art Studio"):
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._futures: Dict[str, Future[Any]] = {}
         self._cancelled: set[str] = set()
         self._lock = threading.RLock()
         self._prefix = re.sub(r"[^A-Za-z0-9_-]+", "", prefix) or "job"
@@ -612,7 +613,9 @@ class ArtJobManager:
                 with self._lock:
                     self._jobs[job_id].update({"status": "canceled" if cancelled() else "failed", "progress": 100, "message": "Canceled" if cancelled() else str(exc), "error": "" if cancelled() else str(exc), "updated_at": utc_now()})
 
-        self._executor.submit(work)
+        future = self._executor.submit(work)
+        with self._lock:
+            self._futures[job_id] = future
         return self.get(job_id)
 
     def get(self, job_id: str) -> Dict[str, Any]:
@@ -620,6 +623,20 @@ class ArtJobManager:
             if job_id not in self._jobs:
                 raise KeyError(f"Unknown {self._label} job")
             return dict(self._jobs[job_id])
+
+    def wait(self, job_id: str, timeout: float | None = None) -> Dict[str, Any]:
+        """Wait for one known job without timing-sensitive polling."""
+        with self._lock:
+            if job_id not in self._jobs:
+                raise KeyError(f"Unknown {self._label} job")
+            future = self._futures.get(job_id)
+        if future is None:
+            return self.get(job_id)
+        try:
+            future.result(timeout=timeout)
+        except FutureTimeoutError:
+            pass
+        return self.get(job_id)
 
     def cancel(self, job_id: str) -> Dict[str, Any]:
         with self._lock:

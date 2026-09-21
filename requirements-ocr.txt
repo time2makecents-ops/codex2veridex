@@ -1,0 +1,8 @@
+# Optional local signature OCR. The Museum pipeline remains usable without it.
+# Keep the native image stack compatible with the app's NumPy 1.x baseline.
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+scipy==1.13.1
+scikit-image==0.24.0
+tifffile==2024.8.30
+easyocr==1.7.2

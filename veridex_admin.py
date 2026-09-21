@@ -135,6 +135,39 @@ class AdminService:
                     self.room_catalog_path,
                     {"catalog_id": "VERIDEX-GLOBAL-ROOMS", "version": 1, "updated_at": now, "rooms": rooms},
                 )
+            else:
+                # Release seed migrations are additive only. Existing administrator
+                # edits remain authoritative; this merely makes newly shipped rooms
+                # available in catalogs created by older releases.
+                catalog = self._read_json(self.room_catalog_path, {})
+                rooms = [dict(row) for row in catalog.get("rooms", []) if isinstance(row, dict)]
+                known = {str(row.get("id") or "") for row in rooms}
+                seeded = []
+                now = utc_now()
+                for base in self.base_rooms:
+                    if base.get("id") != "antiques_department" or base.get("id") in known:
+                        continue
+                    room = dict(base)
+                    room.setdefault("purpose", "Governed antiques research workspace.")
+                    room.setdefault("capabilities", [])
+                    room.setdefault("aliases", [])
+                    room.setdefault("created_at", now)
+                    room.setdefault("updated_at", now)
+                    rooms.append(room)
+                    seeded.append(str(room["id"]))
+                if seeded:
+                    catalog.update({
+                        "version": int(catalog.get("version") or 1) + 1,
+                        "updated_at": now,
+                        "rooms": rooms,
+                    })
+                    self._write_json(self.room_catalog_path, catalog)
+                    self._audit(
+                        "release_room_seed_migrated",
+                        {"proposal_id": "release-antiques-department", "kind": "room", "action": "create", "status": "verified"},
+                        inserted_room_ids=seeded,
+                        catalog_version=catalog["version"],
+                    )
             if not self.active_governance_path.exists():
                 governance = self._read_json(self.base_governance_path, {})
                 if not isinstance(governance, dict):

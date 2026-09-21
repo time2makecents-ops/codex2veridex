@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veridex Video Review</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237de0c3'/%3E%3Cpath d='M16 18h9l7 24 7-24h9L37 49H27z' fill='%23071a14'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="workspace-header">
+    <div class="identity">
+      <span class="eyebrow">VERIDEX / VIDEO INVENTORY</span>
+      <h1>Item review</h1>
+    </div>
+    <div class="progress-block" aria-live="polite">
+      <div class="progress-copy">
+        <span id="review-count">Loading review…</span>
+        <span id="batch-range"></span>
+      </div>
+      <div class="progress-track"><span id="progress-bar"></span></div>
+    </div>
+    <nav class="batch-nav" aria-label="Batch navigation">
+      <button id="previous-batch" type="button">← Previous 50</button>
+      <label>Batch <select id="batch-select" aria-label="Select review batch"></select></label>
+      <button id="next-batch" type="button">Next 50 →</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="review-guide" aria-label="Review controls">
+      <p><strong>One click records the decision.</strong> Use <kbd>K</kbd> keep, <kbd>D</kbd> duplicate, <kbd>P</kbd> partial, <kbd>T</kbd> trash, <kbd>C</kbd> redraw, or <kbd>U</kbd> unsure while a tile is focused.</p>
+      <div class="legend">
+        <span data-tone="keep">Keep</span><span data-tone="duplicate">Duplicate</span>
+        <span data-tone="partial">Partial</span><span data-tone="trash">Trash</span>
+        <span data-tone="crop">New crop</span><span data-tone="unsure">Unsure</span>
+      </div>
+    </section>
+    <section id="review-grid" class="review-grid" aria-label="Proposal review queue"></section>
+  </main>
+
+  <dialog id="crop-dialog" class="crop-dialog">
+    <form method="dialog" class="crop-shell">
+      <header>
+        <div><span class="eyebrow">FREEHAND CORRECTION</span><h2 id="crop-title">Redraw item boundary</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Close crop editor">×</button>
+      </header>
+      <p class="crop-help">Trace around the complete item. The original frame remains unchanged; saving creates a new crop revision.</p>
+      <div class="canvas-stage"><canvas id="crop-canvas"></canvas></div>
+      <footer>
+        <span id="point-count">Existing boundary shown</span>
+        <div>
+          <button id="clear-lasso" type="button" class="secondary">Clear and redraw</button>
+          <button id="save-lasso" type="button" class="primary">Save corrected crop</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
