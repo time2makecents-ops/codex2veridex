@@ -335,6 +335,54 @@ ChatGPT product memory.
 See [DEVELOPMENT_MODEL_POLICY.md](DEVELOPMENT_MODEL_POLICY.md) for the separate
 personal model-switch protocol used while coding Veridex in this Codex terminal.
 
+## Token-efficient Codex development
+
+Use `DEVELOPMENT_MODEL_POLICY.md` as the single model-routing authority. State
+the route once when a task begins and repeat it only if the required route
+changes or does not match. Read only relevant documentation sections and do not
+reread unchanged instruction files during the same task.
+
+Run narrow tests while iterating and one full suite per completed cross-cutting
+slice or final checkpoint. Reserve Luna/low subagents for bounded, substantial
+routine work; give them no conversation history when practical and request only
+counts and errors. A small deterministic command should stay in the active
+development session when creating an agent would cost more than running it.
+
+Price evaluation starts with cached evidence and exact-identity searches across
+the core sources. Broader or thorough searching is an escalation after an exact
+match fails or when the user requests it. Start an unrelated major feature in a
+fresh conversation with a concise checkpoint handoff rather than carrying a
+long task history forward. Keep only plugin bundles that are actively useful.
+
+### Start a fully configured terminal session
+
+A current-user PowerShell profile command starts Codex in this repository so
+the personal `config.toml`, this workspace's `AGENTS.md`, and the development
+model policy are discovered automatically. Open a new PowerShell terminal and
+run:
+
+```powershell
+veridex
+```
+
+Optional Codex arguments pass through unchanged, for example `veridex --search`.
+The launcher validates that the required rule files exist before starting. It
+also starts Codex with `danger-full-access` and approval mode `never`, so the
+session has unrestricted local filesystem access and does not pause for command
+approval. Use this command only for this trusted workspace; the launcher prints
+a permission warning on every start.
+
+To choose a focused task handoff instead of loading the full project history,
+say:
+
+```text
+list handoffs
+```
+
+Codex returns a numbered list, asks which handoff to use, and loads only the
+handoff number supplied in the next message. The stable index is
+`handoffs/README.md`.
+
 ## Gmail for Nancy
 
 Nancy uses a Veridex-owned Gmail OAuth connection and encrypted token store

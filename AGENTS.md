@@ -4,10 +4,18 @@ These instructions apply to the entire repository.
 
 ## Sources of truth
 
-- Read `README.md` for supported behavior, setup, and operator commands.
-- Read `ARCHITECTURE.md` before changing request flow, persistence, routing, rooms, governance, browser bridges, or artifact handling.
-- Follow `DEVELOPMENT_MODEL_POLICY.md` before every development phase. State the configured and required model/reasoning, explain the phase, and pause on a mismatch.
+- Read only the relevant sections of `README.md` for supported behavior, setup, and operator commands.
+- Read the relevant sections of `ARCHITECTURE.md` before changing request flow, persistence, routing, rooms, governance, browser bridges, or artifact handling.
+- Follow `DEVELOPMENT_MODEL_POLICY.md` before development begins. State the configured and required model/reasoning once; repeat only if the route changes or mismatches, and pause on a mismatch.
+- Do not reread an unchanged instruction or reference file during the same task.
 - Treat `governance/navigator_governance_v1.0.0.json` as the committed runtime governance authority. Do not casually duplicate or weaken it elsewhere.
+
+## Handoff selection
+
+- When the user says `list handoffs` or clearly asks to list available handoffs, read only `handoffs/README.md`. Return its numbered names and short descriptions, then ask which number to use. Do not load any handoff yet.
+- If the immediately following user message is a bare valid number, or says `use <number>`, map it through `handoffs/README.md`, read only that handoff, state which one was loaded, and continue from its scope.
+- If the number is invalid, show the valid range and ask again. Do not interpret a bare number as a handoff choice unless a handoff selection is pending.
+- Never load all handoffs automatically. Keep their numbering stable by updating `handoffs/README.md` whenever a handoff is added, removed, or renamed.
 
 ## Repository boundaries
 
@@ -33,12 +41,14 @@ These instructions apply to the entire repository.
 - Keep the Python backend and dependency-light, vanilla HTML/CSS/JavaScript frontend consistent with the existing architecture.
 - Preserve public API shapes, append-only audit semantics, atomic JSON replacement, and path-bound authorization unless the requested change explicitly migrates them.
 - Prefer extending the existing governed request, room, artifact, and provider abstractions over creating parallel state or bypass paths.
+- For price evaluation, reuse cached evidence and search the exact identity on the core source set first. Escalate to broader or thorough searches only after exact-match failure or an explicit user request, and batch independent item searches when practical.
 - Do not add paid-provider routing, silent fallbacks, or dependencies on `C:\Office-App`.
 
 ## Validation
 
 - Run the narrowest relevant `unittest` target while iterating.
-- Run `.venv\Scripts\python.exe -m unittest discover -v` for cross-cutting or final validation when appropriate.
+- Run `.venv\Scripts\python.exe -m unittest discover -v` once per completed cross-cutting slice or final checkpoint when appropriate, rather than after every small edit.
+- Use Luna/low subagents only for bounded, substantial routine execution. Prefer no conversation fork, return counts and errors only, and avoid agent startup for trivial commands.
 - For UI changes, include the relevant `test_web_ui.py` coverage and perform browser validation when behavior or layout cannot be proven statically.
 - Treat failed, flaky, or ambiguous tests as diagnosis work and return to the model/reasoning required by `DEVELOPMENT_MODEL_POLICY.md` before investigating.
 - Do not claim success without reporting what was actually verified and any remaining unverified behavior.
