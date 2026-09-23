@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,7 +11,136 @@ from unittest.mock import patch
 import google_chrome_search
 
 
+BRIDGE_PATH = Path(__file__).with_name("google_chrome_search.js")
+
+
+def run_bridge_javascript(source: str) -> dict:
+    node = shutil.which("node")
+    if not node:
+        raise unittest.SkipTest("Node.js is required for bridge tests")
+    script = f"const bridge = require({json.dumps(BRIDGE_PATH.as_posix())});\n{source}"
+    result = subprocess.run(
+        [node, "-e", script],
+        cwd=BRIDGE_PATH.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr.strip() or result.stdout.strip())
+    return json.loads(result.stdout)
+
+
 class GoogleChromeSearchTests(unittest.TestCase):
+    def test_bridge_prefers_populated_body_over_empty_search_placeholder(self) -> None:
+        selected = run_bridge_javascript(
+            'console.log(JSON.stringify(bridge.selectGooglePageText({'
+            'search_text: "   ", main_text: "", body_text: "Visible Google results"})));'
+        )
+        self.assertEqual(selected, {"root": "body", "text": "Visible Google results"})
+
+    def test_bridge_waits_for_delayed_results(self) -> None:
+        result = run_bridge_javascript(
+            """
+(async () => {
+  const searchUrl = "https://www.google.com/search?q=delayed&hl=en";
+  const snapshots = [
+    {url: searchUrl, title: "Google", search_text: "", main_text: "", body_text: "Skip to main content Accessibility help", links: []},
+    {url: searchUrl, title: "delayed - Google Search", search_text: "Result one", links: [{title: "One", url: "https://example.com"}]},
+  ];
+  const calls = [];
+  const client = {send: async (method, params) => { calls.push({method, params}); return {}; }};
+  const page = await bridge.waitForGoogleEvidence(client, searchUrl, {
+    maxAttempts: 3,
+    pollMs: 0,
+    navigateAfterAttempts: 8,
+    readPage: async () => snapshots.shift(),
+    sleep: async () => {},
+  });
+  console.log(JSON.stringify({page, calls}));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["page"]["text"], "Result one")
+        self.assertEqual(result["page"]["result_state"], "ready")
+        self.assertEqual(result["calls"], [])
+
+    def test_bridge_navigates_about_blank_target_once(self) -> None:
+        result = run_bridge_javascript(
+            """
+(async () => {
+  const searchUrl = "https://www.google.com/search?q=retry&hl=en";
+  const snapshots = [
+    {url: "about:blank", title: "", search_text: "", main_text: "", body_text: "", links: []},
+    {url: searchUrl, title: "retry - Google Search", search_text: "Recovered result", links: [{title: "Recovered", url: "https://example.com"}]},
+  ];
+  const calls = [];
+  const client = {send: async (method, params) => { calls.push({method, params}); return {}; }};
+  const page = await bridge.waitForGoogleEvidence(client, searchUrl, {
+    maxAttempts: 3,
+    pollMs: 0,
+    readPage: async () => snapshots.shift(),
+    sleep: async () => {},
+  });
+  console.log(JSON.stringify({page, calls}));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["page"]["text"], "Recovered result")
+        self.assertEqual([call["method"] for call in result["calls"]], ["Page.navigate"])
+
+    def test_bridge_classifies_interstitials_and_true_no_results(self) -> None:
+        result = run_bridge_javascript(
+            """
+const searchUrl = "https://www.google.com/search?q=item&hl=en";
+const classify = (page) => bridge.classifyGooglePage(page, searchUrl).kind;
+console.log(JSON.stringify({
+  consent: classify({url: "https://consent.google.com/", body_text: "Before you continue to Google"}),
+  challenge: classify({url: searchUrl, body_text: "Our systems have detected unusual traffic. Not a robot"}),
+  sign_in: classify({url: "https://accounts.google.com/ServiceLogin", body_text: "Sign in with Google"}),
+  network: classify({url: "chrome-error://chromewebdata/", body_text: "This site can't be reached ERR_FAILED"}),
+  no_results: classify({url: searchUrl, search_text: "No results found. Try different keywords."}),
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "consent": "consent",
+                "challenge": "challenge",
+                "sign_in": "sign_in",
+                "network": "network_error",
+                "no_results": "no_results",
+            },
+        )
+
+    def test_bridge_reports_compact_timeout_diagnostic(self) -> None:
+        result = run_bridge_javascript(
+            """
+(async () => {
+  const searchUrl = "https://www.google.com/search?q=timeout&hl=en";
+  const blank = {url: searchUrl, title: "Google", search_text: "", main_text: "", body_text: "", links: []};
+  const client = {send: async () => ({})};
+  try {
+    await bridge.waitForGoogleEvidence(client, searchUrl, {
+      timeoutMs: 15000,
+      maxAttempts: 2,
+      pollMs: 0,
+      navigateAfterAttempts: 1,
+      readPage: async () => blank,
+      sleep: async () => {},
+    });
+    console.log(JSON.stringify({error: ""}));
+  } catch (error) {
+    console.log(JSON.stringify({error: error.message}));
+  }
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+        )
+        self.assertIn("did not render readable results", result["error"])
+        self.assertIn("stage=blank", result["error"])
+        self.assertIn("text_length=0, links=0", result["error"])
+
     def test_detects_explicit_google_requests_but_not_generic_search(self) -> None:
         self.assertTrue(google_chrome_search.wants_google_search("check Google for Stella Jones"))
         self.assertTrue(google_chrome_search.wants_google_search("use a google search to find the show"))

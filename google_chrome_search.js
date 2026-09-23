@@ -160,6 +160,175 @@ async function createSearchTab(url) {
   return getJson(`/json/new?${encodeURIComponent(url)}`, "PUT");
 }
 
+function selectGooglePageText(page) {
+  const candidates = [
+    ["search", page && page.search_text],
+    ["main", page && page.main_text],
+    ["body", page && page.body_text],
+  ];
+  for (const [root, value] of candidates) {
+    const text = String(value || "").trim();
+    if (text) return { root, text };
+  }
+  return { root: "none", text: "" };
+}
+
+function classifyGooglePage(page, searchUrl) {
+  const selected = selectGooglePageText(page);
+  const text = selected.text;
+  const normalized = text.toLowerCase();
+  const url = String(page && page.url || "");
+  const title = String(page && page.title || "");
+  const links = Array.isArray(page && page.links) ? page.links : [];
+  let isSearchUrl = false;
+  try {
+    const current = new URL(url);
+    const expected = new URL(searchUrl);
+    isSearchUrl = current.hostname === expected.hostname && current.pathname === "/search";
+  } catch (_) {
+    isSearchUrl = false;
+  }
+
+  if (/unusual traffic|not a robot|recaptcha|our systems have detected/.test(normalized)) {
+    return { kind: "challenge", selected };
+  }
+  if (/^https:\/\/consent\.google\./i.test(url)
+      || /before you continue to google|reject all|accept all/.test(normalized)) {
+    return { kind: "consent", selected };
+  }
+  if (/^https:\/\/accounts\.google\./i.test(url)
+      || (/sign in/.test(normalized) && /google accounts?/.test(`${normalized} ${title.toLowerCase()}`))) {
+    return { kind: "sign_in", selected };
+  }
+  if (/^chrome-error:\/\//i.test(url)
+      || /this site can.t be reached|err_[a-z_]+|no internet/.test(normalized)) {
+    return { kind: "network_error", selected };
+  }
+  if (isSearchUrl && text) {
+    const noResults = /did not match any documents|no results (?:containing|found)|try different keywords|aren.t many great matches/.test(normalized);
+    if (noResults) return { kind: "no_results", selected };
+    if (links.length) return { kind: "ready", selected };
+    return { kind: "loading", selected };
+  }
+  if (!url || url === "about:blank" || (!text && isSearchUrl)) {
+    return { kind: "blank", selected };
+  }
+  return { kind: "redirect", selected };
+}
+
+function compactGoogleDiagnostic(stage, page) {
+  const selected = selectGooglePageText(page || {});
+  const url = String(page && page.url || "").slice(0, 240);
+  const title = String(page && page.title || "").slice(0, 120);
+  const linkCount = Array.isArray(page && page.links) ? page.links.length : 0;
+  return `stage=${stage}, url=${url || "unknown"}, title=${title || "none"}, text_length=${selected.text.length}, links=${linkCount}`;
+}
+
+async function googlePageSnapshot(client) {
+  const evaluated = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const searchRoot = document.querySelector("#search");
+      const mainRoot = document.querySelector("main");
+      const bodyRoot = document.body;
+      const roots = [searchRoot, mainRoot, bodyRoot];
+      const root = roots.find((node) => node && clean(node.innerText)) || bodyRoot || mainRoot || searchRoot || document;
+      const links = Array.from(root.querySelectorAll("a[href]"))
+        .map((node) => ({ title: clean(node.innerText), url: node.href }))
+        .filter((row) => row.title && /^https?:/i.test(row.url))
+        .filter((row) => {
+          try {
+            const host = new URL(row.url).hostname.replace(/^www\\./, "");
+            return !host.endsWith("google.com") || row.url.includes("/url?");
+          } catch (_) { return false; }
+        })
+        .slice(0, 20);
+      const suggestionLink = document.querySelector("a#fprsl")
+        || document.querySelector('a[href*="spell=1"]')
+        || Array.from(root.querySelectorAll("a[href]")).find((node) => {
+          const nearby = clean(node.parentElement ? node.parentElement.innerText : "");
+          return /did you mean|showing results for/i.test(nearby);
+        });
+      let spellingSuggestion = "";
+      if (suggestionLink) {
+        try {
+          spellingSuggestion = clean(new URL(suggestionLink.href).searchParams.get("q"));
+        } catch (_) {
+          spellingSuggestion = "";
+        }
+        if (!spellingSuggestion) spellingSuggestion = clean(suggestionLink.innerText);
+      }
+      return {
+        ready_state: document.readyState,
+        title: document.title,
+        url: location.href,
+        search_text: String(searchRoot ? searchRoot.innerText : "").slice(0, 16000),
+        main_text: String(mainRoot ? mainRoot.innerText : "").slice(0, 16000),
+        body_text: String(bodyRoot ? bodyRoot.innerText : "").slice(0, 16000),
+        links,
+        spelling_suggestion: spellingSuggestion,
+      };
+    })()`,
+    returnByValue: true,
+  });
+  if (evaluated.exceptionDetails) throw new Error("Google page evaluation failed.");
+  return evaluated.result && evaluated.result.value ? evaluated.result.value : {};
+}
+
+async function waitForGoogleEvidence(client, searchUrl, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 15000);
+  const pollMs = options.pollMs === undefined ? 250 : Number(options.pollMs);
+  const maxAttempts = Number(options.maxAttempts || Number.POSITIVE_INFINITY);
+  const navigateAfterAttempts = Number(options.navigateAfterAttempts || 8);
+  const readPage = options.readPage || googlePageSnapshot;
+  const pause = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const startedAt = Date.now();
+  let navigated = false;
+  let lastPage = {};
+  let lastKind = "initial";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      lastPage = await readPage(client);
+    } catch (error) {
+      throw new Error(`Google search browser evaluation failed (stage=evaluate): ${error.message || String(error)}`);
+    }
+    const state = classifyGooglePage(lastPage, searchUrl);
+    lastKind = state.kind;
+    if (state.kind === "ready" || state.kind === "no_results") {
+      return { ...lastPage, text: state.selected.text, text_root: state.selected.root, result_state: state.kind };
+    }
+    if (state.kind === "challenge") {
+      throw new Error("Google presented an anti-automation challenge in the dedicated Chrome profile.");
+    }
+    if (state.kind === "consent") {
+      throw new Error("Google requires consent interaction in the dedicated Chrome profile.");
+    }
+    if (state.kind === "sign_in") {
+      throw new Error("Google redirected the dedicated Chrome profile to sign-in.");
+    }
+    if (state.kind === "network_error") {
+      throw new Error(`Google search encountered a browser or network error (${compactGoogleDiagnostic("network", lastPage)}).`);
+    }
+
+    const shouldNavigate = !navigated
+      && (String(lastPage.url || "") === "about:blank" || attempt >= navigateAfterAttempts);
+    if (shouldNavigate) {
+      const navigation = await client.send("Page.navigate", { url: searchUrl });
+      navigated = true;
+      if (navigation && navigation.errorText) {
+        throw new Error(`Google search navigation failed (stage=navigate, error=${String(navigation.errorText).slice(0, 160)}).`);
+      }
+    }
+
+    if (Date.now() - startedAt >= timeoutMs || attempt >= maxAttempts) break;
+    await pause(pollMs);
+  }
+  throw new Error(
+    `Google search did not render readable results within ${timeoutMs} ms (${compactGoogleDiagnostic(lastKind, lastPage)}).`,
+  );
+}
+
 async function closeTab(targetId) {
   try { await getJson(`/json/close/${encodeURIComponent(targetId)}`); } catch (_) { /* best effort */ }
 }
@@ -285,61 +454,10 @@ async function searchGoogle(query) {
   try {
     await client.connect();
     await client.send("Runtime.enable");
+    await client.send("Page.enable");
     await client.send("Runtime.evaluate", { expression: 'window.name = "veridex-automation"' });
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      const state = await client.send("Runtime.evaluate", {
-        expression: "document.readyState",
-        returnByValue: true,
-      });
-      if (state.result && state.result.value === "complete") break;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1800));
-    const evaluated = await client.send("Runtime.evaluate", {
-      expression: `(() => {
-        const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
-        const root = document.querySelector("#search") || document.querySelector("main") || document.body;
-        const links = Array.from(root.querySelectorAll("a[href]"))
-          .map((node) => ({ title: clean(node.innerText), url: node.href }))
-          .filter((row) => row.title && /^https?:/i.test(row.url))
-          .filter((row) => {
-            try {
-              const host = new URL(row.url).hostname.replace(/^www\\./, "");
-              return !host.endsWith("google.com") || row.url.includes("/url?");
-            } catch (_) { return false; }
-          })
-          .slice(0, 20);
-        const suggestionLink = document.querySelector("a#fprsl")
-          || document.querySelector('a[href*="spell=1"]')
-          || Array.from(root.querySelectorAll("a[href]")).find((node) => {
-            const nearby = clean(node.parentElement ? node.parentElement.innerText : "");
-            return /did you mean|showing results for/i.test(nearby);
-          });
-        let spellingSuggestion = "";
-        if (suggestionLink) {
-          try {
-            spellingSuggestion = clean(new URL(suggestionLink.href).searchParams.get("q"));
-          } catch (_) {
-            spellingSuggestion = "";
-          }
-          if (!spellingSuggestion) spellingSuggestion = clean(suggestionLink.innerText);
-        }
-        return {
-          title: document.title,
-          url: location.href,
-          text: String(root.innerText || "").slice(0, 16000),
-          links,
-          spelling_suggestion: spellingSuggestion,
-        };
-      })()`,
-      returnByValue: true,
-    });
-    const page = evaluated.result && evaluated.result.value ? evaluated.result.value : {};
+    const page = await waitForGoogleEvidence(client, searchUrl);
     const normalizedText = String(page.text || "");
-    if (/unusual traffic|not a robot|recaptcha/i.test(normalizedText)) {
-      throw new Error("Google presented an anti-automation challenge in the dedicated Chrome profile.");
-    }
-    if (!normalizedText.trim()) throw new Error("Google returned an empty search page.");
     const openedSources = [];
     for (const candidate of sourceCandidates(page.links, 3)) {
       openedSources.push(await openSource(candidate));
@@ -355,6 +473,7 @@ async function searchGoogle(query) {
       browser_started: browserStarted,
       page_title: page.title || "Google Search",
       page_url: page.url || searchUrl,
+      result_state: page.result_state || "ready",
       spelling_suggestion: String(page.spelling_suggestion || ""),
       result_text: normalizedText,
       links: Array.isArray(page.links) ? page.links : [],
@@ -669,7 +788,7 @@ async function main() {
   throw new Error(`Unknown action: ${action}`);
 }
 
-main().catch((error) => {
+if (require.main === module) main().catch((error) => {
   const action = String(process.argv[2] || "status").toLowerCase();
   if (action === "lens") {
     output({
@@ -689,3 +808,10 @@ main().catch((error) => {
   }
   output({ ok: false, error: error.message || String(error), ...profileStatus() }, 1);
 });
+
+module.exports = {
+  classifyGooglePage,
+  compactGoogleDiagnostic,
+  selectGooglePageText,
+  waitForGoogleEvidence,
+};

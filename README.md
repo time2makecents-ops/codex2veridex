@@ -67,6 +67,13 @@ it for four hours. Veridex keeps the original locally and sends a resized copy w
 EXIF metadata removed. Every completed item is automatically saved as a revisioned
 Antiques case.
 
+Each case includes a canonical `research_record` that preserves identity fields such as
+artist or maker, title, date or period, medium, dimensions, product code, signature or
+mark, and condition. It links bounded provenance and correspondence summaries to the
+case's attachments, derived evidence artifacts, browser sources, and append-only price
+observations. Later partial revisions retain earlier nonempty identity and evidence
+instead of replacing it with an incomplete report.
+
 Leo separates observations, sourced matches, and inference. Values use sold evidence
 when available and show the lower of the editable profit calculation or the default
 25% conservative-value acquisition cap. Results are research guidance, not certified

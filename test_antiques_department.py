@@ -63,6 +63,134 @@ class AntiquesDepartmentTests(unittest.TestCase):
             self.assertEqual(len(second["revisions"]), 2)
             self.assertEqual(service.list_cases("ws_test")[0]["title"], "Signed studio pottery bowl")
 
+    def test_case_builds_canonical_research_record_and_preserves_prior_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary))
+            first = service.save_case(
+                "ws_test",
+                "sess_test",
+                ["file_front", "file_label"],
+                {
+                    "identification": "Busch NASCAR metal sign",
+                    "category": "advertising sign",
+                    "artist_or_maker": "Deco-Sign Products",
+                    "likely_period": "November 2004",
+                    "medium_or_material": "printed metal",
+                    "dimensions": "23 x 31 in",
+                    "product_code": "1029534",
+                    "signature_or_mark": "Anheuser-Busch manufacturer's label",
+                    "provenance": [{
+                        "statement": "Acquired secondhand; earlier ownership is unknown.",
+                        "status": "unconfirmed",
+                    }],
+                    "research_record": {
+                        "correspondence": [{
+                            "party": "Manufacturer archive",
+                            "date": "2026-09-23",
+                            "summary": "Inquiry sent; no response yet.",
+                            "source_ref": "email:thread-1",
+                        }],
+                    },
+                    "evidence_artifacts": [{
+                        "file_id": "file_label_crop",
+                        "artifact_number": 12,
+                        "name": "label crop.jpg",
+                        "scope_ref": "antiques_department",
+                        "sha256": "a" * 64,
+                    }],
+                    "sourced_matches": [{
+                        "source_id": "google",
+                        "url": "https://example.test/catalog/1029534",
+                        "claim": "Catalog record for product code 1029534.",
+                    }],
+                },
+                "deep",
+            )
+            record = first["research_record"]
+            self.assertEqual(record["schema_version"], 1)
+            self.assertEqual(record["case_id"], first["case_id"])
+            self.assertEqual(record["identity"]["artist_or_maker"], "Deco-Sign Products")
+            self.assertEqual(record["identity"]["product_code"], "1029534")
+            self.assertEqual(record["evidence"]["attachment_ids"], ["file_front", "file_label"])
+            self.assertEqual(record["evidence"]["artifacts"][0]["file_id"], "file_label_crop")
+            self.assertEqual(record["evidence"]["sources"][0]["source_id"], "google")
+            self.assertEqual(record["correspondence"][0]["source_ref"], "email:thread-1")
+            self.assertNotIn("research_record", first["latest_report"])
+            self.assertEqual(first["revisions"][0]["research_record"], record)
+
+            second = service.save_case(
+                "ws_test",
+                "sess_test",
+                ["file_front", "file_label", "file_back"],
+                {
+                    "identification": "Busch Beer NASCAR pin-up metal sign",
+                    "category": "advertising sign",
+                    "correspondence": [{
+                        "party": "Manufacturer archive",
+                        "date": "2026-09-24",
+                        "summary": "Product code was confirmed.",
+                        "source_ref": "email:message-2",
+                    }],
+                },
+                "deep",
+                case_id=first["case_id"],
+            )
+            updated = second["research_record"]
+            self.assertEqual(updated["identity"]["identification"], "Busch Beer NASCAR pin-up metal sign")
+            self.assertEqual(updated["identity"]["artist_or_maker"], "Deco-Sign Products")
+            self.assertEqual(updated["identity"]["product_code"], "1029534")
+            self.assertEqual(updated["evidence"]["attachment_ids"], ["file_front", "file_label", "file_back"])
+            self.assertEqual(len(updated["correspondence"]), 2)
+            self.assertEqual(len(second["revisions"]), 2)
+            self.assertNotEqual(
+                second["revisions"][0]["research_record"]["latest_revision_id"],
+                second["revisions"][1]["research_record"]["latest_revision_id"],
+            )
+
+    def test_existing_case_is_backfilled_on_its_next_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self.service(Path(temporary))
+            case_id = "antique_legacy001"
+            service._write_json(service.case_path("ws_test", case_id), {
+                "case_id": case_id,
+                "workspace_id": "ws_test",
+                "created_at": "2026-09-20T00:00:00Z",
+                "updated_at": "2026-09-20T00:00:00Z",
+                "status": "researched",
+                "title": "Legacy signed photograph",
+                "attachment_ids": ["file_old"],
+                "latest_report": {
+                    "identification": "Legacy signed photograph",
+                    "artist_or_maker": "Example Artist",
+                    "medium_or_material": "photograph",
+                    "product_code": "ARCHIVE-17",
+                },
+                "revisions": [{
+                    "revision_id": "revision_legacy001",
+                    "created_at": "2026-09-20T00:00:00Z",
+                    "session_id": "sess_test",
+                    "mode": "deep",
+                    "attachment_ids": ["file_old"],
+                    "notes": "",
+                    "report": {"identification": "Legacy signed photograph"},
+                }],
+            })
+
+            updated = service.save_case(
+                "ws_test",
+                "sess_test",
+                ["file_old", "file_new"],
+                {"identification": "Legacy signed photograph, label confirmed"},
+                "deep",
+                case_id=case_id,
+            )
+            record = updated["research_record"]
+            self.assertEqual(record["identity"]["artist_or_maker"], "Example Artist")
+            self.assertEqual(record["identity"]["medium_or_material"], "photograph")
+            self.assertEqual(record["identity"]["product_code"], "ARCHIVE-17")
+            self.assertEqual(record["evidence"]["attachment_ids"], ["file_old", "file_new"])
+            self.assertEqual(len(updated["revisions"]), 2)
+
     def test_price_evidence_is_source_bound_deduplicated_and_sold_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = self.service(Path(temporary))
@@ -146,6 +274,13 @@ class AntiquesDepartmentTests(unittest.TestCase):
             self.assertEqual(evaluation["evidence_summary"]["similar"], 1)
             self.assertEqual(first["latest_report"]["valuation"]["conservative_low"], 200.0)
             self.assertEqual(first["latest_report"]["buying"]["recommended_max_buy"], 50.0)
+            self.assertEqual(len(first["research_record"]["evidence"]["price_observation_ids"]), 4)
+            self.assertEqual(len(first["research_record"]["evidence"]["sources"]), 4)
+            limited_source = next(
+                row for row in first["research_record"]["evidence"]["sources"]
+                if row.get("listing_or_lot_id") == "limited-1"
+            )
+            self.assertEqual(limited_source["evidence_status"], "limited")
 
             second = service.save_case(
                 "ws_test", "sess_test", ["file_1"], {

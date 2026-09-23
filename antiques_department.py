@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable
 from PIL import Image, ImageOps
 
 from museum_visual_analysis import FOCUS_OPTIONS, PHOTO_ROLES
+from research_record import build_research_record
 
 
 ROOM_ID = "antiques_department"
@@ -799,14 +800,36 @@ class AntiquesDepartment:
                 "similar_search_prompt": price_evaluation["similar_search_prompt"],
                 "disclaimer": price_evaluation["disclaimer"],
             }
+            revision_attachment_ids = list(dict.fromkeys(str(value) for value in attachment_ids if str(value).strip()))
+            existing_record = existing.get("research_record") if isinstance(existing.get("research_record"), dict) else {}
+            if not existing_record and isinstance(existing.get("latest_report"), dict):
+                prior_revisions = existing.get("revisions") if isinstance(existing.get("revisions"), list) else []
+                prior_revision_id = str(prior_revisions[-1].get("revision_id") or "") if prior_revisions else ""
+                existing_record = build_research_record(
+                    case_id,
+                    existing["latest_report"],
+                    existing.get("attachment_ids") or [],
+                    prior_revision_id,
+                    str(existing.get("updated_at") or existing.get("created_at") or now),
+                )
+            research_record = build_research_record(
+                case_id,
+                report,
+                revision_attachment_ids,
+                revision_id,
+                now,
+                existing_record,
+            )
+            report.pop("research_record", None)
             revision = {
                 "revision_id": revision_id,
                 "created_at": now,
                 "session_id": session_id,
                 "mode": mode,
-                "attachment_ids": list(dict.fromkeys(str(value) for value in attachment_ids if str(value).strip())),
+                "attachment_ids": revision_attachment_ids,
                 "notes": _bounded_text(notes),
                 "report": {**report, "price_evaluation": revision_price_evaluation},
+                "research_record": research_record,
             }
             revisions = list(existing.get("revisions") or [])
             revisions.append(revision)
@@ -819,6 +842,7 @@ class AntiquesDepartment:
                 "status": "researched",
                 "attachment_ids": revision["attachment_ids"],
                 "latest_report": report,
+                "research_record": research_record,
                 "revisions": revisions,
                 "updated_at": now,
             }

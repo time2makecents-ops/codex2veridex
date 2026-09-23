@@ -109,6 +109,15 @@ resale. Case JSON stores the latest derived summary while the observation ledger
 append-only and deduplicated by source listing, source URL, or a stable fallback
 fingerprint.
 
+Each case JSON also contains a versioned `research_record`: the canonical bounded view
+of item identity, provenance summaries, correspondence references, attachments, derived
+evidence artifacts, source references, and linked price-observation IDs. Each case
+revision snapshots that record. Partial research or price-only revisions merge new
+nonempty facts into the prior record so omitted identity fields are not silently lost.
+The record stores correspondence summaries and source references, not email bodies or
+credentials. Artist and gallery folders are supporting human-readable research views;
+they are not a second runtime authority.
+
 `price_search_controller.py` is the provider-neutral scope and execution boundary for
 saved-case price rechecks. It validates exact versus explicitly approved all-likeness
 scope, owns Fast/Standard/Extended budgets, runs exact before similar, deduplicates and
