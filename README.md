@@ -392,10 +392,22 @@ handoff number supplied in the next message. The stable index is
 
 ## Gmail for Nancy
 
-Nancy uses a Veridex-owned Gmail OAuth connection and encrypted token store
-beneath `data/integrations/`. Veridex does not read another application's token
-database at runtime. Configure the OAuth client values in the ignored
-`.env.local`, then connect the account once:
+Nancy supports two deliberately separate account scopes:
+
+- The Veridex corporate Gmail connection uses the encrypted token store beneath
+  `data/integrations/` and is available from every workspace. Name `Veridex
+  Corp`, `corporate`, `shared`, or the corporate address to select it.
+- A workspace may own one separately authorized Gmail account beneath that
+  workspace's `integrations/` directory. Generic Gmail requests use the assigned
+  workspace account; when none is assigned, the connected corporate account is
+  the safe default.
+
+An account assigned to one workspace is never exposed to another, and the
+corporate account cannot be claimed by a single workspace. Every Gmail result
+records both `account_scope` and `account_email` as evidence. Veridex does not
+read another application's token database at runtime. Configure the OAuth
+client values in the ignored `.env.local`, then connect the corporate account
+once:
 
 ```powershell
 .\veridex.ps1 gmail-connect
@@ -406,6 +418,10 @@ database at runtime. Configure the OAuth client values in the ignored
 The browser authorization must use the account configured by
 `VERIDEX_GOOGLE_ACCOUNT`. Passwords and OAuth tokens are never written to the
 repository or returned in chat responses.
+
+The dedicated Google search profile is also repository-wide. Google Drive is
+not yet implemented as a Veridex runtime gateway, so Veridex must not claim
+Drive access merely because the corporate Google identity is connected.
 
 ## Rooms
 
@@ -540,17 +556,43 @@ that requires `confirm=true`.
 
 Connect eBay from **Connected accounts**. Veridex uses eBay OAuth rather than storing
 an eBay password, encrypts reusable tokens in the active workspace, and defaults new
-connections to eBay Sandbox. Configure an eBay Developer keyset and register
-`http://127.0.0.1:8079/integrations/ebay/callback` as the RuName accept URL, then add
+connections to eBay Sandbox. Configure an eBay Developer keyset and register the
+deployed Worker's `/ebay/oauth/accepted` HTTPS route as the RuName accept URL; that
+route forwards the one-time result to the loopback callback. Then add
 the client ID, client secret, RuName, environment, marketplace, and the shared
 integration-encryption key to ignored `.env.local` using `.env.local.example`.
+Set `VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY` to the Chrome profile directory for
+the assigned seller account so OAuth cannot open in another workspace's browser.
 
-Read-only tools expose connection status, inventory, offers, orders, policies, and
-financial transactions. Listing preview is local. Publishing and withdrawing
-fixed-price listings, recording fulfillment, issuing refunds, and sending seller offers require
-an explicit confirmed tool call. Buyer purchases and bidding are not supported.
-Inventory API listings remain API-managed and cannot subsequently be revised through
-Seller Hub, so migrate existing live listings only after a deliberate review.
+Read-only tools expose connection status, inventory, orders, policies, and financial
+transactions. Offer retrieval is not yet production-ready: eBay's `getOffers`
+operation requires a SKU, while the current `ebay.offers` route does not accept one.
+Listing preview is local. Publishing and withdrawing fixed-price listings, recording
+fulfillment, issuing refunds, and sending seller offers require an explicit confirmed
+tool call. Buyer purchases and bidding are not supported. Inventory API listings remain
+API-managed and cannot subsequently be revised through Seller Hub, so migrate existing
+live listings only after a deliberate review.
+
+Before publishing, the seller account must opt into eBay Business Policies, create at
+least one payment, fulfillment/shipping, and return policy for the target marketplace,
+and have an enabled Inventory API warehouse location. A warehouse location can use only
+postal code and country; do not place its address in repository configuration. The
+Developer Portal's manual token generator and consent preview are not part of the
+application flow. A successful Veridex authorization-code exchange plus authenticated
+seller API calls are the connection evidence.
+
+The production notification receiver lives under `cloudflare/ebay-notifications/`.
+It verifies eBay signatures, queues events for the `provenancepending` workspace in
+Cloudflare D1, deletes acknowledged events, and expires unclaimed events after seven
+days. Keep the generated verification and queue secrets only in ignored `.env.local`
+and Cloudflare Worker secrets. The eBay destination URL is the deployed Worker's
+`/ebay/notifications` route.
+
+The production RuName uses the Worker's `/ebay/oauth/accepted` and
+`/ebay/oauth/declined` routes. Its privacy URL is the independently hosted public page
+at `https://time2makecents-ops.github.io/veridex-privacy/`; eBay rejected the otherwise
+valid `workers.dev/privacy` URL during portal validation. The Worker's local `/privacy`
+route remains informational but is not the registered RuName privacy URL.
 
 ## Codex MCP bridge
 

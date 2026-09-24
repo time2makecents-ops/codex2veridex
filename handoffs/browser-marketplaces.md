@@ -18,6 +18,27 @@ explicitly places that runtime state in scope.
 - Marketplace mutations require `confirm=true` through the app's explicit
   confirmation path. Read-only research or preview does not authorize a write.
 
+## Production eBay checkpoint (2026-09-24)
+
+- The `provenancepending` workspace has a production OAuth connection. Authorization
+  is pinned by ignored local configuration to its dedicated Chrome profile, and the
+  reusable access and refresh tokens are encrypted in that workspace.
+- The granted scopes cover the base API, seller account, inventory, fulfillment,
+  finances, marketing, and commerce messages. Live production reads succeeded for
+  connection status, inventory, orders, transactions, and business policies.
+- The seller account is opted into Business Policies and has one payment, shipping,
+  and return policy for `EBAY_US`. An enabled warehouse inventory location exists;
+  its private address details are intentionally not recorded here.
+- The Cloudflare notification/OAuth relay is deployed at
+  `https://veridex-ebay-notifications.veridex-ebay-notifications.workers.dev` with D1,
+  the required secrets, signature verification, acknowledgment deletion, and
+  seven-day cleanup. The public privacy policy is
+  `https://time2makecents-ops.github.io/veridex-privacy/` because eBay rejected the
+  Worker's `/privacy` URL in the RuName form.
+- No live listing was published during setup. The Developer Portal's manual token
+  generator and noninteractive consent preview are not required after the real
+  Veridex authorization flow succeeds.
+
 ## Next work
 
 Implement robust popup and secondary-window handling, especially for eBay
@@ -30,6 +51,14 @@ Product Research, sign-in, consent, security checks, and rate-limit dialogs:
 - Resume from preserved search state after the user acts; do not bounce between
   items or restart completed searches.
 - Record truthful provider availability, coverage limits, errors, and evidence.
+- Repair `ebay.offers`: eBay's production `getOffers` endpoint requires a SKU,
+  but the current route sends only pagination parameters and returns HTTP 400.
+- Complete and record eBay Developer Portal notification-topic registration, then
+  validate a signed event through Worker receipt, local retrieval, and acknowledgment.
+- Implement or verify the governed buyer-message read path and the sold-item alert
+  path. OAuth scope and ordinary eBay email do not by themselves prove either path.
+- Exercise a complete listing preview with real item data. Keep publication behind
+  the existing explicit confirmation gate and record the returned eBay identifiers.
 
 ## Safety constraints
 

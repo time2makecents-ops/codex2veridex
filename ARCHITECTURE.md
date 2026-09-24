@@ -78,6 +78,16 @@ Each workspace owns `governance_state.json`, `artifact_ledger.ndjson`, `governan
 append-only `governance_incidents.ndjson`. A session may temporarily own
 `pending_governance.json` while waiting for a gate resolution.
 
+Connected services have two explicit scopes. Instagram, eBay, and optional
+workspace Gmail assignments remain isolated beneath one workspace. The Veridex
+corporate Gmail token store beneath `data/integrations/` is shared across all
+workspaces and is selected only by a corporate/shared account request or as the
+fallback when the active workspace has no assigned Gmail. Gmail results and
+confirmed sends retain the selected scope and account identity in evidence.
+This shared-services boundary is the extension point for future corporate
+services such as Google Drive; no unavailable service is inferred from a Google
+login alone.
+
 ## File and computer access
 
 Browser attachments are saved inside the active session directory, recorded in
@@ -224,6 +234,12 @@ assignment in `connected_accounts.json`. Client credentials remain in ignored lo
 configuration; neither tokens nor secrets enter source, transcripts, tool responses,
 or command arguments.
 
+OAuth opens in the explicitly configured Chrome profile for the assigned workspace.
+For production, the eBay RuName accepted route terminates at the Cloudflare Worker,
+which preserves the one-time authorization response and forwards it to the local
+loopback listener. The listener still validates the OAuth state before exchanging the
+code, so the public relay does not replace the local anti-forgery boundary.
+
 Status, inventory, offers, policies, orders, and transaction reads are non-mutating.
 Listing preview performs local validation only and accepts fixed-price Inventory API
 listings; auction creation is outside this integration. Publishing or withdrawing a listing,
@@ -232,6 +248,13 @@ requires `confirm=true` at the gateway boundary. Successful mutation responses c
 the matching eBay identifiers; partial listing creation stops and reports the last
 verified offer or listing boundary instead of claiming completion. Buyer purchases
 and bids are outside this integration.
+
+The production notification Worker verifies eBay ECC signatures before placing events
+in a workspace-bound D1 queue. Local Veridex reads that queue with a separate bearer
+secret; acknowledgment deletes the delivered copy and scheduled cleanup expires
+unclaimed events after seven days. A deployed receiver is not evidence that an eBay
+topic subscription or an end-to-end buyer-message or sale notification has been
+validated; those require separate provider and delivery evidence.
 
 ## Active request cancellation
 

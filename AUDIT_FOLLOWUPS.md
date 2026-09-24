@@ -14,6 +14,25 @@ These are implementation follow-ups, not claims that the work is complete.
 
 ## Priority gaps
 
+## eBay integration
+
+- [ ] Make `ebay.offers` SKU-aware. The current production request calls eBay's
+  `getOffers` operation with pagination only, and eBay rejects it because a SKU is
+  required.
+- [ ] Confirm the production notification topic/destination in eBay's Developer
+  Portal and capture end-to-end evidence for Worker verification, D1 queueing, local
+  retrieval, acknowledgment, and deletion.
+- [ ] Implement or verify buyer-message retrieval and sold-item alerting. Granted
+  OAuth scope, a deployed receiver, and expected eBay emails are not delivery proof.
+- [ ] Run a real listing preview using the configured policies and warehouse location;
+  publish only after a separate explicit confirmation.
+
+## Operator-state reporting
+
+- [ ] Fix the model/reasoning status report that identified the terminal route as
+  high when it was actually medium. Status text must come from observed host state and
+  must not claim a model or reasoning level that was not verified.
+
 ## Artwork organization
 
 - [ ] Copy the original artwork photographs and scans from `Desktop\\art` into the matching `gallery/<artist>_<title>/` folders, verify each assignment, and update each artwork record.

@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "veridex-ebay-notifications",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-24",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "EBAY_ENVIRONMENT": "production",
+    "VERIDEX_WORKSPACE_ID": "ws_598c81c638bb",
+    "EVENT_RETENTION_DAYS": "7"
+  },
+  "d1_databases": [
+    {
+      "binding": "EVENTS_DB",
+      "database_name": "veridex-ebay-events",
+      "database_id": "eebc4469-a2a5-45b4-8d8a-9e347e83f734",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "17 9 * * *"
+    ]
+  }
+}

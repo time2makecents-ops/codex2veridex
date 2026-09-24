@@ -1,4 +1,4 @@
-"""Workspace-scoped account assignments for local Veridex integrations."""
+"""Workspace-scoped account assignments plus shared corporate integrations."""
 
 from __future__ import annotations
 
@@ -110,11 +110,30 @@ class ConnectedAccounts:
         base["VERIDEX_GOOGLE_ACCOUNT"] = str(account_email or gmail.get("account_email") or "")
         return base
 
+    def shared_gmail_env(self) -> Dict[str, str]:
+        """Return the repository-owned Gmail connection shared by every workspace."""
+        base = _default_env()
+        base["VERIDEX_GMAIL_DB_PATH"] = str((self.data_root / "integrations" / "gmail.db").resolve())
+        base["VERIDEX_GOOGLE_ACCOUNT"] = str(base.get("VERIDEX_GOOGLE_ACCOUNT") or "").strip()
+        return base
+
+    def shared_gmail(self) -> GmailGateway:
+        return GmailGateway(env=self.shared_gmail_env())
+
+    def is_shared_gmail_account(self, account_email: str) -> bool:
+        email = str(account_email or "").strip().lower()
+        shared = str(self.shared_gmail_env().get("VERIDEX_GOOGLE_ACCOUNT") or "").strip().lower()
+        return bool(email and shared and email == shared)
+
     def gmail(self, workspace_id: str) -> GmailGateway:
         return GmailGateway(env=self.gmail_env(workspace_id))
 
     def assign_gmail(self, workspace_id: str, account_email: str) -> Dict[str, Any]:
         email = str(account_email or "").strip()
+        if self.is_shared_gmail_account(email):
+            raise ConnectedAccountError(
+                f"{email} is the shared Veridex corporate account and is already available to every workspace."
+            )
         for workspace_path in (self.data_root / "workspaces").glob("*/integrations/connected_accounts.json"):
             other_id = workspace_path.parents[1].name
             if other_id == workspace_id:
@@ -211,7 +230,12 @@ class ConnectedAccounts:
     def ebay(self, workspace_id: str) -> EbayGateway:
         return EbayGateway(env=self.ebay_env(workspace_id, required=True))
 
-    def public_status(self, workspace_id: str) -> Dict[str, Any]:
+    def public_status(
+        self,
+        workspace_id: str,
+        *,
+        shared_gmail_status: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         instagram = self.instagram_config(workspace_id)
         gmail_config = self.read(workspace_id).get("gmail")
         gmail = gmail_config if isinstance(gmail_config, dict) else {}
@@ -228,9 +252,14 @@ class ConnectedAccounts:
             "environment": str(self.ebay_env(workspace_id).get("EBAY_ENVIRONMENT") or "sandbox"),
             "marketplace_id": str(self.ebay_env(workspace_id).get("EBAY_MARKETPLACE_ID") or "EBAY_US"),
         }
+        corporate_gmail = dict(shared_gmail_status or self.shared_gmail().connection_status())
         return {
             "workspace_id": workspace_id,
-            "isolation": "strict",
+            "isolation": "workspace_accounts_plus_shared_corporate_services",
+            "shared": {
+                "scope": "all_workspaces",
+                "gmail": {**corporate_gmail, "shared": True},
+            },
             "instagram": {
                 "assigned": bool(instagram),
                 "username": str(instagram.get("username") or ""),

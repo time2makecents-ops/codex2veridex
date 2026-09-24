@@ -407,10 +407,18 @@
     <dialog id="connected-accounts-dialog" class="connected-accounts-dialog">
       <div class="connected-accounts-shell">
         <header>
-          <div><div class="eyebrow">Workspace security</div><h2>Connected accounts</h2><p id="connected-accounts-workspace">Accounts assigned to this workspace only.</p></div>
+          <div><div class="eyebrow">Account scopes</div><h2>Connected accounts</h2><p id="connected-accounts-workspace">Workspace accounts plus shared Veridex corporate services.</p></div>
           <button id="connected-accounts-close" type="button" aria-label="Close connected accounts">×</button>
         </header>
-        <div class="account-isolation-note"><span aria-hidden="true">◎</span><p><strong>Strict workspace isolation</strong>This workspace will never use an account assigned to another workspace.</p></div>
+        <div class="account-isolation-note"><span aria-hidden="true">◎</span><p><strong>Scoped access</strong>Accounts assigned to another workspace remain isolated. Shared Veridex corporate services are available from every workspace and are labeled explicitly.</p></div>
+        <section class="connected-account-card" aria-labelledby="shared-gmail-account-title">
+          <div class="connected-account-heading">
+            <div><span class="account-monogram gmail">G</span><div><h3 id="shared-gmail-account-title">Veridex corporate Gmail</h3><p>Shared across all workspaces</p></div></div>
+            <span id="shared-gmail-connection-state" class="account-state">Not connected</span>
+          </div>
+          <div id="shared-gmail-active-account" class="active-account" hidden></div>
+          <p class="field-note">Name “Veridex Corp” or this address in a request to use the shared mailbox. Workspace Gmail remains the default when one is assigned.</p>
+        </section>
         <section class="connected-account-card" aria-labelledby="instagram-account-title">
           <div class="connected-account-heading">
             <div><span class="account-monogram instagram">IG</span><div><h3 id="instagram-account-title">Instagram</h3><p>Posts, follows, research, and messages</p></div></div>

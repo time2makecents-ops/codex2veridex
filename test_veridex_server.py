@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -734,6 +734,43 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(result["message"]["gmail"]["requested_limit"], 1)
             self.assertEqual(len(result["message"]["gmail"]["messages"]), 1)
             self.assertEqual(result["message"]["gmail"]["messages"][0]["subject"], "Newest message")
+
+    def test_named_veridex_corp_mailbox_uses_shared_gmail_from_any_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            shared = Mock()
+            shared.account_email = "corp@example.com"
+            shared.connection_status.return_value = {
+                "configured": True,
+                "connected": True,
+                "account_email": shared.account_email,
+            }
+            shared.search.return_value = [{
+                "id": "corp_latest",
+                "threadId": "corp_thread",
+                "from": "Partner <partner@example.com>",
+                "subject": "Corporate update",
+                "date": "Thu, 24 Sep 2026 08:00:00 -0700",
+                "snippet": "Shared inbox message",
+            }]
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "GMAIL", shared
+            ), patch.object(veridex_server, "workspace_gmail") as workspace_gmail:
+                result = veridex_server.chat_response({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "text": "Read the newest email in VeridexCorp",
+                })
+
+            workspace_gmail.assert_not_called()
+            shared.search.assert_called_once_with("in:inbox", max_results=1)
+            self.assertEqual(result["message"]["gmail"]["account_scope"], "shared")
+            self.assertEqual(result["message"]["gmail"]["account_email"], "corp@example.com")
+            self.assertIn("corp@example.com", result["message"]["text"])
 
     def test_nancy_email_send_request_creates_pending_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

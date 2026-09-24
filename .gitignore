@@ -10,3 +10,5 @@ data/
 .playwright-cli/
 tmp/
 output/
+node_modules/
+.wrangler/

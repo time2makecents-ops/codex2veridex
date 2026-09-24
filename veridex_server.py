@@ -132,6 +132,11 @@ GMAIL_CONFIRM_RE = re.compile(
     r"\b(?:confirm send|send it|yes send|go ahead and send|send that email|confirm and send)\b",
     re.IGNORECASE,
 )
+SHARED_GMAIL_RE = re.compile(
+    r"\b(?:veridex\s*corp(?:oration)?|corporate|shared)\b.{0,50}\b(?:email|gmail|inbox|mail|messages?)\b|"
+    r"\b(?:email|gmail|inbox|mail|messages?)\b.{0,50}\b(?:veridex\s*corp(?:oration)?|corporate|shared)\b",
+    re.IGNORECASE,
+)
 ANTIQUES_START_RE = re.compile(r"\b(?:leo[, ]+)?start shopping mode\b", re.IGNORECASE)
 ANTIQUES_END_RE = re.compile(r"\b(?:leo[, ]+)?end shopping mode\b", re.IGNORECASE)
 ANTIQUES_CONFIRM_RE = re.compile(r"\b(?:confirm|yes|go ahead)(?: the)?(?: google lens| photo upload| research)?\b", re.IGNORECASE)
@@ -196,6 +201,38 @@ def workspace_gmail(workspace_id: str) -> GmailGateway:
     if not isinstance(config, dict) or not config.get("assigned"):
         raise GmailGatewayError("Gmail is not assigned to this workspace. Open Connected accounts to connect it.")
     return ACCOUNTS.gmail(workspace_id)
+
+
+def gmail_account_scope(prompt: str = "", requested_scope: str = "") -> str:
+    requested = str(requested_scope or "").strip().lower()
+    if requested in {"shared", "corporate", "global", "veridexcorp"}:
+        return "shared"
+    if requested in {"workspace", "assigned", "local"}:
+        return "workspace"
+    value = str(prompt or "")
+    shared_email = str(GMAIL.account_email or "").strip().lower()
+    if SHARED_GMAIL_RE.search(value) or (shared_email and shared_email in value.lower()):
+        return "shared"
+    return "auto"
+
+
+def gmail_for_request(
+    workspace_id: str,
+    *,
+    prompt: str = "",
+    requested_scope: str = "",
+) -> tuple[GmailGateway, str]:
+    scope = gmail_account_scope(prompt, requested_scope)
+    if scope == "shared":
+        return GMAIL, "shared"
+    if scope == "workspace":
+        return workspace_gmail(workspace_id), "workspace"
+    try:
+        return workspace_gmail(workspace_id), "workspace"
+    except GmailGatewayError:
+        if GMAIL.connection_status().get("connected"):
+            return GMAIL, "shared"
+        raise
 
 
 def workspace_ebay(workspace_id: str, *, require_assignment: bool = True) -> EbayGateway:
@@ -1130,12 +1167,14 @@ def wants_gmail_route(prompt: str, workspace_id: str, session_id: str) -> bool:
     return bool(GMAIL_CHECK_RE.search(str(prompt or "")))
 
 
-def gmail_messages_text(messages: list[Dict[str, Any]]) -> str:
+def gmail_messages_text(messages: list[Dict[str, Any]], account_email: str = "") -> str:
     count = len(messages)
     noun = "message" if count == 1 else "messages"
     if not messages:
-        return "No Gmail messages matched that request."
-    lines = [f"Found {count} Gmail {noun}."]
+        location = f" in {account_email}" if account_email else ""
+        return f"No Gmail messages matched that request{location}."
+    location = f" in {account_email}" if account_email else ""
+    lines = [f"Found {count} Gmail {noun}{location}."]
     for message in messages[:10]:
         subject = str(message.get("subject") or "(no subject)")
         sender = str(message.get("from") or "Unknown sender")
@@ -1159,15 +1198,20 @@ def gmail_chat_response(
     draft_override: Optional[Dict[str, Any]] = None,
     attachments: Optional[list[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    pending = STORE.pending_email(workspace_id, session_id) if GMAIL_CONFIRM_RE.search(str(prompt or "")) else {}
+    requested_scope = str(pending.get("account_scope") or "") if pending else ""
     try:
-        gmail = workspace_gmail(workspace_id)
+        gmail, account_scope = gmail_for_request(
+            workspace_id,
+            prompt=prompt,
+            requested_scope=requested_scope,
+        )
     except GmailGatewayError as exc:
         return local_chat_response(
             workspace_id, session_id, user_message, str(exc), "Nancy", "gmail_unavailable",
             response_provider="veridex_gmail_router",
         )
     if GMAIL_CONFIRM_RE.search(str(prompt or "")):
-        pending = STORE.pending_email(workspace_id, session_id)
         if not pending:
             return local_chat_response(
                 workspace_id,
@@ -1232,6 +1276,8 @@ def gmail_chat_response(
                 "message_kind": "gmail_send",
                 "gmail": {
                     "provider": "gmail_api",
+                    "account_scope": account_scope,
+                    "account_email": gmail.account_email,
                     "status": "sent",
                     "message_id": result.get("id"),
                     "to": [str(value) for value in pending.get("to", [])],
@@ -1247,6 +1293,8 @@ def gmail_chat_response(
         validate_email_attachments(resolved_attachments)
         draft["attachment_ids"] = [str(row.get("file_id") or "") for row in resolved_attachments]
         draft["attachments"] = [public_file(row) for row in resolved_attachments]
+        draft["account_scope"] = account_scope
+        draft["account_email"] = gmail.account_email
         STORE.set_pending_email(workspace_id, session_id, draft)
         attachment_text = ""
         if draft["attachments"]:
@@ -1285,12 +1333,21 @@ def gmail_chat_response(
             "Nancy",
             "gmail_unavailable",
             response_provider="veridex_gmail_router",
+            message_metadata={
+                "message_kind": "gmail_unavailable",
+                "gmail": {
+                    "provider": "gmail_api",
+                    "account_scope": account_scope,
+                    "account_email": gmail.account_email,
+                    "status": "unavailable",
+                },
+            },
         )
     return local_chat_response(
         workspace_id,
         session_id,
         user_message,
-        gmail_messages_text(messages),
+        gmail_messages_text(messages, gmail.account_email),
         "Nancy",
         "gmail_search",
         response_provider="veridex_gmail_router",
@@ -1298,6 +1355,8 @@ def gmail_chat_response(
             "message_kind": "gmail_search",
             "gmail": {
                 "provider": "gmail_api",
+                "account_scope": account_scope,
+                "account_email": gmail.account_email,
                 "query": query,
                 "result_count": len(messages),
                 "requested_limit": result_limit,
@@ -3103,9 +3162,9 @@ TOOLS = [
     {"name": "office.admin_apply", "description": "Apply one exact proposal only with confirm=true and its expected version; governance weakening requires a second token."},
     {"name": "office.admin_reject", "description": "Reject one pending administrative proposal without applying it."},
     {"name": "office.admin_rollback", "description": "Rollback one verified proposal only with confirm=true and record the result."},
-    {"name": "office.gmail_status", "description": "Check the Gmail account assigned to the active workspace."},
-    {"name": "office.gmail_search", "description": "Search Gmail metadata using only the account assigned to the active workspace."},
-    {"name": "office.gmail_send", "description": "Send Gmail, including session attachments when provided, only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.gmail_status", "description": "Check the active workspace Gmail, or the shared corporate Gmail when account_scope=shared."},
+    {"name": "office.gmail_search", "description": "Search the active workspace Gmail, or the shared corporate Gmail when account_scope=shared."},
+    {"name": "office.gmail_send", "description": "Send through the selected workspace or shared corporate Gmail only when confirm=true."},
     {"name": "office.instagram_status", "description": "Check the dedicated Instagram Chrome profile assigned to the active workspace."},
     {"name": "office.instagram_profile_get", "description": "Read bounded visible profile information for one Instagram handle through the dedicated local Chrome profile."},
     {"name": "office.instagram_follow", "description": "Follow an Instagram account only when confirm=true; otherwise return a confirmation requirement."},
@@ -3307,7 +3366,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
                 workspace_context(workspace_id, session_id)
-                value = ACCOUNTS.public_status(workspace_id)
+                value = ACCOUNTS.public_status(workspace_id, shared_gmail_status=GMAIL.connection_status())
                 instagram = ACCOUNTS.instagram_config(workspace_id)
                 if instagram:
                     try:
@@ -3781,12 +3840,22 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = {"status": proposal.get("status"), "proposal": proposal, "administration": ADMIN.bootstrap()}
         elif tool == "office.gmail_status":
             workspace_id, _ = workspace_from_args(args)
-            value = workspace_gmail(workspace_id).connection_status()
+            gmail, account_scope = gmail_for_request(
+                workspace_id,
+                requested_scope=str(args.get("account_scope") or "workspace"),
+            )
+            value = {**gmail.connection_status(), "account_scope": account_scope}
         elif tool == "office.gmail_search":
             workspace_id, _ = workspace_from_args(args)
+            gmail, account_scope = gmail_for_request(
+                workspace_id,
+                requested_scope=str(args.get("account_scope") or "workspace"),
+            )
             value = {
                 "query": str(args.get("query") or "in:inbox"),
-                "messages": workspace_gmail(workspace_id).search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
+                "account_scope": account_scope,
+                "account_email": gmail.account_email,
+                "messages": gmail.search(str(args.get("query") or "in:inbox"), max_results=int(args.get("max_results") or 10)),
             }
         elif tool == "office.contact_list":
             workspace_id, _ = workspace_from_args(args)
@@ -3803,7 +3872,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = check_delivery_alerts(str(session.get("workspace_id") or ""), session_id)
         elif tool == "office.gmail_send":
             workspace_id, session_id = workspace_from_args(args)
-            gmail = workspace_gmail(workspace_id)
+            gmail, account_scope = gmail_for_request(
+                workspace_id,
+                requested_scope=str(args.get("account_scope") or "workspace"),
+            )
             recipients = EMAIL_ADDRESS_RE.findall(" ".join(str(value) for value in args.get("to", []))) if isinstance(args.get("to"), list) else EMAIL_ADDRESS_RE.findall(str(args.get("to") or ""))
             subject = str(args.get("subject") or "")
             body = str(args.get("body") or "")
@@ -3817,6 +3889,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
             if not args.get("confirm"):
                 value = {
                     "status": "confirmation_required",
+                    "account_scope": account_scope,
+                    "account_email": gmail.account_email,
                     "to": recipients,
                     "subject": subject,
                     "body": body,
@@ -3834,6 +3908,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 )
                 value = {
                     "status": "sent",
+                    "account_scope": account_scope,
+                    "account_email": gmail.account_email,
                     "to": recipients,
                     "subject": subject,
                     "message_id": sent.get("id"),

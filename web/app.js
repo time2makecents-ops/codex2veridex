@@ -3277,7 +3277,16 @@ function renderConnectedAccounts() {
   const instagram = value.instagram || {};
   const gmail = value.gmail || {};
   const ebay = value.ebay || {};
-  el("connected-accounts-workspace").textContent = `${state.workspace?.label || "This workspace"} · accounts assigned here only`;
+  const sharedGmail = value.shared?.gmail || {};
+  el("connected-accounts-workspace").textContent = `${state.workspace?.label || "This workspace"} · isolated workspace accounts + shared corporate services`;
+
+  const sharedGmailState = el("shared-gmail-connection-state");
+  sharedGmailState.className = `account-state ${sharedGmail.connected ? "connected" : sharedGmail.configured ? "attention" : ""}`;
+  sharedGmailState.textContent = sharedGmail.connected ? "Available everywhere" : sharedGmail.configured ? "Needs attention" : "Not configured";
+  el("shared-gmail-active-account").hidden = !sharedGmail.account_email;
+  el("shared-gmail-active-account").textContent = sharedGmail.account_email
+    ? `Shared corporate account: ${sharedGmail.account_email}`
+    : "";
 
   const instagramState = el("instagram-connection-state");
   instagramState.className = `account-state ${instagram.connected ? "connected" : instagram.assigned ? "attention" : ""}`;
@@ -3311,7 +3320,7 @@ function renderConnectedAccounts() {
     : ebay.assigned ? `Assigned here: ${ebay.username || "eBay seller"} · authorization incomplete` : "";
   if (ebay.oauth_error) el("connected-accounts-message").textContent = `eBay connection failed: ${ebay.oauth_error}`;
   el("ebay-disconnect").hidden = !ebay.assigned;
-  el("open-connected-accounts").classList.toggle("has-connection", Boolean(instagram.connected || gmail.connected || ebay.connected));
+  el("open-connected-accounts").classList.toggle("has-connection", Boolean(sharedGmail.connected || instagram.connected || gmail.connected || ebay.connected));
 }
 
 async function refreshConnectedAccounts(message = "") {

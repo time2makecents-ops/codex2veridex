@@ -21,11 +21,13 @@ from gmail_gateway import TokenCipher, _default_env
 ROOT = Path(__file__).resolve().parent
 DEFAULT_EBAY_DB = ROOT / "data" / "integrations" / "ebay.db"
 DEFAULT_SCOPES = [
+    "https://api.ebay.com/oauth/api_scope",
     "https://api.ebay.com/oauth/api_scope/sell.account",
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
     "https://api.ebay.com/oauth/api_scope/sell.finances",
     "https://api.ebay.com/oauth/api_scope/sell.marketing",
+    "https://api.ebay.com/oauth/api_scope/commerce.message",
 ]
 
 

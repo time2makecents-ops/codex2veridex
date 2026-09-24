@@ -75,6 +75,16 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('api("/api/integrations/ebay/connect"', script)
         self.assertIn(".account-monogram.ebay", styles)
 
+    def test_connected_accounts_distinguishes_shared_corporate_services(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="shared-gmail-account-title"', html)
+        self.assertIn('id="shared-gmail-connection-state"', html)
+        self.assertIn("Accounts assigned to another workspace remain isolated", html)
+        self.assertIn("const sharedGmail = value.shared?.gmail || {};", script)
+        self.assertIn("Shared corporate account:", script)
+
     def test_chat_and_nancy_email_drag_drop_controls_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

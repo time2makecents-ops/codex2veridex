@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -21,6 +22,33 @@ from ebay_gateway import EbayGateway, EbayGatewayError
 ROOT = Path(__file__).resolve().parent
 
 
+def _chrome_executable() -> Path | None:
+    candidates = [
+        Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("PROGRAMFILES", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _open_authorization_url(url: str, profile_directory: str = "") -> bool:
+    profile = str(profile_directory or "").strip()
+    chrome = _chrome_executable()
+    if profile:
+        if not chrome:
+            raise EbayGatewayError("The configured eBay Chrome profile requires Google Chrome, but Chrome was not found.")
+        if profile != "Default" and not (profile.startswith("Profile ") and profile[8:].isdigit()):
+            raise EbayGatewayError("VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY is invalid.")
+        subprocess.Popen(
+            [str(chrome), f"--profile-directory={profile}", url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    return webbrowser.open(url, new=1)
+
+
 def connect(
     accounts: ConnectedAccounts,
     workspace_id: str,
@@ -28,6 +56,7 @@ def connect(
     username: str = "",
     environment: str = "sandbox",
     marketplace_id: str = "EBAY_US",
+    chrome_profile_directory: str = "",
 ) -> Dict[str, object]:
     env = accounts.ebay_env(
         workspace_id,
@@ -90,7 +119,10 @@ def connect(
     server.timeout = 1
     authorization_url = gateway.authorization_url(state)
     print(f"Opening eBay {gateway.environment} authorization...", flush=True)
-    if not webbrowser.open(authorization_url, new=1):
+    profile_directory = str(
+        chrome_profile_directory or env.get("VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY") or ""
+    ).strip()
+    if not _open_authorization_url(authorization_url, profile_directory):
         print(f"Open this URL in your browser:\n{authorization_url}", flush=True)
     deadline = time.monotonic() + 1800
     while not result and time.monotonic() < deadline:
@@ -132,6 +164,7 @@ def main() -> int:
     parser.add_argument("--username", default="")
     parser.add_argument("--environment", choices=("sandbox", "production"), default="sandbox")
     parser.add_argument("--marketplace-id", default="EBAY_US")
+    parser.add_argument("--chrome-profile-directory", default="")
     args = parser.parse_args()
     try:
         data_root = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
@@ -141,6 +174,7 @@ def main() -> int:
             username=args.username,
             environment=args.environment,
             marketplace_id=args.marketplace_id,
+            chrome_profile_directory=args.chrome_profile_directory,
         )
         print(f"Connected eBay {status.get('environment')} account {status.get('username')}.", flush=True)
         return 0

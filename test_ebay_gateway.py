@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ebay_gateway import EbayGateway, EbayGatewayError
+from ebay_oauth import _open_authorization_url
 import veridex_server
 
 
@@ -58,6 +59,24 @@ class EbayGatewayTests(unittest.TestCase):
         raw = Path(self.env["VERIDEX_EBAY_DB_PATH"]).read_bytes()
         self.assertNotIn(b"plain-access-token", raw)
         self.assertNotIn(b"plain-refresh-token", raw)
+
+    def test_default_scopes_include_notifications_and_messages(self) -> None:
+        self.assertIn("https://api.ebay.com/oauth/api_scope", self.gateway.scopes())
+        self.assertIn("https://api.ebay.com/oauth/api_scope/commerce.message", self.gateway.scopes())
+        self.assertIn("https://api.ebay.com/oauth/api_scope/sell.fulfillment", self.gateway.scopes())
+
+    @patch("ebay_oauth.subprocess.Popen")
+    @patch("ebay_oauth._chrome_executable", return_value=Path("C:/Chrome/chrome.exe"))
+    def test_oauth_can_target_an_explicit_chrome_profile(self, _chrome, popen) -> None:
+        self.assertTrue(_open_authorization_url("https://auth.ebay.test/authorize", "Profile 42"))
+        command = popen.call_args.args[0]
+        self.assertEqual(command[1], "--profile-directory=Profile 42")
+        self.assertEqual(command[2], "https://auth.ebay.test/authorize")
+
+    @patch("ebay_oauth._chrome_executable", return_value=Path("C:/Chrome/chrome.exe"))
+    def test_oauth_rejects_invalid_chrome_profile_directory(self, _chrome) -> None:
+        with self.assertRaisesRegex(EbayGatewayError, "(?i)profile"):
+            _open_authorization_url("https://auth.ebay.test/authorize", "../Profile 42")
 
     def test_listing_preview_is_local_and_normalized(self) -> None:
         preview = self.gateway.preview_listing(self.listing())

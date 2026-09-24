@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from connected_accounts import ConnectedAccountError, ConnectedAccounts
 
@@ -40,6 +41,39 @@ class ConnectedAccountsTests(unittest.TestCase):
         second = self.accounts.gmail_env("ws_two")
         self.assertNotEqual(first["VERIDEX_GMAIL_DB_PATH"], second["VERIDEX_GMAIL_DB_PATH"])
         self.assertIn("ws_one", first["VERIDEX_GMAIL_DB_PATH"])
+
+    def test_shared_gmail_is_global_and_separate_from_workspace_databases(self):
+        with patch("connected_accounts._default_env", return_value={"VERIDEX_GOOGLE_ACCOUNT": "corp@example.com"}):
+            shared = self.accounts.shared_gmail_env()
+        workspace = self.accounts.gmail_env("ws_one")
+
+        self.assertEqual(shared["VERIDEX_GOOGLE_ACCOUNT"], "corp@example.com")
+        self.assertEqual(
+            Path(shared["VERIDEX_GMAIL_DB_PATH"]).resolve(),
+            (self.data / "integrations" / "gmail.db").resolve(),
+        )
+        self.assertNotEqual(shared["VERIDEX_GMAIL_DB_PATH"], workspace["VERIDEX_GMAIL_DB_PATH"])
+
+    def test_shared_gmail_cannot_be_claimed_by_one_workspace(self):
+        with patch("connected_accounts._default_env", return_value={"VERIDEX_GOOGLE_ACCOUNT": "corp@example.com"}):
+            with self.assertRaisesRegex(ConnectedAccountError, "shared Veridex corporate account"):
+                self.accounts.assign_gmail("ws_one", "Corp@Example.com")
+
+    def test_public_status_reports_workspace_and_shared_gmail_separately(self):
+        self.accounts.assign_gmail("ws_one", "workspace@example.com")
+        status = self.accounts.public_status(
+            "ws_one",
+            shared_gmail_status={
+                "configured": True,
+                "connected": True,
+                "account_email": "corp@example.com",
+            },
+        )
+
+        self.assertEqual(status["isolation"], "workspace_accounts_plus_shared_corporate_services")
+        self.assertEqual(status["gmail"]["account_email"], "workspace@example.com")
+        self.assertEqual(status["shared"]["scope"], "all_workspaces")
+        self.assertEqual(status["shared"]["gmail"]["account_email"], "corp@example.com")
 
     def test_ebay_assignment_is_workspace_scoped_and_has_no_credentials(self):
         row = self.accounts.assign_ebay("ws_one", "seller-one", environment="sandbox")
