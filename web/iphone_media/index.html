@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Veridex iPhone Archive</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%23e7a64b'/%3E%3Cpath d='M20 12h24v40H20z' rx='5' fill='%23120f0b'/%3E%3Ccircle cx='32' cy='46' r='2' fill='%23e7a64b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="rail">
+    <div class="brand"><span class="brand-mark">V</span><div><strong>Veridex</strong><span>iPhone Archive</span></div></div>
+    <nav aria-label="Workspace sections">
+      <button class="nav-item active" data-view="inventory"><span>01</span>Inventory</button>
+      <button class="nav-item" data-view="sources"><span>02</span>Sources</button>
+      <button class="nav-item" data-view="transfers"><span>03</span>Transfers</button>
+      <button class="nav-item" data-view="cleanup"><span>04</span>Cleanup</button>
+      <button class="nav-item" data-view="audio"><span>05</span>Audio</button>
+      <button class="nav-item" data-view="deletion"><span>06</span>Deletion review</button>
+      <button class="nav-item" data-view="settings"><span>07</span>Settings</button>
+      <button class="nav-item" data-view="guide"><span>08</span>How to use</button>
+    </nav>
+    <div class="rail-foot">
+      <span class="security-dot"></span>
+      <div><strong>Local workspace</strong><span>127.0.0.1 only</span></div>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="topbar">
+      <div>
+        <span class="eyebrow">MEDIA CONTROL</span>
+        <h1 id="view-title">Inventory</h1>
+      </div>
+      <div class="top-actions">
+        <div class="copy-state"><span id="copy-state-dot"></span><div><strong id="copy-state-label">Checking copies</strong><small id="copy-state-detail">Loading workspace status</small></div></div>
+        <button id="refresh-all" class="quiet-button" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <section id="inventory-view" class="view active" aria-labelledby="view-title">
+      <div class="inventory-toolbar">
+        <label class="search-field"><span>Search</span><input id="filter-search" type="search" placeholder="Filename or folder"></label>
+        <label><span>From</span><input id="filter-from" type="date"></label>
+        <label><span>To</span><input id="filter-to" type="date"></label>
+        <label><span>Type</span><select id="filter-kind"><option value="">All media</option><option value="photo">Photos</option><option value="video">Videos</option><option value="audio">Audio</option></select></label>
+        <button id="apply-filters" class="quiet-button" type="button">Apply</button>
+      </div>
+
+      <div class="selection-line">
+        <div><strong id="selection-count">0 selected</strong><span id="selection-size">0 B</span></div>
+        <div class="selection-actions">
+          <select id="bulk-disposition" aria-label="Selected item action">
+            <option value="download_keep">Download + keep on phone</option>
+            <option value="download_delete">Download + delete after verification</option>
+            <option value="keep_on_phone">Leave on phone</option>
+          </select>
+          <button id="set-disposition" class="quiet-button" type="button">Set plan</button>
+          <button id="start-transfer" class="primary-button" type="button">Download selected</button>
+        </div>
+      </div>
+
+      <div class="media-header" role="row">
+        <label><input id="select-all" type="checkbox"><span>Media</span></label>
+        <span>Date</span><span>Size</span><span>Plan</span><span>Copies</span>
+      </div>
+      <div id="media-list" class="media-list" aria-live="polite"></div>
+      <div id="inventory-empty" class="empty-state" hidden><span class="empty-orbit"></span><h2>No media in this view</h2><p>Add and scan a source, or change the filters.</p><button type="button" data-jump="sources" class="primary-button">Open sources</button></div>
+    </section>
+
+    <section id="sources-view" class="view">
+      <div class="section-intro"><div><h2>Bring sources into one inventory</h2><p>USB covers camera media. iCloud and export folders cover accessible files and Voice Memos.</p></div><button id="scan-all" class="primary-button" type="button">Scan all</button></div>
+      <div id="source-list" class="source-list"></div>
+      <form id="source-form" class="editor-strip">
+        <div><span class="eyebrow">ADD SOURCE</span><h3>Connect another location</h3></div>
+        <label><span>Type</span><select id="source-kind"><option value="iphone_usb">iPhone USB camera</option><option value="icloud_photos">iCloud Photos folder</option><option value="icloud_drive">iCloud Drive folder</option><option value="export_inbox">Voice Memos export inbox</option><option value="folder">Other media folder</option></select></label>
+        <label><span>Name</span><input id="source-label" required placeholder="My iPhone"></label>
+        <label id="source-path-wrap"><span>Folder</span><input id="source-path" placeholder="C:\Users\...\iCloudPhotos"></label>
+        <button class="quiet-button" type="button" id="pick-source">Choose folder</button>
+        <button class="primary-button" type="submit">Add source</button>
+      </form>
+    </section>
+
+    <section id="transfers-view" class="view">
+      <div class="section-intro"><div><h2>Transfer activity</h2><p>Interrupted work remains checkpointed. Partial files never become verified originals.</p></div><button id="refresh-jobs" class="quiet-button" type="button">Refresh jobs</button></div>
+      <div id="job-list" class="job-list"></div>
+    </section>
+
+    <section id="cleanup-view" class="view">
+      <div class="section-intro"><div><h2>Evidence before cleanup</h2><p>Exact duplicates and quality warnings are suggestions. Nothing here deletes a file.</p></div><button id="refresh-duplicates" class="quiet-button" type="button">Analyze archive</button></div>
+      <div class="metric-line"><div><strong id="duplicate-groups">0</strong><span>exact duplicate groups</span></div><div><strong id="duplicate-bytes">0 B</strong><span>reviewable duplicate storage</span></div></div>
+      <div id="duplicate-list" class="duplicate-list"></div>
+    </section>
+
+    <section id="audio-view" class="view">
+      <div class="section-intro"><div><h2>Transcribe when you choose</h2><p>Transcription is separate from downloading and deletion. Select archived audio in Inventory, then start it here.</p></div><button id="transcribe-selected" class="primary-button" type="button">Transcribe selected audio</button></div>
+      <div class="notice"><strong id="transcription-state">Optional component</strong><p id="transcription-detail">Checking whether local transcription is installed.</p></div>
+      <label class="model-choice"><span>Local model</span><select id="transcription-model"><option value="tiny.en">Tiny English — fastest</option><option value="base.en">Base English — balanced</option><option value="small.en">Small English — more accurate</option></select></label>
+    </section>
+
+    <section id="deletion-view" class="view">
+      <div class="danger-intro"><span class="eyebrow">TWO-COPY GATE</span><h2>Deletion review</h2><p>Only items explicitly marked for deletion with a verified primary archive and an independent second copy can pass this gate.</p></div>
+      <div class="selection-line"><div><strong id="delete-selection-count">0 selected</strong><span>Select items in Inventory first</span></div><button id="preview-deletion" class="danger-button" type="button">Create deletion preview</button></div>
+      <div id="deletion-result" class="deletion-result"></div>
+    </section>
+
+    <section id="settings-view" class="view">
+      <div class="settings-grid">
+        <form id="destination-form" class="settings-block">
+          <span class="eyebrow">LOCAL ORIGINAL</span><h2>Archive destination</h2><p>Choose any writable internal, external, or network drive. The app never switches destinations silently.</p>
+          <label><span>Drive and folder</span><input id="destination-path" placeholder="D:\iPhone Archive"></label>
+          <div class="button-row"><button id="pick-destination" type="button" class="quiet-button">Choose folder</button><button type="submit" class="primary-button">Verify and save</button></div>
+          <small id="destination-detail">No destination configured.</small>
+        </form>
+        <form id="secondary-destination-form" class="settings-block">
+          <span class="eyebrow">SECOND LOCAL COPY</span><h2>Another drive</h2><p>Choose a different physical drive or network share. A second folder on the primary drive does not count.</p>
+          <label><span>Second-copy drive and folder</span><input id="secondary-destination-path" placeholder="E:\Veridex iPhone Backup"></label>
+          <div class="button-row"><button id="pick-secondary-destination" type="button" class="quiet-button">Choose folder</button><button type="submit" class="primary-button">Verify and save</button></div>
+          <small id="secondary-destination-detail">No second local destination configured.</small>
+        </form>
+        <form id="limits-form" class="settings-block">
+          <span class="eyebrow">OPTIONAL LIMITS</span><h2>Download size controls</h2><p>Leave either field empty for no limit. Limits are checked before a job starts.</p>
+          <label><span>Maximum batch (GB)</span><input id="batch-limit" type="number" min="0" step="0.1" placeholder="No limit"></label>
+          <label><span>Maximum single file (GB)</span><input id="file-limit" type="number" min="0" step="0.1" placeholder="No limit"></label>
+          <button type="submit" class="primary-button">Save limits</button>
+        </form>
+        <form id="google-form" class="settings-block">
+          <span class="eyebrow">SECOND VERIFIED COPY</span><h2>Google Drive</h2><p>Use a Desktop OAuth client JSON. Access is limited to files created by this app.</p>
+          <label><span>OAuth client JSON</span><input id="google-secrets" placeholder="C:\Private\client_secret.json"></label>
+          <label><span>Drive folder name</span><input id="google-folder" value="Veridex iPhone Archive"></label>
+          <button type="submit" class="primary-button">Connect Google Drive</button>
+          <small id="google-detail">Not connected.</small>
+        </form>
+      </div>
+    </section>
+
+    <section id="guide-view" class="view">
+      <div class="section-intro guide-intro">
+        <div><span class="eyebrow">START HERE</span><h2>How to use iPhone Archive</h2><p>Follow this order for a safe, reversible archive. You can leave transcription and cleanup for later.</p></div>
+      </div>
+      <div class="guide-grid">
+        <article class="guide-card guide-card-wide"><span class="guide-number">01</span><div><h3>Choose where the archive lives</h3><p>Open <strong>Settings</strong>. Set the local original destination, then set <strong>Another drive</strong> to a different physical drive such as <code>E:\Veridex iPhone Backup</code>. Click <strong>Verify and save</strong> after each choice.</p></div></article>
+        <article class="guide-card guide-card-wide"><span class="guide-number">02</span><div><h3>Add your iPhone or export folder</h3><p>Open <strong>Sources</strong>. Choose <strong>iPhone USB camera</strong> when the phone is connected by cable, or choose an iCloud/export folder. Add the source, then click <strong>Scan</strong>.</p></div></article>
+        <article class="guide-card"><span class="guide-number">03</span><div><h3>Review before downloading</h3><p>Use <strong>Inventory</strong> to search, filter by date or type, and select files. The plan defaults to keeping files on the phone after download.</p></div></article>
+        <article class="guide-card"><span class="guide-number">04</span><div><h3>Download two verified copies</h3><p>Click <strong>Download selected</strong>. Keep <strong>Create and verify a second copy</strong> checked when you want deletion to become eligible.</p></div></article>
+        <article class="guide-card"><span class="guide-number">05</span><div><h3>Transcribe only when wanted</h3><p>Audio is never transcribed automatically. Select archived audio in Inventory, then open <strong>Audio</strong> and start a transcription job.</p></div></article>
+        <article class="guide-card"><span class="guide-number">06</span><div><h3>Clean up last</h3><p><strong>Cleanup</strong> only reports exact duplicates. <strong>Deletion review</strong> stays locked until the item has a verified primary archive and independent second copy.</p></div></article>
+      </div>
+      <div class="guide-safety"><strong>Safety rule</strong><p>The app does not delete from the phone during a normal download. Deletion requires an explicit plan, two-copy verification, a preview, and a typed confirmation.</p></div>
+    </section>
+  </main>
+
+  <dialog id="transfer-dialog">
+    <form method="dialog" class="dialog-shell" id="transfer-form">
+      <header><div><span class="eyebrow">TRANSFER PLAN</span><h2>Download selected media</h2></div><button value="cancel" class="icon-button" aria-label="Close">×</button></header>
+      <div class="dialog-body">
+        <div class="transfer-summary"><strong id="transfer-count">0 items</strong><span id="transfer-size">0 B</span></div>
+        <label><span>Archive drive and folder</span><input id="transfer-destination" required></label>
+        <label class="check-line"><input id="transfer-secondary" type="checkbox"><span id="transfer-secondary-label">Create and verify a second copy on another drive</span></label>
+        <label class="check-line"><input id="transfer-google" type="checkbox"><span>Upload and verify the second copy in Google Drive</span></label>
+        <p class="safety-copy">Deleting from the phone remains locked unless the primary archive and at least one independent second copy verify successfully.</p>
+      </div>
+      <footer><button value="cancel" class="quiet-button">Cancel</button><button id="confirm-transfer" type="button" class="primary-button">Start download</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header><div><span class="eyebrow danger-text">DESTRUCTIVE ACTION</span><h2>Confirm phone deletion</h2></div><button value="cancel" class="icon-button" aria-label="Close">×</button></header>
+      <div class="dialog-body"><div id="delete-preview-items"></div><label><span id="delete-confirm-label">Type confirmation</span><input id="delete-confirm-input" autocomplete="off"></label><p class="safety-copy">Unsupported phone items become a manual checklist; they are not reported as deleted.</p></div>
+      <footer><button value="cancel" class="quiet-button">Cancel</button><button id="confirm-deletion" type="button" class="danger-button">Delete approved items</button></footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
