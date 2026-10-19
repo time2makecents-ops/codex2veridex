@@ -17,6 +17,19 @@ const state = {
   contacts: [],
   contactSync: { completed: false },
   connectedAccounts: null,
+  marketplace: {
+    loaded: false,
+    loading: false,
+    busy: false,
+    drafts: [],
+    groups: [],
+    cases: [],
+    images: [],
+    currentDraftId: "",
+    selectedPhotoIds: new Set(),
+    selectedGroupIds: new Set(),
+    notice: "",
+  },
   artImages: [],
   artImagesLoading: false,
   artImagesLoaded: false,
@@ -100,9 +113,57 @@ const state = {
     pollTimer: null,
     result: null,
   },
+  itemSelector: {
+    sourceFileId: "",
+    selections: [],
+    activeSelectionId: "",
+    interaction: null,
+    draftRegion: null,
+    batchId: "",
+    searchMode: "full",
+    researchDepth: "quick",
+    zoom: 1,
+    activeJob: null,
+    pollTimer: null,
+  },
   priceSearch: {
     activeJob: null,
     pollTimer: null,
+  },
+  animation: {
+    loaded: false,
+    loading: false,
+    busy: false,
+    tools: {},
+    projects: [],
+    workflow: [],
+    currentProjectId: "",
+    assets: [],
+    selectedAssetId: "",
+    storyboard: [],
+    audioTracks: [],
+    selectedTrackId: "",
+    mouthRigs: [],
+    selectedRigId: "",
+    lipsyncTakes: [],
+    selectedTakeId: "",
+    manualRecording: null,
+    manualSelection: null,
+    manualEdit: null,
+    manualDialogOpen: false,
+    manualDialogOrigin: null,
+    manualDirty: false,
+    manualHistory: { undo: [], redo: [] },
+    quickFix: null,
+    quickFixHistory: { undo: [], redo: [] },
+    placementEditing: false,
+    waveform: { fileId: "", samples: null, duration: 0, loading: false, failed: false, token: 0 },
+    waveformInteraction: null,
+    waveformLastDrag: false,
+    mouthTimer: null,
+    mouthAudioId: "",
+    renderedShots: [],
+    notice: "",
   },
 };
 
@@ -158,17 +219,61 @@ function applyState(value, preserveRoute = false) {
     state.museum.regions = {};
     state.museum.cropFileId = "";
     state.museum.result = null;
+    resetItemSelector();
     window.clearTimeout(state.priceSearch.pollTimer);
     state.priceSearch.activeJob = null;
     state.priceSearch.pollTimer = null;
   }
+  if (state.animation.manualEdit?.timer) window.clearInterval(state.animation.manualEdit.timer);
+  state.animation.manualRecording = null;
+  state.animation.manualEdit = null;
+  state.animation.manualDialogOpen = false;
+  state.animation.manualDialogOrigin = null;
+  state.animation.manualDirty = false;
+  state.animation.manualHistory = { undo: [], redo: [] };
+  state.animation.quickFix = null;
+  state.animation.quickFixHistory = { undo: [], redo: [] };
+  state.animation.placementEditing = false;
+  stopAnimationMouthClock();
+  state.animation.waveform = { fileId: "", samples: null, duration: 0, loading: false, failed: false, token: 0 };
+  state.animation.waveformInteraction = null;
+  state.animation.waveformLastDrag = false;
   if (workspaceChanged) {
     state.connectedAccounts = null;
+    state.marketplace.loaded = false;
+    state.marketplace.drafts = [];
+    state.marketplace.groups = [];
+    state.marketplace.cases = [];
+    state.marketplace.images = [];
+    state.marketplace.currentDraftId = "";
+    state.marketplace.selectedPhotoIds.clear();
+    state.marketplace.selectedGroupIds.clear();
+    state.marketplace.notice = "";
     state.artImages = [];
     state.artImagesLoaded = false;
     state.selectedArtImageId = "";
     state.artStudio.loaded = false;
     state.artStudio.projects = [];
+    state.animation.loaded = false;
+    state.animation.projects = [];
+    state.animation.currentProjectId = "";
+    state.animation.assets = [];
+    state.animation.selectedAssetId = "";
+    state.animation.storyboard = [];
+    state.animation.audioTracks = [];
+    state.animation.selectedTrackId = "";
+    state.animation.mouthRigs = [];
+    state.animation.selectedRigId = "";
+    state.animation.lipsyncTakes = [];
+    state.animation.selectedTakeId = "";
+    state.animation.manualSelection = null;
+    state.animation.manualDialogOpen = false;
+    state.animation.manualDialogOrigin = null;
+    state.animation.manualDirty = false;
+    state.animation.manualHistory = { undo: [], redo: [] };
+    state.animation.placementEditing = false;
+    state.animation.renderedShots = [];
+    state.animation.notice = "";
     state.artStudio.currentProjectId = "";
     state.artStudio.selectedFileId = "";
     state.artStudio.previewReferenceId = "";
@@ -191,6 +296,7 @@ function applyState(value, preserveRoute = false) {
     state.museum.cropFileId = "";
     state.museum.activeJob = null;
     state.museum.result = null;
+    resetItemSelector();
   }
   if (!preserveRoute) state.route = savedRoute(state.messages);
   if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
@@ -1604,6 +1710,1763 @@ function loadArtProject() {
   setArtMode("create");
 }
 
+function animationProjectFromForm() {
+  const rows = (id) => el(id).value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  return {
+    project_id: state.animation.currentProjectId || el("animation-project-title").value,
+    title: el("animation-project-title").value,
+    width: Number(el("animation-width").value || 1920),
+    height: Number(el("animation-height").value || 1080),
+    frame_rate: Number(el("animation-fps").value || 24),
+    sets: rows("animation-sets"),
+    characters: rows("animation-characters"),
+    reusable_actions: rows("animation-actions-list"),
+    assets: state.animation.assets.map((row) => ({ ...row })),
+    storyboard: state.animation.storyboard.map((row) => ({ ...row })),
+    audio_tracks: state.animation.audioTracks.map((row) => ({ ...row })),
+    mouth_rigs: state.animation.mouthRigs.map((row) => ({ ...row, shapes: { ...(row.shapes || {}) } })),
+    lipsync_takes: state.animation.lipsyncTakes.map((row) => ({
+      ...row,
+      mouth_cues: (row.mouth_cues || []).map((cue) => ({ ...cue })),
+      manual_jaw_points: (row.manual_jaw_points || []).map((point) => ({ ...point })),
+      manual_jaw_segments: (row.manual_jaw_segments || []).map((segment) => ({ ...segment, points: (segment.points || []).map((point) => ({ ...point })) })),
+      manual_jaw_corrections: (row.manual_jaw_corrections || []).map((correction) => ({ ...correction })),
+    })),
+    rendered_shots: state.animation.renderedShots.map((row) => ({ ...row })),
+    notes: el("animation-notes").value,
+  };
+}
+
+function fillAnimationProject(project) {
+  if (!project) return;
+  state.animation.currentProjectId = project.saved ? project.project_id || "" : "";
+  el("animation-project-title").value = project.title || "Eternia Late Night";
+  el("animation-width").value = project.width || 1920;
+  el("animation-height").value = project.height || 1080;
+  el("animation-fps").value = String(project.frame_rate || 24);
+  el("animation-sets").value = (project.sets || []).join("\n");
+  el("animation-characters").value = (project.characters || []).join("\n");
+  el("animation-actions-list").value = (project.reusable_actions || []).join("\n");
+  el("animation-notes").value = project.notes || "";
+  state.animation.assets = (project.assets || []).map((row) => ({ ...row }));
+  state.animation.storyboard = (project.storyboard || []).map((row) => ({ ...row }));
+  state.animation.audioTracks = (project.audio_tracks || []).map((row) => ({ ...row }));
+  state.animation.mouthRigs = (project.mouth_rigs || []).map((row) => ({ ...row, shapes: { ...(row.shapes || {}) } }));
+  state.animation.lipsyncTakes = (project.lipsync_takes || []).map((row) => ({
+    ...row,
+    mouth_cues: (row.mouth_cues || []).map((cue) => ({ ...cue })),
+    manual_jaw_points: (row.manual_jaw_points || []).map((point) => ({ ...point })),
+    manual_jaw_segments: (row.manual_jaw_segments || []).map((segment) => ({ ...segment, points: (segment.points || []).map((point) => ({ ...point })) })),
+    manual_jaw_corrections: (row.manual_jaw_corrections || []).map((correction) => ({ ...correction })),
+  }));
+  state.animation.renderedShots = (project.rendered_shots || []).map((row) => ({ ...row }));
+  state.animation.selectedAssetId = state.animation.assets.some((row) => row.asset_id === state.animation.selectedAssetId)
+    ? state.animation.selectedAssetId : state.animation.assets[0]?.asset_id || "";
+  state.animation.selectedTrackId = state.animation.audioTracks.some((row) => row.track_id === state.animation.selectedTrackId)
+    ? state.animation.selectedTrackId : state.animation.audioTracks[0]?.track_id || "";
+  state.animation.selectedRigId = state.animation.mouthRigs.some((row) => row.rig_id === state.animation.selectedRigId)
+    ? state.animation.selectedRigId : state.animation.mouthRigs[0]?.rig_id || "";
+  state.animation.selectedTakeId = state.animation.lipsyncTakes.some((row) => row.take_id === state.animation.selectedTakeId)
+    ? state.animation.selectedTakeId : state.animation.lipsyncTakes[0]?.take_id || "";
+  state.animation.manualSelection = null;
+  state.animation.manualEdit = null;
+  state.animation.manualDirty = false;
+  state.animation.manualHistory = { undo: [], redo: [] };
+  state.animation.quickFix = null;
+  state.animation.quickFixHistory = { undo: [], redo: [] };
+  state.animation.placementEditing = false;
+  stopAnimationMouthClock();
+  state.animation.waveform = { fileId: "", samples: null, duration: 0, loading: false, failed: false, token: 0 };
+  state.animation.waveformInteraction = null;
+  state.animation.waveformLastDrag = false;
+  el("animation-project-select").value = project.revision_id || state.animation.currentProjectId;
+}
+
+function animationFileUrl(row) {
+  if (!row?.file_id || !state.workspace || !state.session) return "";
+  return `/api/files/content?${new URLSearchParams({
+    workspace_id: state.workspace.workspace_id,
+    session_id: row.source_session_id || state.session.session_id,
+    file_id: row.file_id,
+  })}`;
+}
+
+function selectedAnimationAsset() {
+  return state.animation.assets.find((row) => row.asset_id === state.animation.selectedAssetId) || null;
+}
+
+function selectedAnimationTrack() {
+  return state.animation.audioTracks.find((row) => row.track_id === state.animation.selectedTrackId) || null;
+}
+
+function addAnimationAssetFile(file) {
+  if (!file?.file_id || state.animation.assets.some((row) => row.file_id === file.file_id)) return;
+  const asset = {
+    asset_id: `asset-${file.file_id}`,
+    file_id: file.file_id,
+    source_session_id: state.session.session_id,
+    name: file.name || "Production image",
+    role: "prop",
+    width_percent: 35,
+    x_percent: 50,
+    y_percent: 60,
+    opacity_percent: 100,
+  };
+  state.animation.assets.push(asset);
+  state.animation.selectedAssetId = asset.asset_id;
+}
+
+function addAnimationAudioFile(file) {
+  if (!file?.file_id || state.animation.audioTracks.some((row) => row.file_id === file.file_id)) return;
+  const track = {
+    track_id: `track-${file.file_id}`,
+    file_id: file.file_id,
+    source_session_id: state.session.session_id,
+    name: file.name || "Audio track",
+    track_type: "dialogue",
+    character: "",
+    shot_id: "",
+    start_seconds: 0,
+    trim_in_seconds: 0,
+    trim_out_seconds: 0,
+    volume_db: 0,
+    pan_percent: 0,
+    fade_in_seconds: 0,
+    fade_out_seconds: 0,
+    muted: false,
+    solo: false,
+  };
+  state.animation.audioTracks.push(track);
+  state.animation.selectedTrackId = track.track_id;
+}
+
+function renderAnimationAssets() {
+  const list = el("animation-asset-list");
+  list.replaceChildren();
+  list.hidden = !state.animation.assets.length;
+  state.animation.assets.forEach((asset) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = asset.asset_id === state.animation.selectedAssetId ? "active" : "";
+    button.title = asset.name || "Image";
+    const image = document.createElement("img");
+    image.src = animationFileUrl(asset);
+    image.alt = "";
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    const role = document.createElement("small");
+    name.textContent = asset.name || "Image";
+    name.title = asset.name || "Image";
+    role.textContent = String(asset.role || "prop").replaceAll("_", " ");
+    copy.append(name, role);
+    button.append(image, copy);
+    button.addEventListener("click", () => {
+      state.animation.selectedAssetId = asset.asset_id;
+      renderAnimationAssets();
+    });
+    list.append(button);
+  });
+  const asset = selectedAnimationAsset();
+  const preview = el("animation-stage-image");
+  el("animation-stage-empty").hidden = Boolean(asset);
+  el("animation-asset-controls").hidden = !asset;
+  preview.hidden = !asset;
+  if (!asset) {
+    preview.removeAttribute("src");
+    return;
+  }
+  preview.src = animationFileUrl(asset);
+  preview.alt = asset.name || "Selected production asset";
+  preview.style.width = `${Number(asset.width_percent || 35)}%`;
+  preview.style.left = `${Number(asset.x_percent ?? 50)}%`;
+  preview.style.top = `${Number(asset.y_percent ?? 60)}%`;
+  preview.style.opacity = String(Number(asset.opacity_percent ?? 100) / 100);
+  el("animation-asset-role").value = asset.role || "prop";
+  [["width", "width_percent"], ["x", "x_percent"], ["y", "y_percent"], ["opacity", "opacity_percent"]].forEach(([control, key]) => {
+    el(`animation-asset-${control}`).value = asset[key];
+    el(`animation-asset-${control}-value`).textContent = `${Number(asset[key])}%`;
+  });
+  el("animation-open-gimp").disabled = state.animation.busy || !state.animation.tools?.gimp?.available;
+  el("animation-open-synfig").disabled = state.animation.busy || !state.animation.tools?.synfig?.available;
+}
+
+function storyboardAssetSelect(shot) {
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", `Image for ${shot.title || "shot"}`);
+  select.append(new Option("No image", ""));
+  state.animation.assets.forEach((asset) => select.add(new Option(asset.name || "Image", asset.asset_id)));
+  select.value = shot.asset_id || "";
+  select.addEventListener("change", () => {
+    shot.asset_id = select.value;
+    renderAnimationStoryboard();
+  });
+  return select;
+}
+
+function renderAnimationStoryboard() {
+  const list = el("animation-storyboard-list");
+  list.replaceChildren();
+  el("animation-storyboard-empty").hidden = Boolean(state.animation.storyboard.length);
+  state.animation.storyboard.forEach((shot, index) => {
+    const panel = document.createElement("article");
+    panel.className = "animation-storyboard-shot";
+    const header = document.createElement("header");
+    const number = document.createElement("span");
+    number.textContent = String(index + 1).padStart(2, "0");
+    const title = document.createElement("input");
+    title.type = "text";
+    title.value = shot.title || `Shot ${index + 1}`;
+    title.setAttribute("aria-label", `Shot ${index + 1} title`);
+    title.addEventListener("input", () => { shot.title = title.value; });
+    const duration = document.createElement("input");
+    duration.type = "number";
+    duration.min = "0.1";
+    duration.step = "0.1";
+    duration.value = shot.duration_seconds || 5;
+    duration.setAttribute("aria-label", `Shot ${index + 1} duration seconds`);
+    duration.addEventListener("input", () => { shot.duration_seconds = Number(duration.value || 5); });
+    const actions = document.createElement("div");
+    [["↑", -1], ["↓", 1]].forEach(([label, offset]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.disabled = index + offset < 0 || index + offset >= state.animation.storyboard.length;
+      button.addEventListener("click", () => {
+        const [moved] = state.animation.storyboard.splice(index, 1);
+        state.animation.storyboard.splice(index + offset, 0, moved);
+        renderAnimationStoryboard();
+      });
+      actions.append(button);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      state.animation.storyboard.splice(index, 1);
+      state.animation.audioTracks.forEach((track) => { if (track.shot_id === shot.shot_id) track.shot_id = ""; });
+      renderAnimationStudio();
+    });
+    actions.append(remove);
+    header.append(number, title, duration, actions);
+
+    const body = document.createElement("div");
+    body.className = "animation-storyboard-body";
+    const visual = document.createElement("figure");
+    const asset = state.animation.assets.find((row) => row.asset_id === shot.asset_id);
+    if (asset) {
+      const image = document.createElement("img");
+      image.src = animationFileUrl(asset);
+      image.alt = asset.name || "Storyboard image";
+      visual.append(image);
+    } else {
+      const empty = document.createElement("span");
+      empty.textContent = "Choose an image";
+      visual.append(empty);
+    }
+    visual.append(storyboardAssetSelect(shot));
+    const description = document.createElement("textarea");
+    description.rows = 6;
+    description.placeholder = "Describe what happens in this scene…";
+    description.value = shot.description || "";
+    description.setAttribute("aria-label", `Description for shot ${index + 1}`);
+    description.addEventListener("input", () => { shot.description = description.value; });
+    body.append(visual, description);
+
+    const notes = document.createElement("div");
+    notes.className = "animation-storyboard-notes";
+    [["Camera notes", "camera_notes", "Framing, movement, angle, focus…"], ["Editing notes", "editing_notes", "Cut, transition, timing, audio cue…"]].forEach(([label, key, placeholder]) => {
+      const wrapper = document.createElement("label");
+      wrapper.textContent = label;
+      const field = document.createElement("textarea");
+      field.rows = 3;
+      field.placeholder = placeholder;
+      field.value = shot[key] || "";
+      field.addEventListener("input", () => { shot[key] = field.value; });
+      wrapper.append(field);
+      notes.append(wrapper);
+    });
+    const shotTools = document.createElement("div");
+    shotTools.className = "animation-shot-tools";
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.textContent = "Export Synfig package";
+    exportButton.disabled = state.animation.busy;
+    exportButton.addEventListener("click", () => exportAnimationShot(shot));
+    const importButton = document.createElement("button");
+    importButton.type = "button";
+    importButton.textContent = "Import rendered shot";
+    importButton.disabled = state.animation.busy;
+    const renderInput = document.createElement("input");
+    renderInput.type = "file";
+    renderInput.accept = "video/*,.avi,.mkv,.mov,.mp4,.webm,.png,.jpg,.jpeg,.webp,.gif";
+    renderInput.hidden = true;
+    renderInput.addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (file) importAnimationRender(file, shot);
+    });
+    importButton.addEventListener("click", () => renderInput.click());
+    shotTools.append(exportButton, importButton, renderInput);
+    const importedRender = [...state.animation.renderedShots].reverse().find((row) => row.shot_id === shot.shot_id);
+    if (importedRender) {
+      const renderStatus = document.createElement("span");
+      renderStatus.className = "animation-shot-render-status";
+      renderStatus.textContent = "Imported render:";
+      const renderLink = document.createElement("a");
+      renderLink.href = animationFileUrl(importedRender);
+      renderLink.target = "_blank";
+      renderLink.rel = "noopener";
+      renderLink.textContent = importedRender.name || "Open render";
+      renderStatus.append(" ", renderLink);
+      shotTools.append(renderStatus);
+    }
+    panel.append(header, body, notes, shotTools);
+    list.append(panel);
+  });
+}
+
+function renderAnimationAudio() {
+  const list = el("animation-audio-track-list");
+  list.replaceChildren();
+  list.hidden = !state.animation.audioTracks.length;
+  state.animation.audioTracks.forEach((track) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = track.track_id === state.animation.selectedTrackId ? "active" : "";
+    const name = document.createElement("strong");
+    const detail = document.createElement("small");
+    name.textContent = track.name || "Audio";
+    detail.textContent = `${String(track.track_type || "dialogue").replaceAll("_", " ")} · ${Number(track.start_seconds || 0).toFixed(1)}s`;
+    button.append(name, detail);
+    button.addEventListener("click", () => {
+      state.animation.selectedTrackId = track.track_id;
+      renderAnimationAudio();
+    });
+    list.append(button);
+  });
+  const track = selectedAnimationTrack();
+  el("animation-audio-empty").hidden = Boolean(track);
+  el("animation-audio-editor").hidden = !track;
+  if (!track) return;
+  const preview = el("animation-audio-preview");
+  if (preview.dataset.fileId !== track.file_id) {
+    preview.src = animationFileUrl(track);
+    preview.dataset.fileId = track.file_id;
+    preview.load();
+  }
+  preview.muted = Boolean(track.muted);
+  preview.volume = Math.min(1, Math.max(0, Math.pow(10, Number(track.volume_db || 0) / 20)));
+  const boundTake = state.animation.lipsyncTakes.find((take) => take.track_id === track.track_id);
+  const boundRig = state.animation.mouthRigs.find((rig) => rig.rig_id === boundTake?.rig_id);
+  el("animation-audio-preview-note").textContent = boundTake
+    ? `This dialogue playback drives ${boundRig?.character || "the character"} lip-sync below.`
+    : "Track preview. Bind a lip-sync take to dialogue to drive a character.";
+  const shot = el("animation-track-shot");
+  shot.replaceChildren(new Option("Whole episode / unassigned", ""));
+  state.animation.storyboard.forEach((row, index) => shot.add(new Option(`${index + 1}. ${row.title || "Shot"}`, row.shot_id)));
+  const values = {
+    "animation-track-type": track.track_type || "dialogue",
+    "animation-track-character": track.character || "",
+    "animation-track-shot": track.shot_id || "",
+    "animation-track-start": track.start_seconds || 0,
+    "animation-track-trim-in": track.trim_in_seconds || 0,
+    "animation-track-trim-out": track.trim_out_seconds || 0,
+    "animation-track-volume": track.volume_db || 0,
+    "animation-track-pan": track.pan_percent || 0,
+    "animation-track-fade-in": track.fade_in_seconds || 0,
+    "animation-track-fade-out": track.fade_out_seconds || 0,
+  };
+  Object.entries(values).forEach(([id, value]) => { el(id).value = value; });
+  el("animation-track-mute").checked = Boolean(track.muted);
+  el("animation-track-solo").checked = Boolean(track.solo);
+  el("animation-open-audacity").disabled = state.animation.busy || !state.animation.tools?.audacity?.available;
+}
+
+const ANIMATION_MOUTH_SHAPES = ["A", "B", "C", "D", "E", "F", "G", "H", "X"];
+
+function selectedAnimationRig() {
+  return state.animation.mouthRigs.find((row) => row.rig_id === state.animation.selectedRigId) || null;
+}
+
+function selectedAnimationTake() {
+  return state.animation.lipsyncTakes.find((row) => row.take_id === state.animation.selectedTakeId) || null;
+}
+
+function activateAnimationTakeForTrack(track, audio) {
+  const take = state.animation.lipsyncTakes.find((row) => row.track_id === track?.track_id);
+  if (!take) return null;
+  if (state.animation.selectedTakeId !== take.take_id || state.animation.selectedRigId !== take.rig_id) {
+    state.animation.selectedTakeId = take.take_id;
+    state.animation.selectedRigId = take.rig_id;
+    renderAnimationLipSync();
+  }
+  renderLipSyncMouthAt(Number(audio?.currentTime || 0));
+  return take;
+}
+
+function createAnimationMouthRig() {
+  const sequence = state.animation.mouthRigs.length + 1;
+  const track = selectedAnimationTrack();
+  const rig = {
+    rig_id: `mouth-rig-${Date.now()}-${sequence}`,
+    character: track?.character || `Character ${sequence}`,
+    base_asset_id: state.animation.selectedAssetId || "",
+    animation_mode: "jaw_flap",
+    shapes: Object.fromEntries(ANIMATION_MOUTH_SHAPES.map((shape) => [shape, ""])),
+    mouth_x_percent: 50,
+    mouth_y_percent: 58,
+    mouth_width_percent: 16,
+    mouth_height_percent: 100,
+    mouth_anchor_x_percent: 50,
+    mouth_anchor_y_percent: 50,
+    jaw_open_strength_percent: 100,
+    placement_calibrated: false,
+    registration_master_asset_id: "",
+    registration_canvas_width: 1,
+    registration_canvas_height: 1,
+    mouth_asset_registrations: {},
+  };
+  state.animation.mouthRigs.push(rig);
+  state.animation.selectedRigId = rig.rig_id;
+  state.animation.selectedTakeId = "";
+  renderAnimationStudio();
+}
+
+function removeSelectedAnimationRig() {
+  const rig = selectedAnimationRig();
+  if (!rig) return;
+  state.animation.mouthRigs = state.animation.mouthRigs.filter((row) => row.rig_id !== rig.rig_id);
+  state.animation.lipsyncTakes = state.animation.lipsyncTakes.filter((row) => row.rig_id !== rig.rig_id);
+  state.animation.selectedRigId = state.animation.mouthRigs[0]?.rig_id || "";
+  state.animation.selectedTakeId = state.animation.lipsyncTakes[0]?.take_id || "";
+  renderAnimationStudio();
+}
+
+function updateSelectedAnimationRig(key, value) {
+  const rig = selectedAnimationRig();
+  if (!rig) return;
+  rig[key] = value;
+  if (["base_asset_id", "mouth_x_percent", "mouth_y_percent", "mouth_width_percent", "mouth_height_percent", "mouth_anchor_x_percent", "mouth_anchor_y_percent"].includes(key)) {
+    rig.placement_calibrated = false;
+  }
+  renderAnimationLipSync();
+}
+
+function mouthAssetForCue(rig, cue) {
+  if (!rig) return null;
+  if (rig.animation_mode === "jaw_flap") {
+    const assetId = rig.shapes?.X || rig.shapes?.A || "";
+    return state.animation.assets.find((row) => row.asset_id === assetId) || null;
+  }
+  const fallbacks = { G: "B", H: "C", X: "A" };
+  const assetId = rig.shapes?.[cue] || rig.shapes?.[fallbacks[cue]] || rig.shapes?.A || "";
+  return state.animation.assets.find((row) => row.asset_id === assetId) || null;
+}
+
+function animationJawFlapAmount(cue, rig) {
+  const baseAmount = ({ X: 0, A: .18, B: .12, C: .18, D: .24, E: .12, F: .08, G: .12, H: .18 })[cue] ?? .12;
+  const strength = Math.min(400, Math.max(25, Number(rig?.jaw_open_strength_percent ?? 100))) / 100;
+  return baseAmount * strength;
+}
+
+async function animationImageAlphaBounds(asset) {
+  const image = new Image();
+  image.src = animationFileUrl(asset);
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let left = canvas.width;
+  let top = canvas.height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < canvas.height; y += 1) {
+    for (let x = 0; x < canvas.width; x += 1) {
+      if (pixels[((y * canvas.width + x) * 4) + 3] < 8) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left || bottom < top) throw new Error(`${asset.name || "Jaw image"} has no visible pixels.`);
+  return { width: canvas.width, height: canvas.height, left, top, right: right + 1, bottom: bottom + 1 };
+}
+
+async function confirmAnimationMouthFit() {
+  const rig = selectedAnimationRig();
+  if (!rig) return;
+  const masterAsset = mouthAssetForCue(rig, "X");
+  if (!masterAsset) return showError("Map an X/closed jaw image first.");
+  state.animation.busy = true;
+  renderAnimationLipSync();
+  try {
+    const master = await animationImageAlphaBounds(masterAsset);
+    const masterSpan = Math.max(1, master.right - master.left);
+    const registrations = {};
+    const assetsById = new Map();
+    const mappedAssetIds = rig.animation_mode === "jaw_flap" ? [masterAsset.asset_id] : Object.values(rig.shapes || {});
+    mappedAssetIds.filter(Boolean).forEach((assetId) => {
+      const asset = state.animation.assets.find((candidate) => candidate.asset_id === assetId);
+      if (asset) assetsById.set(assetId, asset);
+    });
+    for (const asset of assetsById.values()) {
+      const bounds = asset.asset_id === masterAsset.asset_id ? master : await animationImageAlphaBounds(asset);
+      const scale = masterSpan / Math.max(1, bounds.right - bounds.left);
+      registrations[asset.asset_id] = {
+        left_percent: ((master.left - (bounds.left * scale)) / master.width) * 100,
+        top_percent: ((master.top - (bounds.top * scale)) / master.height) * 100,
+        width_percent: ((bounds.width * scale) / master.width) * 100,
+      };
+    }
+    rig.registration_master_asset_id = masterAsset.asset_id;
+    rig.registration_canvas_width = master.width;
+    rig.registration_canvas_height = master.height;
+    rig.mouth_asset_registrations = registrations;
+    rig.placement_calibrated = true;
+    state.animation.notice = `${Object.keys(registrations).length} jaw image(s) aligned to ${masterAsset.name || "the closed jaw"}.`;
+  } catch (error) {
+    rig.placement_calibrated = false;
+    showError(error.message || String(error));
+  } finally {
+    state.animation.busy = false;
+    renderAnimationLipSync();
+  }
+}
+
+function manualJawOpeningFromPoints(timeSeconds, points) {
+  const rows = (points || []).slice().sort((a, b) => Number(a.time) - Number(b.time));
+  if (!rows.length) return null;
+  if (timeSeconds <= Number(rows[0].time)) return Number(rows[0].opening_percent || 0);
+  for (let index = 1; index < rows.length; index += 1) {
+    const prior = rows[index - 1];
+    const next = rows[index];
+    if (timeSeconds <= Number(next.time)) {
+      const span = Math.max(.001, Number(next.time) - Number(prior.time));
+      const ratio = Math.max(0, Math.min(1, (timeSeconds - Number(prior.time)) / span));
+      return Number(prior.opening_percent || 0) + ((Number(next.opening_percent || 0) - Number(prior.opening_percent || 0)) * ratio);
+    }
+  }
+  return Number(rows[rows.length - 1].opening_percent || 0);
+}
+
+function manualJawOpeningAt(timeSeconds, take) {
+  const edit = state.animation.manualEdit;
+  if (edit?.takeId === take?.take_id && edit.pointerActive) return edit.openingPercent;
+  const segment = (take?.manual_jaw_segments || []).find((row) => timeSeconds >= Number(row.start) && timeSeconds <= Number(row.end));
+  return segment ? manualJawOpeningFromPoints(timeSeconds, segment.points) : null;
+}
+
+function quickJawOpeningAt(timeSeconds, take, rig) {
+  const active = state.animation.quickFix;
+  if (active?.takeId === take?.take_id && Math.abs(timeSeconds - Number(active.time || 0)) < .002) {
+    return Number(active.openingPercent || 0);
+  }
+  const duration = Math.max(0, Number(take?.duration || 0));
+  const corrections = (take?.manual_jaw_corrections || []).slice().sort((a, b) => Number(a.time) - Number(b.time));
+  const groups = [];
+  corrections.forEach((correction) => {
+    const center = Math.max(0, Math.min(duration, Number(correction.time || 0)));
+    const blend = Math.max(.03, Math.min(1, Number(correction.blend_seconds || .12)));
+    const start = Math.max(0, center - blend);
+    const end = Math.min(duration, center + blend);
+    const prior = groups[groups.length - 1];
+    if (prior && start <= prior.end + .001) {
+      prior.end = Math.max(prior.end, end);
+      prior.corrections.push(correction);
+    } else groups.push({ start, end, corrections: [correction] });
+  });
+  const group = groups.find((row) => timeSeconds >= row.start && timeSeconds <= row.end);
+  if (!group) return null;
+  const points = [
+    { time: group.start, opening_percent: animationJawOpeningPercentAt(group.start, take, rig) },
+    ...group.corrections.map((correction) => ({ time: Number(correction.time), opening_percent: Number(correction.opening_percent) })),
+    { time: group.end, opening_percent: animationJawOpeningPercentAt(group.end, take, rig) },
+  ].sort((a, b) => a.time - b.time);
+  return manualJawOpeningFromPoints(timeSeconds, points);
+}
+
+function animationJawFlapScale(cue, rig, take, timeSeconds) {
+  const adjustedOpening = manualJawOpeningAt(timeSeconds, take) ?? quickJawOpeningAt(timeSeconds, take, rig);
+  if (rig?.animation_mode === "jaw_flap" && adjustedOpening !== null) {
+    const strength = Math.min(400, Math.max(25, Number(rig.jaw_open_strength_percent ?? 100))) / 100;
+    return 1 + (.24 * strength * (Math.max(0, Math.min(100, adjustedOpening)) / 100));
+  }
+  return rig?.animation_mode === "jaw_flap" ? 1 + animationJawFlapAmount(cue, rig) : 1;
+}
+
+function animationJawOpeningPercentAt(timeSeconds, take, rig) {
+  if (rig?.animation_mode !== "jaw_flap") return 0;
+  const cue = (take?.mouth_cues || []).find((row) => Number(row.start) <= timeSeconds && Number(row.end) > timeSeconds)?.value || "X";
+  const strength = Math.min(400, Math.max(25, Number(rig.jaw_open_strength_percent ?? 100))) / 100;
+  return Math.max(0, Math.min(100, (animationJawFlapAmount(cue, rig) / Math.max(.001, .24 * strength)) * 100));
+}
+
+function renderLipSyncMouthAt(timeSeconds) {
+  const take = selectedAnimationTake();
+  const rig = selectedAnimationRig();
+  const cue = (take?.mouth_cues || []).find((row) => Number(row.start) <= timeSeconds && Number(row.end) > timeSeconds)?.value || "X";
+  const mouthAsset = mouthAssetForCue(rig, cue);
+  const mouth = el("animation-lipsync-mouth");
+  const mouthBox = el("animation-mouth-transform-box");
+  const currentCue = take ? cue : "—";
+  const identityMode = take ? "Playing jaw" : "Editing jaw";
+  const identityValue = mouthAsset ? `${cue} · ${mouthAsset.name || "Unnamed image"}` : "No jaw selected";
+  if (el("animation-current-cue").textContent !== currentCue) el("animation-current-cue").textContent = currentCue;
+  if (el("animation-mouth-identity-mode").textContent !== identityMode) el("animation-mouth-identity-mode").textContent = identityMode;
+  if (el("animation-mouth-identity-value").textContent !== identityValue) el("animation-mouth-identity-value").textContent = identityValue;
+  mouth.hidden = !mouthAsset;
+  mouthBox.hidden = !mouthAsset;
+  if (mouthAsset) {
+    const mouthUrl = animationFileUrl(mouthAsset);
+    if (mouth.getAttribute("src") !== mouthUrl) mouth.src = mouthUrl;
+    const registration = rig?.mouth_asset_registrations?.[mouthAsset.asset_id] || {};
+    const left = `${Number(registration.left_percent || 0)}%`;
+    const top = `${Number(registration.top_percent || 0)}%`;
+    const width = `${Number(registration.width_percent || 100)}%`;
+    if (mouth.style.left !== left) mouth.style.left = left;
+    if (mouth.style.top !== top) mouth.style.top = top;
+    if (mouth.style.width !== width) mouth.style.width = width;
+    const flapScale = animationJawFlapScale(cue, rig, take, timeSeconds);
+    if (mouth.style.transformOrigin !== "50% 0%") mouth.style.transformOrigin = "50% 0%";
+    const transform = `scaleY(${flapScale})`;
+    if (mouth.style.transform !== transform) mouth.style.transform = transform;
+  }
+}
+
+function manualJawSelectionForTake(take) {
+  const duration = Math.max(0, Number(take?.duration || 0));
+  const selection = state.animation.manualSelection;
+  if (!selection || selection.takeId !== take?.take_id) return { takeId: take?.take_id || "", start: 0, end: duration };
+  return {
+    takeId: take.take_id,
+    start: Math.max(0, Math.min(duration, Number(selection.start || 0))),
+    end: Math.max(0, Math.min(duration, Number(selection.end ?? duration))),
+  };
+}
+
+function waveformFallbackSamples(take, count = 480) {
+  const samples = new Array(count).fill(.08);
+  (take?.mouth_cues || []).forEach((cue) => {
+    const start = Math.max(0, Math.floor((Number(cue.start || 0) / Math.max(.001, Number(take.duration || 0))) * count));
+    const end = Math.min(count, Math.ceil((Number(cue.end || 0) / Math.max(.001, Number(take.duration || 0))) * count));
+    for (let index = start; index < end; index += 1) {
+      const phase = (index - start) / Math.max(1, end - start);
+      samples[index] = Math.max(samples[index], .18 + (.22 * Math.abs(Math.sin(phase * Math.PI * 3))));
+    }
+  });
+  return samples;
+}
+
+function waveformTimeFromPointer(event, canvas, duration) {
+  const rect = canvas.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+  return ratio * Math.max(0, Number(duration || 0));
+}
+
+function animationWaveformDuration(take, audio) {
+  const decodedDuration = Number(state.animation.waveform.duration || 0);
+  if (state.animation.waveform.samples?.length && Number.isFinite(decodedDuration) && decodedDuration > 0) return decodedDuration;
+  const mediaDuration = Number(audio?.duration || 0);
+  if (Number.isFinite(mediaDuration) && mediaDuration > 0) return mediaDuration;
+  return Math.max(0, Number(take?.duration || decodedDuration || 0));
+}
+
+function formatAnimationWaveformTime(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  const minutes = Math.floor(value / 60);
+  return `${minutes}:${String(Math.floor(value % 60)).padStart(2, "0")}.${String(Math.floor((value % 1) * 100)).padStart(2, "0")}`;
+}
+
+function stopAnimationMouthClock() {
+  if (state.animation.mouthTimer !== null) window.clearInterval(state.animation.mouthTimer);
+  state.animation.mouthTimer = null;
+  state.animation.mouthAudioId = "";
+}
+
+function startAnimationMouthClock(audio = el("animation-lipsync-audio")) {
+  stopAnimationMouthClock();
+  if (!audio) return;
+  state.animation.mouthAudioId = audio.id;
+  const tick = () => {
+    const activeAudio = el(state.animation.mouthAudioId);
+    if (!activeAudio || activeAudio.paused || activeAudio.ended) {
+      stopAnimationMouthClock();
+      return;
+    }
+    renderLipSyncMouthAt(Number(activeAudio.currentTime || 0));
+  };
+  state.animation.mouthTimer = window.setInterval(tick, 16);
+  tick();
+}
+
+function updateAnimationPlaybackPosition(take, audio) {
+  const duration = Math.max(.001, animationWaveformDuration(take, audio));
+  const currentTime = Math.max(0, Math.min(duration, Number(audio?.currentTime || 0)));
+  const playhead = el("animation-waveform-playhead");
+  if (playhead) {
+    playhead.hidden = !take;
+    playhead.style.left = `${Math.max(0, Math.min(100, (currentTime / duration) * 100))}%`;
+  }
+  const timeLabel = el("animation-waveform-time");
+  if (timeLabel) timeLabel.textContent = `${formatAnimationWaveformTime(currentTime)} / ${formatAnimationWaveformTime(duration)}`;
+  const status = el("animation-waveform-status");
+  if (!status) return;
+  const showSelection = Boolean(state.animation.manualDialogOpen || el("animation-manual-advanced")?.open);
+  if (!take) status.textContent = "Choose a generated take to view its voice waveform";
+  else if (state.animation.waveform.loading) status.textContent = "Loading waveform…";
+  else if (state.animation.waveform.failed) status.textContent = "Waveform preview unavailable; cue timing is shown";
+  else if (audio && !audio.paused && !audio.ended) status.textContent = "Playing — marker follows the voice";
+  else status.textContent = showSelection ? "Click to seek · drag to select" : "Click to seek";
+}
+
+function drawAnimationWaveform(take, audio) {
+  const canvas = el("animation-lipsync-waveform");
+  if (!canvas) return;
+  const duration = Math.max(.001, animationWaveformDuration(take, audio));
+  const width = Math.max(320, Math.round(canvas.clientWidth || 760));
+  const height = Math.max(70, Math.round(canvas.clientHeight || 92));
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+  }
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#080c09";
+  context.fillRect(0, 0, width, height);
+  const showSelection = Boolean(state.animation.manualDialogOpen || el("animation-manual-advanced")?.open);
+  if (showSelection) {
+    const selection = manualJawSelectionForTake(take);
+    const startX = (Math.min(selection.start, selection.end) / duration) * width;
+    const endX = (Math.max(selection.start, selection.end) / duration) * width;
+    context.fillStyle = "rgba(216,184,102,.16)";
+    context.fillRect(startX, 0, Math.max(2, endX - startX), height);
+  }
+  context.strokeStyle = "rgba(139,180,151,.28)";
+  context.beginPath();
+  context.moveTo(0, height / 2 + .5);
+  context.lineTo(width, height / 2 + .5);
+  context.stroke();
+  const samples = state.animation.waveform.samples || waveformFallbackSamples(take);
+  const barWidth = width / Math.max(1, samples.length);
+  context.fillStyle = "#79ad87";
+  samples.forEach((amplitude, index) => {
+    const x = index * barWidth;
+    const level = Math.max(1, Math.min(height * .46, Number(amplitude || 0) * height * .46));
+    context.fillRect(x, (height - level) / 2, Math.max(1, barWidth - .5), level);
+    context.fillRect(x, (height + level) / 2, Math.max(1, barWidth - .5), level);
+  });
+  updateAnimationPlaybackPosition(take, audio);
+}
+
+async function loadAnimationWaveform(track, take) {
+  const fileId = track?.file_id || "";
+  if (!fileId || !animationFileUrl(track)) return;
+  const cache = state.animation.waveform;
+  if (cache.fileId === fileId && (cache.loading || cache.samples || cache.failed)) return;
+  const token = Number(cache.token || 0) + 1;
+  state.animation.waveform = { fileId, samples: null, duration: Number(take?.duration || 0), loading: true, failed: false, token };
+  drawAnimationWaveform(take, el("animation-lipsync-audio"));
+  try {
+    const response = await fetch(animationFileUrl(track));
+    if (!response.ok) throw new Error(`Waveform request failed (${response.status})`);
+    const bytes = await response.arrayBuffer();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("Audio decoding is unavailable");
+    const context = new AudioContextClass();
+    const buffer = await context.decodeAudioData(bytes.slice(0));
+    const channel = buffer.getChannelData(0);
+    const count = Math.max(480, Math.min(1600, Math.round(channel.length / Math.max(1, buffer.sampleRate / 90))));
+    const block = Math.max(1, Math.floor(channel.length / count));
+    const samples = [];
+    for (let index = 0; index < count; index += 1) {
+      const from = index * block;
+      const to = Math.min(channel.length, from + block);
+      let peak = 0;
+      for (let cursor = from; cursor < to; cursor += 1) peak = Math.max(peak, Math.abs(channel[cursor] || 0));
+      samples.push(peak);
+    }
+    await context.close?.();
+    if (state.animation.waveform.token !== token) return;
+    state.animation.waveform = { fileId, samples, duration: buffer.duration, loading: false, failed: false, token };
+  } catch (error) {
+    if (state.animation.waveform.token !== token) return;
+    state.animation.waveform = { fileId, samples: null, duration: Number(take?.duration || 0), loading: false, failed: true, token };
+  }
+  if (selectedAnimationTake()?.take_id === take?.take_id) drawAnimationWaveform(take, el("animation-lipsync-audio"));
+}
+
+function updateWaveformSelection(start, end, take, audio) {
+  const duration = animationWaveformDuration(take, audio);
+  const first = Math.max(0, Math.min(duration, Math.min(start, end)));
+  const last = Math.max(first, Math.min(duration, Math.max(start, end)));
+  state.animation.manualSelection = { takeId: take.take_id, start: first, end: last };
+  if (audio && Math.abs(last - first) < .005) audio.currentTime = first;
+  renderManualJawControls(take, audio);
+  drawAnimationWaveform(take, audio);
+}
+
+function beginAnimationWaveformPointer(event) {
+  if (event.button !== 0) return;
+  if (!state.animation.manualDialogOpen && !el("animation-manual-advanced")?.open) return;
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  const canvas = el("animation-lipsync-waveform");
+  if (!take || !canvas || state.animation.manualEdit) return;
+  const time = waveformTimeFromPointer(event, canvas, animationWaveformDuration(take, audio));
+  state.animation.waveformInteraction = { pointerId: event.pointerId, anchor: time, moved: false };
+  try { canvas.setPointerCapture(event.pointerId); } catch (error) { /* Test/synthetic events may not support capture. */ }
+  event.preventDefault();
+}
+
+function moveAnimationWaveformPointer(event) {
+  const interaction = state.animation.waveformInteraction;
+  if (!interaction || event.pointerId !== interaction.pointerId) return;
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  const canvas = el("animation-lipsync-waveform");
+  if (!take || !canvas) return;
+  const time = waveformTimeFromPointer(event, canvas, animationWaveformDuration(take, audio));
+  if (Math.abs(time - interaction.anchor) > .01) interaction.moved = true;
+  if (interaction.moved) updateWaveformSelection(interaction.anchor, time, take, audio);
+  event.preventDefault();
+}
+
+function finishAnimationWaveformPointer(event) {
+  const interaction = state.animation.waveformInteraction;
+  if (!interaction || event.pointerId !== interaction.pointerId) return;
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  const canvas = el("animation-lipsync-waveform");
+  if (take && canvas && !interaction.moved) {
+    const time = waveformTimeFromPointer(event, canvas, animationWaveformDuration(take, audio));
+    audio.currentTime = time;
+    renderLipSyncMouthAt(time);
+    drawAnimationWaveform(take, audio);
+  }
+  state.animation.waveformLastDrag = interaction.moved;
+  state.animation.waveformInteraction = null;
+}
+
+function seekAnimationWaveform(event) {
+  if (state.animation.waveformLastDrag) {
+    state.animation.waveformLastDrag = false;
+    return;
+  }
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  const canvas = el("animation-lipsync-waveform");
+  if (!take || !canvas || state.animation.manualEdit) return;
+  const time = waveformTimeFromPointer(event, canvas, animationWaveformDuration(take, audio));
+  audio.currentTime = time;
+  renderLipSyncMouthAt(time);
+  drawAnimationWaveform(take, audio);
+}
+
+function renderWaveformCorrectionMarkers(take, audio) {
+  const container = el("animation-waveform-corrections");
+  container.replaceChildren();
+  const duration = Math.max(.001, animationWaveformDuration(take, audio));
+  (take?.manual_jaw_corrections || []).forEach((correction) => {
+    const marker = document.createElement("button");
+    marker.type = "button";
+    marker.style.left = `${Math.max(0, Math.min(100, (Number(correction.time || 0) / duration) * 100))}%`;
+    marker.title = `Jaw correction at ${formatAnimationWaveformTime(correction.time)} · ${Number(correction.opening_percent || 0).toFixed(0)}% open`;
+    marker.setAttribute("aria-label", marker.title);
+    marker.addEventListener("click", () => beginQuickJawFix(correction));
+    container.append(marker);
+  });
+}
+
+function renderQuickFixControls(take, audio) {
+  const quickFix = state.animation.quickFix?.takeId === take?.take_id ? state.animation.quickFix : null;
+  const rig = selectedAnimationRig();
+  const editor = el("animation-quick-fix-editor");
+  editor.hidden = !quickFix;
+  el("animation-quick-fix-start").disabled = !take || rig?.animation_mode !== "jaw_flap" || Boolean(state.animation.manualEdit);
+  el("animation-quick-fix-undo").disabled = !take || !state.animation.quickFixHistory.undo.length || state.animation.busy;
+  el("animation-quick-fix-delete").hidden = !quickFix?.correctionId;
+  if (quickFix) {
+    el("animation-quick-fix-time").textContent = formatAnimationWaveformTime(quickFix.time);
+    el("animation-quick-fix-opening").value = String(quickFix.openingPercent);
+    el("animation-quick-fix-opening-value").textContent = `${Number(quickFix.openingPercent).toFixed(0)}%`;
+  }
+  const correctionCount = (take?.manual_jaw_corrections || []).length;
+  el("animation-quick-fix-status").textContent = quickFix
+    ? "Adjust the jaw, then save. Automatic lip-sync stays active around it."
+    : correctionCount
+      ? `${correctionCount} saved correction${correctionCount === 1 ? "" : "s"}. Select an orange waveform marker to revise one.`
+      : "Automatic lip-sync remains active everywhere else.";
+  const advancedOpen = Boolean(state.animation.manualDialogOpen || el("animation-manual-advanced").open);
+  el("animation-waveform-selection-legend").hidden = !advancedOpen;
+  el("animation-lipsync-preview").classList.toggle("advanced-manual-open", Boolean(state.animation.manualDialogOpen));
+  renderWaveformCorrectionMarkers(take, audio);
+}
+
+function beginQuickJawFix(correction = null) {
+  const take = selectedAnimationTake();
+  const rig = selectedAnimationRig();
+  if (!take) return showError("Generate or select a lip-sync take first.");
+  if (rig?.animation_mode !== "jaw_flap") return showError("Quick Fix is available for Simple jaw flap rigs.");
+  const audio = el("animation-lipsync-audio");
+  audio.pause();
+  const time = Math.max(0, Math.min(Number(take.duration || audio.duration || 0), Number(correction?.time ?? audio.currentTime ?? 0)));
+  if ((take.manual_jaw_segments || []).some((segment) => time >= Number(segment.start) && time <= Number(segment.end))) {
+    return showError("This moment already has an Advanced manual-performance edit. Clear or revise that Advanced edit first.");
+  }
+  const openingPercent = correction
+    ? Number(correction.opening_percent || 0)
+    : (quickJawOpeningAt(time, take, rig) ?? animationJawOpeningPercentAt(time, take, rig));
+  state.animation.quickFix = {
+    takeId: take.take_id,
+    correctionId: correction?.correction_id || "",
+    time: Number(time.toFixed(3)),
+    openingPercent: Math.max(0, Math.min(100, Number(openingPercent || 0))),
+  };
+  audio.currentTime = time;
+  renderLipSyncMouthAt(time);
+  renderQuickFixControls(take, audio);
+  drawAnimationWaveform(take, audio);
+}
+
+function cancelQuickJawFix() {
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  const time = Number(state.animation.quickFix?.time ?? audio.currentTime ?? 0);
+  state.animation.quickFix = null;
+  renderLipSyncMouthAt(time);
+  renderQuickFixControls(take, audio);
+  drawAnimationWaveform(take, audio);
+}
+
+async function persistQuickFixChange(history) {
+  const saved = await saveAnimationProject(true);
+  if (saved) {
+    state.animation.quickFixHistory = history;
+    state.animation.quickFix = null;
+    renderAnimationLipSync();
+  }
+  return saved;
+}
+
+async function saveQuickJawFix() {
+  const take = selectedAnimationTake();
+  const quickFix = state.animation.quickFix;
+  if (!take || !quickFix || quickFix.takeId !== take.take_id) return;
+  const before = JSON.parse(JSON.stringify(take.manual_jaw_corrections || []));
+  const history = {
+    undo: [...state.animation.quickFixHistory.undo, before],
+    redo: [],
+  };
+  const correction = {
+    correction_id: quickFix.correctionId || `jaw-correction-${Date.now()}`,
+    time: Number(quickFix.time.toFixed(3)),
+    opening_percent: Number(quickFix.openingPercent.toFixed(3)),
+    blend_seconds: .12,
+  };
+  take.manual_jaw_corrections = before.filter((row) => row.correction_id !== correction.correction_id).concat(correction).sort((a, b) => Number(a.time) - Number(b.time));
+  state.animation.quickFixHistory = history;
+  state.animation.notice = `Jaw correction saved at ${formatAnimationWaveformTime(correction.time)}.`;
+  await persistQuickFixChange(history);
+}
+
+async function deleteQuickJawFix() {
+  const take = selectedAnimationTake();
+  const quickFix = state.animation.quickFix;
+  if (!take || !quickFix?.correctionId) return;
+  const before = JSON.parse(JSON.stringify(take.manual_jaw_corrections || []));
+  const history = { undo: [...state.animation.quickFixHistory.undo, before], redo: [] };
+  take.manual_jaw_corrections = before.filter((row) => row.correction_id !== quickFix.correctionId);
+  state.animation.quickFixHistory = history;
+  state.animation.notice = "Jaw correction deleted.";
+  await persistQuickFixChange(history);
+}
+
+async function undoQuickJawFix() {
+  const take = selectedAnimationTake();
+  const history = state.animation.quickFixHistory;
+  if (!take || !history.undo.length) return;
+  const current = JSON.parse(JSON.stringify(take.manual_jaw_corrections || []));
+  take.manual_jaw_corrections = history.undo[history.undo.length - 1];
+  const nextHistory = { undo: history.undo.slice(0, -1), redo: [...history.redo, current] };
+  state.animation.quickFixHistory = nextHistory;
+  state.animation.notice = "Last Quick Fix undone.";
+  await persistQuickFixChange(nextHistory);
+}
+
+function renderManualJawControls(take, audio) {
+  const duration = Math.max(0, Number(take?.duration || audio.duration || 0));
+  const selection = manualJawSelectionForTake(take);
+  const start = Math.min(selection.start, selection.end);
+  const end = Math.max(selection.start, selection.end);
+  const startInput = el("animation-manual-start");
+  const endInput = el("animation-manual-end");
+  startInput.max = String(duration);
+  endInput.max = String(duration);
+  startInput.value = String(start);
+  endInput.value = String(end);
+  startInput.disabled = !take || Boolean(state.animation.manualEdit);
+  endInput.disabled = !take || Boolean(state.animation.manualEdit);
+  el("animation-manual-start-value").textContent = `${start.toFixed(2)}s`;
+  el("animation-manual-end-value").textContent = `${end.toFixed(2)}s`;
+  const editing = state.animation.manualEdit?.takeId === take?.take_id;
+  const rig = selectedAnimationRig();
+  el("animation-manual-jaw-edit").disabled = !take || rig?.animation_mode !== "jaw_flap" || end - start < .01 || (Boolean(state.animation.manualEdit) && !editing);
+  el("animation-manual-jaw-edit").textContent = editing ? "Editing selected section" : (state.animation.manualDialogOpen ? "Start selected edit" : "Open advanced editor");
+  el("animation-manual-jaw-clear").disabled = !take || !(take.manual_jaw_segments || []).length || Boolean(state.animation.manualEdit);
+  el("animation-manual-playback-rate").disabled = !take;
+  el("animation-manual-jaw-status").textContent = editing
+    ? "Hold the jaw and move up/down. Release to commit this section."
+    : ((take?.manual_jaw_segments || []).length ? "Manual motion is active for this take." : "Select a time range, then edit by holding the jaw.");
+  el("animation-lipsync-stage").classList.toggle("manual-editing", editing);
+  el("animation-manual-jaw-save").disabled = !state.animation.manualDirty || Boolean(state.animation.manualEdit);
+  el("animation-manual-jaw-undo").disabled = !state.animation.manualHistory.undo.length || Boolean(state.animation.manualEdit);
+  el("animation-manual-jaw-redo").disabled = !state.animation.manualHistory.redo.length || Boolean(state.animation.manualEdit);
+}
+
+function stopManualJawTimer() {
+  if (state.animation.manualEdit?.timer) window.clearInterval(state.animation.manualEdit.timer);
+  if (state.animation.manualEdit) state.animation.manualEdit.timer = null;
+}
+
+function sampleManualJawPoint() {
+  const edit = state.animation.manualEdit;
+  if (!edit?.pointerActive) return;
+  const take = state.animation.lipsyncTakes.find((row) => row.take_id === edit.takeId);
+  const audio = el("animation-lipsync-audio");
+  if (!take || !audio) return;
+  const time = Math.max(edit.start, Math.min(edit.end, Number(audio.currentTime || edit.start)));
+  const point = { time: Number(time.toFixed(3)), opening_percent: Number(edit.openingPercent.toFixed(3)) };
+  const prior = edit.points[edit.points.length - 1];
+  if (prior && Math.abs(prior.time - point.time) < .002) edit.points[edit.points.length - 1] = point;
+  else edit.points.push(point);
+  renderLipSyncMouthAt(time);
+  if (time >= edit.end - .002) finishManualJawEdit();
+}
+
+function finishManualJawEdit() {
+  const edit = state.animation.manualEdit;
+  if (!edit) return;
+  stopManualJawTimer();
+  const take = state.animation.lipsyncTakes.find((row) => row.take_id === edit.takeId);
+  const audio = el("animation-lipsync-audio");
+  if (audio) audio.pause();
+  if (take && edit.points.length) {
+    state.animation.manualHistory.undo.push(JSON.parse(JSON.stringify(take.manual_jaw_segments || [])));
+    state.animation.manualHistory.redo = [];
+    const existingSegments = take.manual_jaw_segments || [];
+    const replacement = {
+      start: Number(edit.start.toFixed(3)),
+      end: Number(edit.end.toFixed(3)),
+      points: edit.points.map((point) => ({ ...point })),
+    };
+    if (!replacement.points.length || replacement.points[0].time > replacement.start) {
+      replacement.points.unshift({ time: replacement.start, opening_percent: 0 });
+    }
+    if (replacement.points[replacement.points.length - 1].time < replacement.end) {
+      replacement.points.push({ time: replacement.end, opening_percent: replacement.points[replacement.points.length - 1].opening_percent });
+    }
+    take.manual_jaw_segments = existingSegments.filter((segment) => Number(segment.end) <= edit.start || Number(segment.start) >= edit.end).concat(replacement).sort((a, b) => Number(a.start) - Number(b.start));
+    state.animation.manualDirty = true;
+    state.animation.notice = `Manual jaw motion saved for ${edit.start.toFixed(2)}–${edit.end.toFixed(2)} seconds. Save the project to retain it.`;
+  }
+  state.animation.manualEdit = null;
+  renderAnimationLipSync();
+}
+
+function openManualJawEditor() {
+  const take = selectedAnimationTake();
+  const rig = selectedAnimationRig();
+  if (!take) return showError("Generate or select a lip-sync take first.");
+  if (rig?.animation_mode !== "jaw_flap") return showError("Manual lower-jaw editing is available for Simple jaw flap rigs.");
+  const preview = el("animation-lipsync-preview");
+  const body = el("animation-manual-jaw-dialog-body");
+  if (!state.animation.manualDialogOrigin) {
+    state.animation.manualDialogOrigin = { parent: preview.parentElement, nextSibling: preview.nextSibling };
+  }
+  state.animation.manualHistory = { undo: [], redo: [] };
+  state.animation.manualDialogOpen = true;
+  el("animation-manual-advanced").open = true;
+  body.append(preview);
+  const dialog = el("animation-manual-jaw-dialog");
+  if (!dialog.open) dialog.showModal();
+  renderAnimationLipSync();
+}
+
+function closeManualJawEditor(force = false) {
+  if (state.animation.manualDirty && !force && !window.confirm("Close the manual jaw editor without saving the project?")) return;
+  stopManualJawTimer();
+  const audio = el("animation-lipsync-audio");
+  if (audio) audio.pause();
+  state.animation.manualEdit = null;
+  state.animation.manualDialogOpen = false;
+  const preview = el("animation-lipsync-preview");
+  const origin = state.animation.manualDialogOrigin;
+  if (origin?.parent) {
+    if (origin.nextSibling && origin.nextSibling.parentElement === origin.parent) origin.parent.insertBefore(preview, origin.nextSibling);
+    else origin.parent.append(preview);
+  }
+  state.animation.manualDialogOrigin = null;
+  const dialog = el("animation-manual-jaw-dialog");
+  if (dialog.open) dialog.close();
+  renderAnimationLipSync();
+}
+
+async function saveManualJawEditor() {
+  const saved = await saveAnimationProject();
+  if (saved) {
+    state.animation.manualDirty = false;
+    closeManualJawEditor(true);
+  }
+}
+
+function undoManualJawEdit() {
+  const take = selectedAnimationTake();
+  const history = state.animation.manualHistory;
+  if (!take || !history.undo.length) return;
+  history.redo.push(JSON.parse(JSON.stringify(take.manual_jaw_segments || [])));
+  take.manual_jaw_segments = history.undo.pop();
+  state.animation.manualDirty = true;
+  renderAnimationLipSync();
+}
+
+function redoManualJawEdit() {
+  const take = selectedAnimationTake();
+  const history = state.animation.manualHistory;
+  if (!take || !history.redo.length) return;
+  history.undo.push(JSON.parse(JSON.stringify(take.manual_jaw_segments || [])));
+  take.manual_jaw_segments = history.redo.pop();
+  state.animation.manualDirty = true;
+  renderAnimationLipSync();
+}
+
+function handleManualJawEditButton() {
+  if (!state.animation.manualDialogOpen) return openManualJawEditor();
+  return startManualJawEdit();
+}
+
+function toggleAnimationMouthPlacement() {
+  if (state.animation.manualEdit) return;
+  state.animation.placementEditing = !state.animation.placementEditing;
+  renderAnimationLipSync();
+}
+
+function beginManualJawPointer(event) {
+  const edit = state.animation.manualEdit;
+  if (!edit || event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const box = el("animation-mouth-transform-box");
+  const audio = el("animation-lipsync-audio");
+  const stage = el("animation-lipsync-stage");
+  edit.pointerActive = true;
+  edit.pointerId = event.pointerId;
+  edit.pointerStartY = event.clientY;
+  const take = selectedAnimationTake();
+  const currentTime = Number(audio.currentTime || edit.start);
+  edit.openingStartPercent = manualJawOpeningAt(currentTime, take) ?? animationJawOpeningPercentAt(currentTime, take, selectedAnimationRig()) ?? edit.openingPercent ?? 0;
+  edit.pointerScale = 100 / Math.max(100, (stage?.getBoundingClientRect().height || 240) * .65);
+  edit.openingPercent = edit.openingStartPercent;
+  box.classList.add("manual-dragging");
+  try { box.setPointerCapture(event.pointerId); } catch (error) { /* Synthetic tests may not have an active pointer capture target. */ }
+  audio.currentTime = Math.max(edit.start, Math.min(edit.end, Number(audio.currentTime || edit.start)));
+  audio.playbackRate = Number(el("animation-manual-playback-rate").value || 1);
+  audio.play().catch(() => {});
+  edit.timer = window.setInterval(sampleManualJawPoint, 33);
+  sampleManualJawPoint();
+}
+
+function moveManualJawPointer(event) {
+  const edit = state.animation.manualEdit;
+  if (!edit?.pointerActive || event.pointerId !== edit.pointerId) return;
+  const deltaY = event.clientY - edit.pointerStartY;
+  edit.openingPercent = Math.max(0, Math.min(100, edit.openingStartPercent - (deltaY * edit.pointerScale)));
+  sampleManualJawPoint();
+}
+
+function finishManualJawPointer(event) {
+  const edit = state.animation.manualEdit;
+  if (!edit?.pointerActive || event.pointerId !== edit.pointerId) return;
+  edit.pointerActive = false;
+  el("animation-mouth-transform-box").classList.remove("manual-dragging");
+  finishManualJawEdit();
+}
+
+function startManualJawEdit() {
+  const take = selectedAnimationTake();
+  const rig = selectedAnimationRig();
+  if (!take) return showError("Generate or select a lip-sync take first.");
+  if (rig?.animation_mode !== "jaw_flap") return showError("Manual lower-jaw editing is available for Simple jaw flap rigs.");
+  const selection = manualJawSelectionForTake(take);
+  if (selection.end - selection.start < .01) return showError("Choose a time range to edit first.");
+  const audio = el("animation-lipsync-audio");
+  audio.pause();
+  audio.playbackRate = Number(el("animation-manual-playback-rate").value || 1);
+  audio.currentTime = selection.start;
+  state.animation.manualEdit = {
+    takeId: take.take_id,
+    start: selection.start,
+    end: selection.end,
+    openingPercent: manualJawOpeningAt(selection.start, take) ?? 0,
+    pointerActive: false,
+    points: [],
+    timer: null,
+  };
+  renderAnimationLipSync();
+  audio.play().catch(() => {
+    el("animation-manual-jaw-status").textContent = "Manual edit armed. Click and hold the jaw to begin recording this section.";
+  });
+}
+
+function clearManualJawEdits() {
+  const take = selectedAnimationTake();
+  if (!take) return;
+  take.manual_jaw_segments = [];
+  state.animation.notice = "Manual jaw motion cleared; automatic mouth cues are active again. Save the project to retain the change.";
+  renderAnimationLipSync();
+}
+
+function markAnimationMouthPlacementChanged(rig) {
+  if (!rig) return;
+  rig.placement_calibrated = false;
+  renderAnimationLipSync();
+}
+
+function beginAnimationMouthDrag(event, resizing = false) {
+  if (state.animation.manualEdit) return beginManualJawPointer(event);
+  if (!state.animation.placementEditing) return;
+  const rig = selectedAnimationRig();
+  const stage = el("animation-lipsync-stage");
+  const box = el("animation-mouth-transform-box");
+  if (!rig || box.hidden || event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const stageRect = stage.getBoundingClientRect();
+  const boxRect = box.getBoundingClientRect();
+  const start = {
+    pointerX: event.clientX,
+    pointerY: event.clientY,
+    x: Number(rig.mouth_x_percent ?? 50),
+    y: Number(rig.mouth_y_percent ?? 58),
+    width: Number(rig.mouth_width_percent ?? 16),
+    height: Number(rig.mouth_height_percent ?? 100),
+    renderedHeight: Math.max(1, boxRect.height),
+  };
+  box.classList.add(resizing ? "resizing" : "dragging");
+  box.setPointerCapture(event.pointerId);
+  const move = (moveEvent) => {
+    const dx = moveEvent.clientX - start.pointerX;
+    const dy = moveEvent.clientY - start.pointerY;
+    if (resizing) {
+      rig.mouth_width_percent = Math.max(1, Math.min(100, start.width + (dx / Math.max(1, stageRect.width)) * 100));
+      rig.mouth_height_percent = Math.max(25, Math.min(200, start.height * ((start.renderedHeight + dy) / start.renderedHeight)));
+    } else {
+      rig.mouth_x_percent = Math.max(-100, Math.min(200, start.x + (dx / Math.max(1, stageRect.width)) * 100));
+      rig.mouth_y_percent = Math.max(-100, Math.min(200, start.y + (dy / Math.max(1, stageRect.height)) * 100));
+    }
+    markAnimationMouthPlacementChanged(rig);
+  };
+  const finish = () => {
+    box.classList.remove("dragging", "resizing");
+    box.removeEventListener("pointermove", move);
+    box.removeEventListener("pointerup", finish);
+    box.removeEventListener("pointercancel", finish);
+  };
+  box.addEventListener("pointermove", move);
+  box.addEventListener("pointerup", finish);
+  box.addEventListener("pointercancel", finish);
+}
+
+function renderAnimationLipSync() {
+  const rigSelect = el("animation-rig-select");
+  const priorRig = state.animation.selectedRigId;
+  rigSelect.replaceChildren(new Option("New rig", ""));
+  state.animation.mouthRigs.forEach((rig) => rigSelect.add(new Option(rig.character || "Character", rig.rig_id)));
+  rigSelect.value = priorRig;
+  const rig = selectedAnimationRig();
+  el("animation-rig-remove").disabled = !rig;
+  el("animation-rig-character").disabled = !rig;
+  el("animation-rig-character").value = rig?.character || "";
+
+  const mouthMode = el("animation-mouth-mode");
+  mouthMode.disabled = !rig;
+  mouthMode.value = rig?.animation_mode === "jaw_flap" ? "jaw_flap" : "mouth_shapes";
+  const simpleJaw = el("animation-simple-jaw");
+  simpleJaw.replaceChildren(new Option("Choose the closed jaw", ""));
+  state.animation.assets.forEach((asset) => simpleJaw.add(new Option(asset.name || "Image", asset.asset_id)));
+  simpleJaw.value = rig?.shapes?.X || "";
+  simpleJaw.disabled = !rig;
+  const simpleMode = mouthMode.value === "jaw_flap";
+  el("animation-simple-jaw-field").hidden = !simpleMode;
+  el("animation-mouth-shape-fields").hidden = simpleMode;
+  el("animation-mouth-calibrate").textContent = simpleMode ? "Use this jaw placement" : "Align all jaws + confirm fit";
+
+  const base = el("animation-rig-base");
+  base.replaceChildren(new Option("No base image", ""));
+  state.animation.assets.forEach((asset) => base.add(new Option(asset.name || "Image", asset.asset_id)));
+  base.value = rig?.base_asset_id || "";
+  base.disabled = !rig;
+
+  const shapeGrid = el("animation-mouth-shape-grid");
+  shapeGrid.replaceChildren();
+  ANIMATION_MOUTH_SHAPES.forEach((shape) => {
+    const label = document.createElement("label");
+    label.textContent = shape;
+    if ("ABCDEF".includes(shape)) label.classList.add("required-shape");
+    const select = document.createElement("select");
+    select.disabled = !rig;
+    select.append(new Option("Not mapped", ""));
+    state.animation.assets.forEach((asset) => select.add(new Option(asset.name || "Image", asset.asset_id)));
+    select.value = rig?.shapes?.[shape] || "";
+    select.addEventListener("change", () => {
+      if (!rig) return;
+      rig.shapes[shape] = select.value;
+      rig.placement_calibrated = false;
+      rig.mouth_asset_registrations = {};
+      rig.registration_master_asset_id = "";
+      renderAnimationLipSync();
+    });
+    label.append(select);
+    shapeGrid.append(label);
+  });
+  [["x", "mouth_x_percent", 50], ["y", "mouth_y_percent", 58], ["width", "mouth_width_percent", 16], ["height", "mouth_height_percent", 100], ["anchor-x", "mouth_anchor_x_percent", 50], ["anchor-y", "mouth_anchor_y_percent", 50]].forEach(([control, key, fallback]) => {
+    const value = Number(rig?.[key] ?? fallback);
+    el(`animation-mouth-${control}`).disabled = !rig || !state.animation.placementEditing;
+    el(`animation-mouth-${control}`).value = value;
+    el(`animation-mouth-${control}-value`).textContent = `${value}%`;
+  });
+  const jawStrength = Number(rig?.jaw_open_strength_percent ?? 100);
+  el("animation-mouth-strength").disabled = !rig;
+  el("animation-mouth-strength").value = jawStrength;
+  el("animation-mouth-strength-value").textContent = `${jawStrength}%`;
+
+  const takeSelect = el("animation-lipsync-take");
+  takeSelect.replaceChildren(new Option("No generated take", ""));
+  state.animation.lipsyncTakes.forEach((take, index) => {
+    const takeRig = state.animation.mouthRigs.find((row) => row.rig_id === take.rig_id);
+    takeSelect.add(new Option(`${takeRig?.character || "Character"} · take ${index + 1}`, take.take_id));
+  });
+  takeSelect.value = state.animation.selectedTakeId;
+  const take = selectedAnimationTake();
+  if (take && take.rig_id !== state.animation.selectedRigId) {
+    state.animation.selectedRigId = take.rig_id;
+    return renderAnimationLipSync();
+  }
+
+  const baseAsset = state.animation.assets.find((row) => row.asset_id === rig?.base_asset_id);
+  const character = el("animation-lipsync-character");
+  character.hidden = !baseAsset;
+  if (baseAsset) character.src = animationFileUrl(baseAsset);
+  el("animation-lipsync-stage-empty").hidden = Boolean(baseAsset);
+  const mouth = el("animation-lipsync-mouth");
+  const mouthBox = el("animation-mouth-transform-box");
+  mouthBox.style.left = `${Number(rig?.mouth_x_percent ?? 50)}%`;
+  mouthBox.style.top = `${Number(rig?.mouth_y_percent ?? 58)}%`;
+  mouthBox.style.width = `${Number(rig?.mouth_width_percent ?? 16)}%`;
+  mouthBox.style.aspectRatio = `${Number(rig?.registration_canvas_width || 1)} / ${Number(rig?.registration_canvas_height || 1)}`;
+  mouthBox.style.transformOrigin = `${Number(rig?.mouth_anchor_x_percent ?? 50)}% ${Number(rig?.mouth_anchor_y_percent ?? 50)}%`;
+  mouthBox.style.transform = `translate(-${Number(rig?.mouth_anchor_x_percent ?? 50)}%, -${Number(rig?.mouth_anchor_y_percent ?? 50)}%) scaleY(${Number(rig?.mouth_height_percent ?? 100) / 100})`;
+  mouthBox.classList.toggle("placement-editing", Boolean(state.animation.placementEditing));
+  const resizeHandle = el("animation-mouth-resize-handle");
+  resizeHandle.hidden = !state.animation.placementEditing;
+  mouth.style.height = "auto";
+  const anchorMarker = el("animation-mouth-anchor-marker");
+  anchorMarker.hidden = !rig || !mouthAssetForCue(rig, "X") || (!state.animation.placementEditing && !state.animation.manualEdit);
+  anchorMarker.style.left = `${Number(rig?.mouth_x_percent ?? 50)}%`;
+  anchorMarker.style.top = `${Number(rig?.mouth_y_percent ?? 58)}%`;
+
+  const track = state.animation.audioTracks.find((row) => row.track_id === take?.track_id)
+    || state.animation.audioTracks.find((row) => row.file_id === el("animation-audio-file").value);
+  const audio = el("animation-lipsync-audio");
+  if (track && audio.dataset.fileId !== track.file_id) {
+    audio.src = animationFileUrl(track);
+    audio.dataset.fileId = track.file_id;
+    audio.load();
+  } else if (!track) {
+    audio.removeAttribute("src");
+    audio.dataset.fileId = "";
+    state.animation.waveform = { fileId: "", samples: null, duration: 0, loading: false, failed: false, token: Number(state.animation.waveform.token || 0) + 1 };
+  }
+
+  const timeline = el("animation-lipsync-timeline");
+  timeline.replaceChildren();
+  const duration = Number(take?.duration || 0);
+  (take?.mouth_cues || []).slice(0, 1000).forEach((cue) => {
+    const segment = document.createElement("button");
+    segment.type = "button";
+    segment.textContent = cue.value;
+    segment.title = `${cue.value} · ${Number(cue.start).toFixed(2)}–${Number(cue.end).toFixed(2)}s`;
+    segment.style.flexGrow = String(Math.max(.03, Number(cue.end) - Number(cue.start)));
+    segment.addEventListener("click", () => {
+      audio.currentTime = Number(cue.start || 0);
+      renderLipSyncMouthAt(audio.currentTime);
+    });
+    timeline.append(segment);
+  });
+  timeline.hidden = !duration;
+  renderLipSyncMouthAt(Number(audio.currentTime || 0));
+
+  const requiredMapped = Boolean(rig && (rig.animation_mode === "jaw_flap" ? rig.shapes?.X : "ABCDEF".split("").every((shape) => rig.shapes?.[shape])));
+  const placementCalibrated = Boolean(rig?.placement_calibrated);
+  const rhubarbReady = Boolean(state.animation.tools?.rhubarb?.available);
+  const calibrationButton = el("animation-mouth-calibrate");
+  calibrationButton.disabled = !rig || !baseAsset || !mouthAssetForCue(rig, "X");
+  const calibrationStatus = el("animation-mouth-calibration-status");
+  calibrationStatus.textContent = placementCalibrated ? "Jaw fit confirmed" : "Calibration required";
+  calibrationStatus.classList.toggle("confirmed", placementCalibrated);
+  const placementButton = el("animation-mouth-placement-edit");
+  placementButton.disabled = !rig || Boolean(state.animation.manualEdit);
+  placementButton.textContent = state.animation.placementEditing ? "Done adjusting jaw placement" : "Adjust jaw placement";
+  el("animation-lipsync-generate").disabled = state.animation.busy || !rhubarbReady || !el("animation-audio-file").value || !requiredMapped || !placementCalibrated;
+}
+
+function renderAnimationStudio() {
+  const tools = el("animation-tool-list");
+  tools.replaceChildren();
+  Object.values(state.animation.tools || {}).forEach((tool) => {
+    const row = document.createElement("div");
+    row.className = `animation-tool-row ${tool.available ? "available" : "missing"}`;
+    const copy = document.createElement("div");
+    const name = document.createElement("strong");
+    const purpose = document.createElement("span");
+    const status = document.createElement("b");
+    name.textContent = tool.name;
+    purpose.textContent = tool.purpose;
+    status.textContent = tool.available ? "Ready" : "Not installed";
+    copy.append(name, purpose);
+    row.append(copy, status);
+    tools.append(row);
+  });
+  renderAnimationAssets();
+  renderAnimationStoryboard();
+  renderAnimationAudio();
+  const projects = el("animation-project-select");
+  const selected = projects.value || state.animation.currentProjectId;
+  projects.replaceChildren(new Option("Eternia starter", ""));
+  state.animation.projects.forEach((project) => {
+    const revisionId = project.revision_id || project.project_id;
+    const label = `${project.title} · v${project.project_version}${project.revision_id ? " (saved version)" : " (current)"}`;
+    projects.add(new Option(label, revisionId));
+  });
+  projects.value = selected;
+  const audio = el("animation-audio-file");
+  const selectedAudio = audio.value;
+  audio.replaceChildren(new Option("Choose attached audio", ""));
+  const audioCandidates = new Map();
+  state.files.filter((file) => String(file.content_type || "").startsWith("audio/") || /\.(aac|flac|m4a|mp3|ogg|wav)$/i.test(file.name || ""))
+    .forEach((file) => audioCandidates.set(file.file_id, file));
+  state.animation.audioTracks.forEach((track) => audioCandidates.set(track.file_id, track));
+  audioCandidates.forEach((file) => audio.add(new Option(file.name || "Audio", file.file_id)));
+  const preferredAudio = selectedAudio || selectedAnimationTrack()?.file_id || "";
+  if ([...audio.options].some((option) => option.value === preferredAudio)) audio.value = preferredAudio;
+  renderAnimationLipSync();
+  const workflow = el("animation-workflow-list");
+  workflow.replaceChildren();
+  state.animation.workflow.forEach((step, index) => {
+    const item = document.createElement("li");
+    const number = document.createElement("span");
+    const copy = document.createElement("p");
+    number.textContent = String(index + 1).padStart(2, "0");
+    copy.textContent = step;
+    item.append(number, copy);
+    workflow.append(item);
+  });
+  const rhubarbReady = Boolean(state.animation.tools?.rhubarb?.available);
+  const missingEditors = [["gimp", "GIMP"], ["audacity", "Audacity"]]
+    .filter(([key]) => !state.animation.tools?.[key]?.available)
+    .map(([, label]) => label);
+  const editorStatus = missingEditors.length
+    ? `Install ${missingEditors.join(" and ")} for full source editing.`
+    : state.animation.tools?.synfig?.available
+      ? "GIMP, Audacity, and Synfig are ready."
+      : "GIMP and Audacity are ready; Synfig is not installed on this computer.";
+  el("animation-project-save").disabled = state.animation.busy;
+  el("animation-studio-status").textContent = state.animation.busy
+    ? "Working…"
+    : state.animation.notice || (rhubarbReady
+      ? `Image placement, storyboard, audio tracks, and Rhubarb cue generation are ready. ${editorStatus}`
+      : `Image placement, storyboard, and audio tracks are ready. ${editorStatus} Install Rhubarb to generate mouth cues.`
+    );
+}
+
+function addAnimationStoryboardShot() {
+  const sequence = state.animation.storyboard.length + 1;
+  const shot = {
+    shot_id: `shot-${Date.now()}-${sequence}`,
+    title: `Shot ${sequence}`,
+    asset_id: state.animation.selectedAssetId || "",
+    description: "",
+    camera_notes: "",
+    editing_notes: "",
+    duration_seconds: 5,
+  };
+  state.animation.storyboard.push(shot);
+  renderAnimationStudio();
+}
+
+function updateSelectedAnimationAsset(key, value) {
+  const asset = selectedAnimationAsset();
+  if (!asset) return;
+  asset[key] = value;
+  renderAnimationAssets();
+}
+
+function applyAnimationAssetPreset(preset) {
+  const asset = selectedAnimationAsset();
+  if (!asset) return;
+  const values = {
+    background: { role: "background", width_percent: 100, x_percent: 50, y_percent: 50, opacity_percent: 100 },
+    character: { role: "character", width_percent: 34, x_percent: 50, y_percent: 62, opacity_percent: 100 },
+    prop: { role: "prop", width_percent: 18, x_percent: 50, y_percent: 68, opacity_percent: 100 },
+  }[preset];
+  if (values) Object.assign(asset, values);
+  renderAnimationAssets();
+}
+
+function removeSelectedAnimationAsset() {
+  const asset = selectedAnimationAsset();
+  if (!asset) return;
+  state.animation.assets = state.animation.assets.filter((row) => row.asset_id !== asset.asset_id);
+  state.animation.storyboard.forEach((shot) => { if (shot.asset_id === asset.asset_id) shot.asset_id = ""; });
+  state.animation.selectedAssetId = state.animation.assets[0]?.asset_id || "";
+  renderAnimationStudio();
+}
+
+function updateSelectedAnimationTrack(key, value) {
+  const track = selectedAnimationTrack();
+  if (!track) return;
+  track[key] = value;
+  if (["volume_db", "muted"].includes(key)) renderAnimationAudio();
+}
+
+function removeSelectedAnimationTrack() {
+  const track = selectedAnimationTrack();
+  if (!track) return;
+  state.animation.audioTracks = state.animation.audioTracks.filter((row) => row.track_id !== track.track_id);
+  state.animation.selectedTrackId = state.animation.audioTracks[0]?.track_id || "";
+  renderAnimationAudio();
+}
+
+async function openAnimationEditor(tool, row) {
+  if (!row?.file_id) return;
+  const label = tool === "gimp" ? "GIMP" : tool === "synfig" ? "Synfig" : "Audacity";
+  if (!window.confirm(`Open ${row.name || "this file"} in ${label}? The original remains in Veridex.`)) return;
+  state.animation.busy = true;
+  renderAnimationStudio();
+  try {
+    const result = await api("/api/animation/tool/open", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        file_id: row.file_id,
+        source_session_id: row.source_session_id || state.session.session_id,
+        tool,
+        confirm: true,
+      }),
+    });
+    if (result.document?.file_id && !state.files.some((file) => file.file_id === result.document.file_id)) {
+      state.files = [...state.files, result.document];
+    }
+    state.animation.notice = tool === "synfig" && result.document
+      ? `${result.tool || label} opened a starter document for ${row.name || "the selected file"}. The original remains unchanged.`
+      : `${result.tool || label} opened ${row.name || "the selected file"}. Reimport edited versions so originals stay unchanged.`;
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.animation.busy = false; renderAnimationStudio(); }
+}
+
+async function loadAnimationStudio() {
+  if (state.animation.loading || !state.workspace || !state.session) return;
+  state.animation.loading = true;
+  try {
+    const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+    const result = await api(`/api/animation?${query}`);
+    state.animation.tools = result.tools || {};
+    state.animation.projects = result.projects || [];
+    state.animation.workflow = result.workflow || [];
+    state.animation.loaded = true;
+    const selected = state.animation.projects.find((row) => row.project_id === state.animation.currentProjectId) || result.starter_project;
+    fillAnimationProject(selected);
+  } finally {
+    state.animation.loading = false;
+    renderAnimationStudio();
+  }
+}
+
+async function openAnimationStudio() {
+  el("animation-studio-dialog").showModal();
+  renderAnimationStudio();
+  try { await loadAnimationStudio(); }
+  catch (error) { showError(error.message || String(error)); }
+}
+
+function closeAnimationStudio() {
+  el("animation-studio-dialog").close();
+}
+
+async function exportAnimationShot(shot) {
+  if (!shot?.shot_id || state.animation.busy) return;
+  if (!window.confirm(`Export ${shot.title || "this shot"} as a Synfig package?`)) return;
+  state.animation.busy = true;
+  renderAnimationStudio();
+  try {
+    const result = await api("/api/animation/shot/export", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        project: animationProjectFromForm(),
+        shot_id: shot.shot_id,
+        confirm: true,
+      }),
+    });
+    state.files = result.files || state.files;
+    state.animation.notice = `Synfig package ready: ${result.file?.name || "shot package"} · Artifact #${result.file?.artifact_number || "?"}. It is available in Session files.`;
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.animation.busy = false; renderAnimationStudio(); }
+}
+
+async function importAnimationRender(file, shot) {
+  if (!file || !shot?.shot_id || state.animation.busy) return;
+  if (!window.confirm(`Import ${file.name} as the rendered result for ${shot.title || "this shot"}?`)) return;
+  state.animation.busy = true;
+  renderAnimationStudio();
+  try {
+    const query = new URLSearchParams({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      name: file.name,
+    });
+    const uploadResponse = await fetch(`/api/files?${query}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const upload = await uploadResponse.json();
+    if (!uploadResponse.ok) throw new Error(upload.error || `Render upload failed (${uploadResponse.status})`);
+    state.files = upload.files || state.files;
+    const result = await api("/api/animation/render/import", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        project: animationProjectFromForm(),
+        shot_id: shot.shot_id,
+        file_id: upload.file?.file_id,
+        source_session_id: state.session.session_id,
+        confirm: true,
+      }),
+    });
+    state.animation.projects = result.projects || state.animation.projects;
+    fillAnimationProject(result.project);
+    state.animation.notice = `Imported ${result.file?.name || file.name} into ${shot.title || "the shot"}. The project was saved as a new version.`;
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.animation.busy = false; renderAnimationStudio(); }
+}
+
+async function saveAnimationProject(skipPrompt = false) {
+  if (!skipPrompt && !window.confirm("Save this Animation Studio project to the current workspace?")) return false;
+  state.animation.busy = true;
+  renderAnimationStudio();
+  try {
+    const result = await api("/api/animation/project/save", {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, project: animationProjectFromForm(), confirm: true }),
+    });
+    state.animation.projects = result.projects || [];
+    state.animation.currentProjectId = result.project.project_id;
+    fillAnimationProject(result.project);
+    state.animation.loaded = true;
+    return true;
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.animation.busy = false; renderAnimationStudio(); }
+  return false;
+}
+
+async function generateAnimationLipsync() {
+  const fileId = el("animation-audio-file").value;
+  if (!fileId) return showError("Attach and choose a voice-over file first.");
+  const rig = selectedAnimationRig();
+  if (!rig) return showError("Create a character mouth rig first.");
+  const requiredShapes = rig.animation_mode === "jaw_flap" ? ["X"] : "ABCDEF".split("");
+  const missingShapes = requiredShapes.filter((shape) => !rig.shapes?.[shape]);
+  if (missingShapes.length) return showError(`Map the required ${missingShapes.join(", ")} mouth drawing${missingShapes.length === 1 ? "" : "s"} first.`);
+  if (!rig.placement_calibrated) return showError("Fit the closed jaw to the character and confirm the jaw fit first.");
+  let track = state.animation.audioTracks.find((row) => row.file_id === fileId);
+  if (!track) {
+    const file = state.files.find((row) => row.file_id === fileId);
+    if (!file) return showError("The selected voice-over is unavailable.");
+    addAnimationAudioFile(file);
+    track = state.animation.audioTracks.find((row) => row.file_id === fileId);
+  }
+  state.animation.busy = true;
+  renderAnimationStudio();
+  try {
+    const result = await api("/api/animation/lipsync", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        file_id: fileId,
+        source_session_id: track?.source_session_id || state.session.session_id,
+        transcript: el("animation-transcript").value,
+        recognizer: el("animation-lipsync-recognizer").value,
+        binding: {
+          track_id: track.track_id,
+          rig_id: rig.rig_id,
+          character: rig.character,
+          base_asset_id: rig.base_asset_id,
+          shapes: { ...(rig.shapes || {}) },
+          mouth_x_percent: rig.mouth_x_percent,
+          mouth_y_percent: rig.mouth_y_percent,
+          mouth_width_percent: rig.mouth_width_percent,
+        },
+      }),
+    });
+    const take = {
+      take_id: `lipsync-${result.file.file_id}`,
+      track_id: track.track_id,
+      rig_id: rig.rig_id,
+      cue_file_id: result.file.file_id,
+      cue_source_session_id: state.session.session_id,
+      recognizer: result.recognizer || "pocketSphinx",
+      extended_shapes: result.extended_shapes || "",
+      duration: Number(result.duration || 0),
+      mouth_cues: (result.mouth_cues || []).map((cue) => ({ ...cue })),
+      manual_jaw_points: [],
+      manual_jaw_segments: [],
+      manual_jaw_corrections: [],
+      created_at: new Date().toISOString(),
+    };
+    state.animation.lipsyncTakes.push(take);
+    state.animation.selectedTakeId = take.take_id;
+    state.animation.selectedTrackId = track.track_id;
+    state.animation.notice = `${result.cue_count} mouth cues are ready for ${rig.character}. Save the project to retain this bound take.`;
+    el("animation-lipsync-result").textContent = `${result.cue_count} bound mouth cues · ${Number(result.duration || 0).toFixed(2)} seconds · Artifact #${result.file.artifact_number}`;
+    await loadState(state.workspace.workspace_id, state.session.session_id, true);
+  } catch (error) { showError(error.message || String(error)); }
+  finally { state.animation.busy = false; renderAnimationStudio(); }
+}
+
+function loadSelectedAnimationProject() {
+  const selectedId = el("animation-project-select").value;
+  const project = state.animation.projects.find((row) => (row.revision_id || row.project_id) === selectedId);
+  if (project) fillAnimationProject(project);
+}
+
+function renderAnimationTools() {
+  const active = state.session?.active_room === "animation_studio";
+  el("animation-actions").hidden = !active;
+  el("open-animation-studio").disabled = state.sending || state.uploading || state.switchingRoom;
+  if (!active && el("animation-studio-dialog").open) closeAnimationStudio();
+}
+
 function currentRoom() {
   return state.rooms.find((room) => room.id === state.session?.active_room) || null;
 }
@@ -2451,6 +4314,387 @@ function updateMuseumCrop(event, finish = false) {
   renderMuseumCrop();
 }
 
+function resetItemSelector() {
+  if (!state.itemSelector) return;
+  window.clearTimeout(state.itemSelector.pollTimer);
+  state.itemSelector.sourceFileId = "";
+  state.itemSelector.selections = [];
+  state.itemSelector.activeSelectionId = "";
+  state.itemSelector.interaction = null;
+  state.itemSelector.draftRegion = null;
+  state.itemSelector.batchId = "";
+  state.itemSelector.searchMode = "full";
+  state.itemSelector.researchDepth = "quick";
+  state.itemSelector.zoom = 1;
+  state.itemSelector.activeJob = null;
+  state.itemSelector.pollTimer = null;
+}
+
+function itemSelectionId() {
+  if (window.crypto?.randomUUID) return `selection_${window.crypto.randomUUID().replaceAll("-", "")}`;
+  return `selection_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function itemBatchId() {
+  if (window.crypto?.randomUUID) return `batch_${window.crypto.randomUUID().replaceAll("-", "")}`;
+  return `batch_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function itemSelectorPhotos() {
+  return museumSelectedPhotos();
+}
+
+function currentItemSelectorPhoto() {
+  return itemSelectorPhotos().find((file) => file.file_id === state.itemSelector.sourceFileId) || null;
+}
+
+function fitItemSelectorViewport() {
+  const stage = el("museum-item-stage");
+  const image = el("museum-item-image");
+  const viewport = el("museum-item-viewport");
+  if (!stage || !image || !viewport || !image.naturalWidth || !image.naturalHeight || !stage.clientWidth || !stage.clientHeight) return false;
+  const availableWidth = Math.max(80, stage.clientWidth - 32);
+  const availableHeight = Math.max(80, stage.clientHeight - 32);
+  const ratio = image.naturalWidth / image.naturalHeight;
+  let width = availableWidth;
+  let height = width / ratio;
+  if (height > availableHeight) {
+    height = availableHeight;
+    width = height * ratio;
+  }
+  viewport.style.width = `${Math.max(1, width)}px`;
+  viewport.style.height = `${Math.max(1, height)}px`;
+  viewport.style.transform = `translate(-50%, -50%) scale(${state.itemSelector.zoom})`;
+  return true;
+}
+
+function setItemSelectorZoom(value) {
+  state.itemSelector.zoom = Math.min(4, Math.max(.5, Number(value) || 1));
+  fitItemSelectorViewport();
+  el("museum-item-zoom-value").textContent = `${Math.round(state.itemSelector.zoom * 100)}%`;
+  renderItemSelector();
+}
+
+function itemSelectorPosition(event, allowClamp = false) {
+  const image = el("museum-item-image");
+  const rect = image.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const rawX = (event.clientX - rect.left) / rect.width;
+  const rawY = (event.clientY - rect.top) / rect.height;
+  if (!allowClamp && (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1)) return null;
+  return { x: Math.min(1, Math.max(0, rawX)), y: Math.min(1, Math.max(0, rawY)) };
+}
+
+function itemRegionIsLarge(region) {
+  const image = el("museum-item-image");
+  return Boolean(region && region.width >= .01 && region.height >= .01
+    && region.width * image.naturalWidth >= 32 && region.height * image.naturalHeight >= 32);
+}
+
+function itemBoxStyle(node, region) {
+  const viewportRect = el("museum-item-viewport").getBoundingClientRect();
+  const imageRect = el("museum-item-image").getBoundingClientRect();
+  node.style.left = `${imageRect.left - viewportRect.left + region.x * imageRect.width}px`;
+  node.style.top = `${imageRect.top - viewportRect.top + region.y * imageRect.height}px`;
+  node.style.width = `${region.width * imageRect.width}px`;
+  node.style.height = `${region.height * imageRect.height}px`;
+}
+
+function beginItemInteraction(event, type, selection = null) {
+  if (state.itemSelector.activeJob && ["queued", "running", "canceling"].includes(state.itemSelector.activeJob.status)) return;
+  const position = itemSelectorPosition(event, type !== "create");
+  if (!position) return;
+  if (selection) state.itemSelector.activeSelectionId = selection.selection_id;
+  state.itemSelector.interaction = {
+    type,
+    start: position,
+    selectionId: selection?.selection_id || "",
+    original: selection ? { ...selection.region } : null,
+  };
+  if (type === "create") state.itemSelector.draftRegion = { x: position.x, y: position.y, width: 0, height: 0 };
+}
+
+function updateItemInteraction(event, finish = false) {
+  const interaction = state.itemSelector.interaction;
+  if (!interaction) return;
+  const position = itemSelectorPosition(event, true);
+  if (!position) return;
+  if (interaction.type === "create") {
+    state.itemSelector.draftRegion = {
+      x: Math.min(interaction.start.x, position.x),
+      y: Math.min(interaction.start.y, position.y),
+      width: Math.abs(interaction.start.x - position.x),
+      height: Math.abs(interaction.start.y - position.y),
+    };
+    if (finish && itemRegionIsLarge(state.itemSelector.draftRegion)) {
+      if (state.itemSelector.selections.length >= 12) {
+        showError("A selection batch can contain at most 12 items.");
+      } else {
+        const selection = {
+          selection_id: itemSelectionId(),
+          label: `Item ${state.itemSelector.selections.length + 1}`,
+          region: state.itemSelector.draftRegion,
+        };
+        state.itemSelector.selections.push(selection);
+        state.itemSelector.activeSelectionId = selection.selection_id;
+      }
+    }
+  } else {
+    const selection = state.itemSelector.selections.find((row) => row.selection_id === interaction.selectionId);
+    if (selection) {
+      const original = interaction.original;
+      if (interaction.type === "move") {
+        const dx = position.x - interaction.start.x;
+        const dy = position.y - interaction.start.y;
+        selection.region = {
+          ...original,
+          x: Math.min(1 - original.width, Math.max(0, original.x + dx)),
+          y: Math.min(1 - original.height, Math.max(0, original.y + dy)),
+        };
+      } else {
+        selection.region = {
+          ...original,
+          width: Math.max(.001, Math.min(1 - original.x, position.x - original.x)),
+          height: Math.max(.001, Math.min(1 - original.y, position.y - original.y)),
+        };
+      }
+      delete selection.status;
+      delete selection.error;
+      if (finish && !itemRegionIsLarge(selection.region)) selection.region = original;
+    }
+  }
+  if (finish) {
+    state.itemSelector.interaction = null;
+    state.itemSelector.draftRegion = null;
+  }
+  renderItemSelector();
+}
+
+function cancelItemInteraction() {
+  const interaction = state.itemSelector.interaction;
+  if (interaction?.selectionId && interaction.original) {
+    const selection = state.itemSelector.selections.find((row) => row.selection_id === interaction.selectionId);
+    if (selection) selection.region = interaction.original;
+  }
+  state.itemSelector.interaction = null;
+  state.itemSelector.draftRegion = null;
+  renderItemSelector();
+}
+
+function renderItemCrop(canvas, selection) {
+  const image = el("museum-item-image");
+  if (!image.complete || !image.naturalWidth) return;
+  const context = canvas.getContext("2d");
+  const region = selection.region;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    image,
+    region.x * image.naturalWidth,
+    region.y * image.naturalHeight,
+    region.width * image.naturalWidth,
+    region.height * image.naturalHeight,
+    0, 0, canvas.width, canvas.height,
+  );
+}
+
+function renderItemSelectorJob() {
+  const job = state.itemSelector.activeJob;
+  const active = job && ["queued", "running", "canceling"].includes(job.status);
+  el("museum-item-job-progress").hidden = !job;
+  if (job) {
+    el("museum-item-job-message").textContent = job.error || job.message || job.status;
+    el("museum-item-job-percent").textContent = `${job.progress || 0}%`;
+    el("museum-item-job-meter").value = job.progress || 0;
+    el("museum-item-job-cancel").hidden = !active;
+    el("museum-item-job-progress").classList.toggle("failed", job.status === "failed");
+  }
+}
+
+function renderItemSelectorResult() {
+  const container = el("museum-item-result");
+  container.replaceChildren();
+  const result = state.itemSelector.activeJob?.result;
+  if (!result) return;
+  const heading = document.createElement("strong");
+  heading.textContent = result.status === "canceled" ? "Search stopped" : result.failed_count ? "Search partly completed" : "Items saved";
+  const summary = document.createElement("span");
+  summary.textContent = `${result.completed_count || 0} saved · ${result.failed_count || 0} failed · ${result.remaining_count || 0} not started`;
+  container.append(heading, summary);
+  (result.items || []).filter((item) => item.status === "failed").forEach((item) => {
+    const failure = document.createElement("span");
+    failure.className = "error";
+    failure.textContent = `${item.label}: ${item.error || "Search failed"}`;
+    container.append(failure);
+  });
+}
+
+function renderItemSelector() {
+  const photos = itemSelectorPhotos();
+  const sourceSelect = el("museum-item-source");
+  const prior = state.itemSelector.sourceFileId;
+  sourceSelect.replaceChildren();
+  photos.forEach((file) => {
+    const option = document.createElement("option");
+    option.value = file.file_id;
+    option.textContent = file.name;
+    sourceSelect.append(option);
+  });
+  state.itemSelector.sourceFileId = photos.some((file) => file.file_id === prior) ? prior : (photos[0]?.file_id || "");
+  sourceSelect.value = state.itemSelector.sourceFileId;
+  const photo = currentItemSelectorPhoto();
+  const image = el("museum-item-image");
+  if ((image.dataset.fileId || "") !== (photo?.file_id || "")) {
+    image.dataset.fileId = photo?.file_id || "";
+    image.src = photo ? museumFileUrl(photo) : "";
+  }
+  fitItemSelectorViewport();
+  el("museum-item-search-mode").value = state.itemSelector.searchMode;
+  el("museum-item-depth").value = state.itemSelector.researchDepth;
+  el("museum-item-zoom-value").textContent = `${Math.round(state.itemSelector.zoom * 100)}%`;
+  el("museum-item-depth").disabled = state.itemSelector.searchMode === "visual_match";
+  el("museum-item-count").textContent = `${state.itemSelector.selections.length} of 12 selected`;
+  el("museum-item-empty").hidden = Boolean(state.itemSelector.selections.length);
+  el("museum-item-undo").disabled = !state.itemSelector.selections.length;
+  el("museum-item-clear").disabled = !state.itemSelector.selections.length;
+
+  const overlays = el("museum-item-overlays");
+  overlays.replaceChildren();
+  if (image.clientWidth) {
+    state.itemSelector.selections.forEach((selection, index) => {
+      const box = document.createElement("button");
+      box.type = "button";
+      box.className = `museum-item-box${selection.selection_id === state.itemSelector.activeSelectionId ? " active" : ""}`;
+      box.setAttribute("aria-label", `${selection.label}; drag to move`);
+      itemBoxStyle(box, selection.region);
+      const number = document.createElement("span");
+      number.className = "museum-item-box-number";
+      number.textContent = String(index + 1);
+      const resize = document.createElement("span");
+      resize.className = "museum-item-resize";
+      resize.setAttribute("aria-hidden", "true");
+      resize.addEventListener("pointerdown", (event) => { event.stopPropagation(); beginItemInteraction(event, "resize", selection); });
+      box.addEventListener("pointerdown", (event) => { event.stopPropagation(); beginItemInteraction(event, "move", selection); });
+      box.append(number, resize);
+      overlays.append(box);
+    });
+    if (state.itemSelector.draftRegion) {
+      const draft = document.createElement("span");
+      draft.className = "museum-item-box draft";
+      itemBoxStyle(draft, state.itemSelector.draftRegion);
+      overlays.append(draft);
+    }
+  }
+
+  const list = el("museum-item-list");
+  list.replaceChildren();
+  state.itemSelector.selections.forEach((selection, index) => {
+    const row = document.createElement("div");
+    row.className = `museum-item-row${selection.selection_id === state.itemSelector.activeSelectionId ? " active" : ""}`;
+    row.addEventListener("click", () => { state.itemSelector.activeSelectionId = selection.selection_id; renderItemSelector(); });
+    const canvas = document.createElement("canvas");
+    canvas.width = 140;
+    canvas.height = 104;
+    renderItemCrop(canvas, selection);
+    const label = document.createElement("label");
+    label.textContent = `Item ${index + 1}`;
+    const input = document.createElement("input");
+    input.value = selection.label;
+    input.maxLength = 120;
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("input", () => { selection.label = input.value.slice(0, 120); delete selection.status; });
+    label.append(input);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.itemSelector.selections = state.itemSelector.selections.filter((value) => value.selection_id !== selection.selection_id);
+      if (state.itemSelector.activeSelectionId === selection.selection_id) state.itemSelector.activeSelectionId = "";
+      renderItemSelector();
+    });
+    const status = document.createElement("small");
+    status.textContent = selection.status === "completed" ? "Saved as a separate case" : selection.status === "failed" ? `Failed · ${selection.error || "retry available"}` : "Ready to search";
+    row.append(canvas, label, remove, status);
+    list.append(row);
+  });
+  const activeJob = state.itemSelector.activeJob && ["queued", "running", "canceling"].includes(state.itemSelector.activeJob.status);
+  const remaining = state.itemSelector.selections.filter((selection) => selection.status !== "completed");
+  el("museum-item-search").disabled = Boolean(activeJob || !remaining.length);
+  el("museum-item-search").textContent = state.itemSelector.selections.some((selection) => selection.status === "completed") ? "Retry unfinished items" : "Search selected items";
+  renderItemSelectorJob();
+  renderItemSelectorResult();
+}
+
+function openItemSelector() {
+  const photos = itemSelectorPhotos();
+  if (!photos.length) {
+    showError("Select one image in the file tray, or take a Museum photo first.");
+    return;
+  }
+  resetItemSelector();
+  state.itemSelector.sourceFileId = photos[0].file_id;
+  state.itemSelector.batchId = itemBatchId();
+  el("museum-item-selector-dialog").showModal();
+  renderItemSelector();
+}
+
+function closeItemSelector() {
+  if (el("museum-item-selector-dialog").open) el("museum-item-selector-dialog").close();
+}
+
+async function pollItemSelectionJob(jobId) {
+  window.clearTimeout(state.itemSelector.pollTimer);
+  try {
+    const job = await api(`/api/antiques/item-selection/jobs/${encodeURIComponent(jobId)}`);
+    state.itemSelector.activeJob = job;
+    const itemStatus = new Map((job.result?.items || []).map((item) => [item.selection_id, item]));
+    state.itemSelector.selections.forEach((selection) => {
+      const result = itemStatus.get(selection.selection_id);
+      if (result) {
+        selection.status = result.status;
+        selection.error = result.error || "";
+        selection.caseId = result.case_id || "";
+      }
+    });
+    renderItemSelector();
+    if (["queued", "running", "canceling"].includes(job.status)) {
+      state.itemSelector.pollTimer = window.setTimeout(() => pollItemSelectionJob(jobId), 900);
+      return;
+    }
+    await loadMuseumBootstrap();
+    if (job.result?.completed_count) showToast(`${job.result.completed_count} selected item${job.result.completed_count === 1 ? "" : "s"} saved as separate cases.`);
+    renderItemSelector();
+  } catch (error) {
+    showError(error.message || String(error));
+  }
+}
+
+async function startItemSelectionSearch() {
+  const selections = state.itemSelector.selections.filter((selection) => selection.status !== "completed");
+  if (!selections.length || !state.itemSelector.sourceFileId) return;
+  let confirmExternal = false;
+  if (!state.museum.shoppingMode?.active) {
+    confirmExternal = window.confirm(`Send ${selections.length} cropped item image${selections.length === 1 ? "" : "s"} to Google Lens? The full source photo will stay local.`);
+    if (!confirmExternal) return;
+  }
+  try {
+    const job = await api("/api/antiques/item-selection/jobs", { method: "POST", body: JSON.stringify({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+      batch_id: state.itemSelector.batchId || itemBatchId(),
+      source_file_id: state.itemSelector.sourceFileId,
+      search_mode: state.itemSelector.searchMode,
+      research_depth: state.itemSelector.researchDepth,
+      confirm_external: confirmExternal,
+      selections: selections.map((selection) => ({ selection_id: selection.selection_id, label: selection.label.trim() || "Selected item", region: selection.region })),
+    }) });
+    if (!job.job_id) throw new Error(job.message || "Google Lens confirmation is required");
+    state.itemSelector.activeJob = job;
+    renderItemSelector();
+    pollItemSelectionJob(job.job_id);
+  } catch (error) { showError(error.message || String(error)); }
+}
+
 function museumEvidenceTitle(file) {
   const metadata = file.metadata?.museum_analysis || {};
   return metadata.label || file.name || "Derived evidence";
@@ -2669,11 +4913,12 @@ function renderMuseumTools() {
   const isMuseum = state.session?.active_room === "antiques_department";
   const busy = state.sending || state.uploading || state.switchingRoom;
   el("antiques-actions").hidden = !isMuseum;
-  ["antiques-camera", "antiques-quick", "antiques-deep", "antiques-cases", "antiques-shopping-toggle"].forEach((id) => { el(id).disabled = busy; });
+  ["antiques-camera", "antiques-quick", "antiques-deep", "antiques-select-items", "antiques-cases", "antiques-shopping-toggle"].forEach((id) => { el(id).disabled = busy; });
   el("antiques-shopping-toggle").textContent = state.museum.shoppingMode?.active ? "End shopping mode" : "Start shopping mode";
   el("antiques-mode-label").textContent = state.museum.shoppingMode?.active ? "Shopping-mode consent is active for later external research" : "Visual analysis stays local; external research requires consent";
   if (!isMuseum) {
     closeMuseumAnalysis();
+    closeItemSelector();
     closeMuseumCases();
   }
 }
@@ -3238,6 +5483,7 @@ function render() {
   }
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
+  el("open-marketplace-sell").disabled = state.sending || state.uploading || state.switchingRoom;
   const canRead = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
   const autoRead = el("auto-read");
   autoRead.checked = state.autoRead;
@@ -3254,6 +5500,7 @@ function render() {
   renderEmailTools();
   renderArtTools();
   renderMuseumTools();
+  renderAnimationTools();
   renderRoomFileTools();
   renderResumeTools();
   renderGovernance();
@@ -3275,8 +5522,10 @@ function accountRequestBody(extra = {}) {
 function renderConnectedAccounts() {
   const value = state.connectedAccounts || {};
   const instagram = value.instagram || {};
+  const facebook = value.facebook || {};
   const gmail = value.gmail || {};
   const ebay = value.ebay || {};
+  const ebayNotifications = ebay.notifications || {};
   const sharedGmail = value.shared?.gmail || {};
   el("connected-accounts-workspace").textContent = `${state.workspace?.label || "This workspace"} · isolated workspace accounts + shared corporate services`;
 
@@ -3298,6 +5547,16 @@ function renderConnectedAccounts() {
     : instagram.assigned ? `Assigned here: @${instagram.username} · sign-in not yet verified` : "";
   el("instagram-disconnect").hidden = !instagram.assigned;
 
+  const facebookState = el("facebook-connection-state");
+  facebookState.className = `account-state ${facebook.connected ? "connected" : facebook.configured ? "attention" : ""}`;
+  facebookState.textContent = facebook.connected ? "Connected" : facebook.configured ? "Needs attention" : "Not configured";
+  el("facebook-active-account").hidden = !facebook.username && !facebook.connected;
+  el("facebook-active-account").textContent = facebook.connected
+    ? `Dedicated Facebook session is active${facebook.username ? ` · configured login: ${facebook.username}` : ""}`
+    : facebook.username ? `Configured login: ${facebook.username} · sign-in not yet verified` : "";
+  el("facebook-connect").disabled = !facebook.configured;
+  if (facebook.error) el("connected-accounts-message").textContent = `Facebook connection failed: ${facebook.error}`;
+
   const gmailState = el("gmail-connection-state");
   gmailState.className = `account-state ${gmail.connected ? "connected" : gmail.assigned ? "attention" : ""}`;
   gmailState.textContent = gmail.connected ? "Connected" : gmail.assigned ? "Needs attention" : "Not connected";
@@ -3318,9 +5577,32 @@ function renderConnectedAccounts() {
   el("ebay-active-account").textContent = ebay.connected
     ? `Active for this workspace: ${ebay.username} · ${ebay.environment} · ${ebay.marketplace_id}`
     : ebay.assigned ? `Assigned here: ${ebay.username || "eBay seller"} · authorization incomplete` : "";
+  const ebayNotificationStatus = el("ebay-notification-status");
+  ebayNotificationStatus.hidden = !ebay.assigned;
+  const automaticNotifications = ebayNotifications.automatic || {};
+  if (ebayNotifications.configured) {
+    const workspaceAutoEnabled = automaticNotifications.workspace_enabled !== false;
+    const pollState = !workspaceAutoEnabled
+      ? "automatic checks turned off for this workspace"
+      : automaticNotifications.running
+        ? `automatic checks every ${Number(automaticNotifications.interval_seconds || 60)} seconds`
+        : automaticNotifications.enabled ? "automatic checks starting" : "automatic checks unavailable";
+    const lastPoll = automaticNotifications.last_completed_at
+      ? ` · last checked ${new Date(automaticNotifications.last_completed_at).toLocaleString()}`
+      : "";
+    ebayNotificationStatus.textContent = `Notification relay ready · ${pollState}${lastPoll} · ${Number(ebayNotifications.seller_alerts || 0)} stored seller alert${Number(ebayNotifications.seller_alerts || 0) === 1 ? "" : "s"}`;
+  } else {
+    ebayNotificationStatus.textContent = `Notification relay needs attention${ebayNotifications.error ? ` · ${ebayNotifications.error}` : ""}`;
+  }
   if (ebay.oauth_error) el("connected-accounts-message").textContent = `eBay connection failed: ${ebay.oauth_error}`;
   el("ebay-disconnect").hidden = !ebay.assigned;
-  el("open-connected-accounts").classList.toggle("has-connection", Boolean(sharedGmail.connected || instagram.connected || gmail.connected || ebay.connected));
+  const ebayAutomaticButton = el("ebay-notifications-auto");
+  ebayAutomaticButton.hidden = !ebay.assigned;
+  ebayAutomaticButton.textContent = automaticNotifications.workspace_enabled === false
+    ? "Turn on automatic checks"
+    : "Turn off automatic checks";
+  el("ebay-notifications-check").hidden = !ebay.assigned;
+  el("open-connected-accounts").classList.toggle("has-connection", Boolean(sharedGmail.connected || instagram.connected || facebook.connected || gmail.connected || ebay.connected));
 }
 
 async function refreshConnectedAccounts(message = "") {
@@ -3347,6 +5629,20 @@ async function connectInstagram(event) {
     const result = await api("/api/integrations/instagram/connect", { method: "POST", body: accountRequestBody({ username: el("instagram-username").value.trim(), password: el("instagram-password").value }) });
     el("instagram-password").value = "";
     await refreshConnectedAccounts(result.instagram?.requires_interaction ? "Complete Instagram’s security prompt in the opened Chrome window, then refresh status." : "Instagram is connected to this workspace.");
+  } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+  finally { button.disabled = false; }
+}
+
+async function connectFacebook() {
+  const button = el("facebook-connect");
+  button.disabled = true;
+  el("connected-accounts-message").textContent = "Checking the dedicated Facebook sessionâ€¦";
+  try {
+    const result = await api("/api/integrations/facebook/connect", { method: "POST", body: accountRequestBody() });
+    const needsInteraction = Boolean(result.facebook?.requires_interaction || !result.facebook?.connected);
+    await refreshConnectedAccounts(needsInteraction
+      ? "Complete Facebook's security prompt in the dedicated Chrome window, then refresh status."
+      : "The dedicated Facebook session is connected.");
   } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
   finally { button.disabled = false; }
 }
@@ -3381,6 +5677,386 @@ async function connectEbay() {
     });
     el("connected-accounts-message").textContent = "Complete eBay authorization in the opened browser, then choose Refresh status.";
   } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+}
+
+async function checkEbayNotifications() {
+  const button = el("ebay-notifications-check");
+  button.disabled = true;
+  el("connected-accounts-message").textContent = "Checking the workspace’s verified eBay notification queue…";
+  try {
+    const result = await api("/api/integrations/ebay/notifications/check", {
+      method: "POST",
+      body: accountRequestBody({ max_events: 100 }),
+    });
+    const notifications = result.notifications || {};
+    const alerts = Number((notifications.alerts || []).length);
+    const compliance = Number(notifications.compliance_events || 0);
+    const errors = Number((notifications.errors || []).length);
+    const parts = [
+      `${Number(notifications.acknowledged || 0)} queue event${Number(notifications.acknowledged || 0) === 1 ? "" : "s"} safely stored and acknowledged`,
+      `${alerts} new seller alert${alerts === 1 ? "" : "s"}`,
+    ];
+    if (compliance) parts.push(`${compliance} account-deletion event${compliance === 1 ? "" : "s"} processed without retaining raw user data`);
+    if (errors) parts.push(`${errors} event${errors === 1 ? "" : "s"} left unacknowledged because processing failed`);
+    await refreshConnectedAccounts(`${parts.join(" · ")}.`);
+  } catch (error) {
+    el("connected-accounts-message").textContent = error.message || String(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function toggleEbayAutomaticNotifications() {
+  const button = el("ebay-notifications-auto");
+  const automatic = state.connectedAccounts?.ebay?.notifications?.automatic || {};
+  const enabled = automatic.workspace_enabled === false;
+  button.disabled = true;
+  el("connected-accounts-message").textContent = `${enabled ? "Turning on" : "Turning off"} automatic eBay checks…`;
+  try {
+    await api("/api/integrations/ebay/notifications/automatic", {
+      method: "POST",
+      body: accountRequestBody({ enabled }),
+    });
+    await refreshConnectedAccounts(
+      enabled
+        ? "Automatic eBay checks are on for this workspace. An immediate check was requested."
+        : "Automatic eBay checks are off for this workspace. Check now remains available."
+    );
+  } catch (error) {
+    el("connected-accounts-message").textContent = error.message || String(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function marketplaceRequestBody(extra = {}) {
+  return JSON.stringify({
+    workspace_id: state.workspace?.workspace_id,
+    session_id: state.session?.session_id,
+    ...extra,
+  });
+}
+
+function applyMarketplaceBootstrap(value) {
+  state.marketplace.drafts = value.drafts || [];
+  state.marketplace.groups = value.groups || [];
+  state.marketplace.cases = value.cases || [];
+  state.marketplace.images = value.images || [];
+  state.marketplace.loaded = true;
+  if (value.draft?.draft_id) state.marketplace.currentDraftId = value.draft.draft_id;
+}
+
+function marketplaceDraft() {
+  return state.marketplace.drafts.find((row) => row.draft_id === state.marketplace.currentDraftId) || null;
+}
+
+function marketplaceImageUrl(image) {
+  return `/api/files/content?${new URLSearchParams({
+    workspace_id: state.workspace.workspace_id,
+    session_id: image.session_id || state.session.session_id,
+    file_id: image.file_id,
+  })}`;
+}
+
+function clearMarketplaceForm() {
+  state.marketplace.currentDraftId = "";
+  state.marketplace.selectedPhotoIds.clear();
+  state.marketplace.selectedGroupIds.clear();
+  el("marketplace-source-case").value = "";
+  el("marketplace-title").value = "";
+  el("marketplace-price").value = "";
+  el("marketplace-category").value = "";
+  el("marketplace-condition").value = "good";
+  el("marketplace-description").value = "";
+  state.marketplace.notice = "New local draft";
+  renderMarketplace();
+}
+
+function loadMarketplaceDraft(draft) {
+  if (!draft) return clearMarketplaceForm();
+  state.marketplace.currentDraftId = draft.draft_id;
+  state.marketplace.selectedPhotoIds = new Set((draft.photos || []).map((row) => row.file_id));
+  state.marketplace.selectedGroupIds = new Set(draft.group_ids || []);
+  el("marketplace-source-case").value = draft.source_case_id || "";
+  el("marketplace-title").value = draft.title || "";
+  el("marketplace-price").value = draft.price ?? "";
+  el("marketplace-category").value = draft.category || "";
+  el("marketplace-condition").value = draft.condition || "good";
+  el("marketplace-description").value = draft.description || "";
+  state.marketplace.notice = draft.last_error || "";
+  renderMarketplace();
+}
+
+function applyMarketplaceCase(caseId) {
+  const item = state.marketplace.cases.find((row) => row.case_id === caseId);
+  if (!item) {
+    clearMarketplaceForm();
+    return;
+  }
+  state.marketplace.currentDraftId = "";
+  state.marketplace.selectedPhotoIds = new Set((item.photo_ids || []).filter((fileId) => state.marketplace.images.some((row) => row.file_id === fileId)));
+  state.marketplace.selectedGroupIds.clear();
+  el("marketplace-source-case").value = caseId;
+  el("marketplace-title").value = item.title || "";
+  el("marketplace-price").value = item.price_suggestion?.amount ?? "";
+  el("marketplace-category").value = item.category || "Antiques & collectibles";
+  el("marketplace-condition").value = "good";
+  el("marketplace-description").value = item.description || "";
+  state.marketplace.notice = item.price_suggestion?.basis || "Review the saved research before accepting this price.";
+  renderMarketplace();
+}
+
+function renderMarketplace() {
+  const current = marketplaceDraft();
+  const busy = state.marketplace.busy || state.marketplace.loading || state.uploading;
+  const caseSelect = el("marketplace-source-case");
+  const selectedCaseId = caseSelect.value;
+  caseSelect.replaceChildren(new Option("New one-off listing", ""));
+  state.marketplace.cases.forEach((item) => caseSelect.append(new Option(item.title || item.case_id, item.case_id)));
+  caseSelect.value = selectedCaseId;
+
+  const drafts = el("marketplace-draft-list");
+  drafts.replaceChildren();
+  if (!state.marketplace.drafts.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No listing drafts yet.";
+    drafts.append(empty);
+  }
+  state.marketplace.drafts.forEach((draft) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = draft.draft_id === state.marketplace.currentDraftId ? "active" : "";
+    const title = document.createElement("strong");
+    title.textContent = draft.title || "Untitled listing";
+    const status = document.createElement("span");
+    status.textContent = String(draft.status || "draft").replaceAll("_", " ");
+    button.append(title, status);
+    button.addEventListener("click", () => loadMarketplaceDraft(draft));
+    drafts.append(button);
+  });
+
+  const photos = el("marketplace-photo-grid");
+  photos.replaceChildren();
+  state.marketplace.images.slice().reverse().forEach((image) => {
+    const label = document.createElement("label");
+    label.className = "marketplace-photo-choice";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.marketplace.selectedPhotoIds.has(image.file_id);
+    checkbox.disabled = busy || (!checkbox.checked && state.marketplace.selectedPhotoIds.size >= 10);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.marketplace.selectedPhotoIds.add(image.file_id);
+      else state.marketplace.selectedPhotoIds.delete(image.file_id);
+      renderMarketplace();
+    });
+    const preview = document.createElement("img");
+    preview.src = marketplaceImageUrl(image);
+    preview.alt = image.name || "Marketplace item photo";
+    const name = document.createElement("span");
+    name.textContent = image.name || "Photo";
+    label.append(checkbox, preview, name);
+    photos.append(label);
+  });
+  el("marketplace-photo-count").textContent = `${state.marketplace.selectedPhotoIds.size} of 10`;
+
+  const groups = el("marketplace-group-list");
+  groups.replaceChildren();
+  if (!state.marketplace.groups.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No approved groups saved.";
+    groups.append(empty);
+  }
+  state.marketplace.groups.forEach((group) => {
+    const row = document.createElement("div");
+    row.className = "marketplace-group-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = state.marketplace.selectedGroupIds.has(group.group_id);
+    checkbox.disabled = busy;
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) state.marketplace.selectedGroupIds.add(group.group_id);
+      else state.marketplace.selectedGroupIds.delete(group.group_id);
+    });
+    const name = document.createElement("span");
+    name.textContent = group.name;
+    name.title = group.url;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.disabled = busy;
+    remove.addEventListener("click", () => deleteMarketplaceGroup(group.group_id));
+    row.append(checkbox, name, remove);
+    groups.append(row);
+  });
+
+  const suggestion = current?.price_suggestion || state.marketplace.cases.find((row) => row.case_id === caseSelect.value)?.price_suggestion;
+  el("marketplace-price-basis").textContent = suggestion?.basis || "Enter and review the asking price";
+  el("marketplace-status").textContent = busy ? "Working…" : (current?.status || "Draft locally").replaceAll("_", " ");
+  const handoff = current ? ({
+    draft: ["Draft saved", "Prepare it in the dedicated Facebook profile."],
+    facebook_prepared: ["Facebook form prepared", "Review the visible form, then click Next and Publish yourself."],
+    human_action_required: ["Your action is needed", state.marketplace.notice || "Complete the visible Facebook step, then resume."],
+    published_observed: ["Published listing observed", "Prepare the selected approved groups one at a time."],
+    group_share_prepared: ["Group post prepared", "Review the visible group composer and click Post yourself."],
+    failed: ["Preparation failed", current?.last_error || "Review the error and retry."],
+  }[current.status || "draft"]) : ["Save a draft to continue", "Preparation fills the visible form and stops before Next or Publish."];
+  el("marketplace-handoff-title").textContent = handoff[0];
+  el("marketplace-handoff-copy").textContent = handoff[1];
+  el("marketplace-new-draft").disabled = busy;
+  el("marketplace-save-draft").disabled = busy;
+  el("marketplace-prepare").disabled = busy;
+  el("marketplace-resume").disabled = busy || !current || !["facebook_prepared", "human_action_required"].includes(current.status);
+  const preparedGroupIds = new Set((current?.group_preparations || []).map((row) => row.group_id));
+  const hasNextGroup = [...state.marketplace.selectedGroupIds].some((groupId) => !preparedGroupIds.has(groupId));
+  el("marketplace-prepare-group").disabled = busy || !current || !["published_observed", "group_share_prepared"].includes(current.status) || !hasNextGroup;
+}
+
+async function loadMarketplace({ preserveSelection = false } = {}) {
+  if (!state.workspace || !state.session) return;
+  state.marketplace.loading = true;
+  renderMarketplace();
+  try {
+    const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+    const value = await api(`/api/facebook/marketplace?${query}`);
+    applyMarketplaceBootstrap(value);
+    if (preserveSelection) renderMarketplace();
+    else if (state.marketplace.currentDraftId) loadMarketplaceDraft(marketplaceDraft());
+    else clearMarketplaceForm();
+  } finally {
+    state.marketplace.loading = false;
+    renderMarketplace();
+  }
+}
+
+async function openMarketplaceSell() {
+  el("marketplace-sell-dialog").showModal();
+  try { await loadMarketplace({ preserveSelection: state.marketplace.loaded }); }
+  catch (error) { showError(error.message || String(error)); }
+}
+
+function marketplaceDraftPayload() {
+  return {
+    draft_id: state.marketplace.currentDraftId,
+    source_case_id: el("marketplace-source-case").value,
+    title: el("marketplace-title").value.trim(),
+    price: el("marketplace-price").value,
+    category: el("marketplace-category").value.trim(),
+    condition: el("marketplace-condition").value,
+    description: el("marketplace-description").value.trim(),
+    photo_ids: [...state.marketplace.selectedPhotoIds],
+    group_ids: [...state.marketplace.selectedGroupIds],
+  };
+}
+
+async function saveMarketplaceDraft() {
+  state.marketplace.busy = true;
+  renderMarketplace();
+  try {
+    const value = await api("/api/facebook/marketplace/drafts/save", {
+      method: "POST",
+      body: marketplaceRequestBody(marketplaceDraftPayload()),
+    });
+    applyMarketplaceBootstrap(value);
+    loadMarketplaceDraft(value.draft);
+    showToast("Facebook Marketplace draft saved.");
+    return value.draft;
+  } catch (error) {
+    showError(error.message || String(error));
+    return null;
+  } finally {
+    state.marketplace.busy = false;
+    renderMarketplace();
+  }
+}
+
+async function runMarketplaceAction(path, extra, successMessage) {
+  state.marketplace.busy = true;
+  renderMarketplace();
+  try {
+    const value = await api(path, { method: "POST", body: marketplaceRequestBody(extra) });
+    applyMarketplaceBootstrap(value);
+    if (value.draft) loadMarketplaceDraft(value.draft);
+    state.marketplace.notice = value.result?.instruction || "";
+    renderMarketplace();
+    showToast(value.result?.instruction || successMessage);
+    return value;
+  } catch (error) {
+    showError(error.message || String(error));
+    return null;
+  } finally {
+    state.marketplace.busy = false;
+    renderMarketplace();
+  }
+}
+
+async function prepareMarketplaceListing() {
+  const draft = await saveMarketplaceDraft();
+  if (!draft) return;
+  await runMarketplaceAction("/api/facebook/marketplace/prepare", { draft_id: draft.draft_id }, "Facebook form prepared for review.");
+}
+
+async function resumeMarketplaceListing() {
+  const draft = marketplaceDraft();
+  if (!draft) return;
+  await runMarketplaceAction("/api/facebook/marketplace/resume", { draft_id: draft.draft_id }, "Marketplace listing evidence checked.");
+}
+
+async function prepareNextMarketplaceGroup() {
+  const draft = marketplaceDraft();
+  if (!draft) return;
+  const prepared = new Set((draft.group_preparations || []).map((row) => row.group_id));
+  const groupId = [...state.marketplace.selectedGroupIds].find((value) => !prepared.has(value));
+  if (!groupId) return;
+  await runMarketplaceAction("/api/facebook/marketplace/groups/prepare", { draft_id: draft.draft_id, group_id: groupId }, "Group post prepared for review.");
+}
+
+async function saveMarketplaceGroup(event) {
+  event.preventDefault();
+  try {
+    const value = await api("/api/facebook/marketplace/groups/save", {
+      method: "POST",
+      body: marketplaceRequestBody({ name: el("marketplace-group-name").value.trim(), url: el("marketplace-group-url").value.trim() }),
+    });
+    applyMarketplaceBootstrap(value);
+    state.marketplace.selectedGroupIds.add(value.group.group_id);
+    event.target.reset();
+    renderMarketplace();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+async function deleteMarketplaceGroup(groupId) {
+  if (!window.confirm("Remove this group from the workspace allowlist? Existing Facebook posts are not affected.")) return;
+  try {
+    const value = await api("/api/facebook/marketplace/groups/delete", {
+      method: "POST",
+      body: marketplaceRequestBody({ group_id: groupId }),
+    });
+    applyMarketplaceBootstrap(value);
+    state.marketplace.selectedGroupIds.delete(groupId);
+    renderMarketplace();
+  } catch (error) { showError(error.message || String(error)); }
+}
+
+async function researchMarketplacePhotos() {
+  const selected = state.marketplace.images.filter((row) => state.marketplace.selectedPhotoIds.has(row.file_id));
+  const currentSessionPhotos = selected.filter((row) => (row.session_id || state.session.session_id) === state.session.session_id);
+  if (!currentSessionPhotos.length || currentSessionPhotos.length !== selected.length) {
+    showError("Leo research can start here only with photos uploaded in the current session. Existing Museum cases already include their saved research.");
+    return;
+  }
+  state.selectedFiles = new Set(currentSessionPhotos.map((row) => row.file_id));
+  el("marketplace-sell-dialog").close();
+  if (state.session.active_room !== "antiques_department") {
+    try {
+      const result = await api("/api/rooms", {
+        method: "POST",
+        body: JSON.stringify({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, room_id: "antiques_department" }),
+      });
+      applyState(result, true);
+    } catch (error) { showError(error.message || String(error)); return; }
+  }
+  render();
+  await startAntiquesResearch("quick");
 }
 
 async function loadState(workspaceId = "", sessionId = "", preserveRoute = false) {
@@ -3552,6 +6228,7 @@ el("antiques-camera").addEventListener("click", () => el("antiques-camera-input"
 el("antiques-camera-input").addEventListener("change", (event) => uploadFiles(event.target.files, "museum"));
 el("antiques-quick").addEventListener("click", () => openMuseumAnalysis("quick"));
 el("antiques-deep").addEventListener("click", () => openMuseumAnalysis("detailed"));
+el("antiques-select-items").addEventListener("click", openItemSelector);
 el("antiques-cases").addEventListener("click", openMuseumCases);
 el("antiques-shopping-toggle").addEventListener("click", toggleMuseumShoppingMode);
 el("museum-analysis-close").addEventListener("click", closeMuseumAnalysis);
@@ -3577,6 +6254,46 @@ el("museum-job-cancel").addEventListener("click", async () => {
     renderMuseumJob();
   } catch (error) { showError(error.message || String(error)); }
 });
+el("museum-item-selector-close").addEventListener("click", closeItemSelector);
+el("museum-item-selector-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeItemSelector(); });
+el("museum-item-image").addEventListener("load", renderItemSelector);
+el("museum-item-source").addEventListener("change", (event) => {
+  if (state.itemSelector.selections.length && !window.confirm("Changing the source photo will clear the current boxes. Continue?")) {
+    event.target.value = state.itemSelector.sourceFileId;
+    return;
+  }
+  state.itemSelector.sourceFileId = event.target.value;
+  state.itemSelector.selections = [];
+  state.itemSelector.activeSelectionId = "";
+  state.itemSelector.batchId = itemBatchId();
+  state.itemSelector.zoom = 1;
+  renderItemSelector();
+});
+el("museum-item-search-mode").addEventListener("change", (event) => { state.itemSelector.searchMode = event.target.value; renderItemSelector(); });
+el("museum-item-depth").addEventListener("change", (event) => { state.itemSelector.researchDepth = event.target.value; });
+el("museum-item-zoom-out").addEventListener("click", () => setItemSelectorZoom(state.itemSelector.zoom / 1.25));
+el("museum-item-zoom-in").addEventListener("click", () => setItemSelectorZoom(state.itemSelector.zoom * 1.25));
+el("museum-item-zoom-reset").addEventListener("click", () => setItemSelectorZoom(1));
+el("museum-item-stage").addEventListener("pointerdown", (event) => beginItemInteraction(event, "create"));
+window.addEventListener("pointermove", (event) => updateItemInteraction(event));
+window.addEventListener("pointerup", (event) => updateItemInteraction(event, true));
+window.addEventListener("pointercancel", cancelItemInteraction);
+el("museum-item-undo").addEventListener("click", () => {
+  const removed = state.itemSelector.selections.pop();
+  if (removed?.selection_id === state.itemSelector.activeSelectionId) state.itemSelector.activeSelectionId = "";
+  renderItemSelector();
+});
+el("museum-item-clear").addEventListener("click", () => { state.itemSelector.selections = []; state.itemSelector.activeSelectionId = ""; renderItemSelector(); });
+el("museum-item-search").addEventListener("click", startItemSelectionSearch);
+el("museum-item-job-cancel").addEventListener("click", async () => {
+  const job = state.itemSelector.activeJob;
+  if (!job?.job_id) return;
+  try {
+    state.itemSelector.activeJob = await api(`/api/antiques/item-selection/jobs/${encodeURIComponent(job.job_id)}/cancel`, { method: "POST", body: "{}" });
+    renderItemSelector();
+  } catch (error) { showError(error.message || String(error)); }
+});
+window.addEventListener("resize", () => { if (el("museum-item-selector-dialog").open) renderItemSelector(); });
 el("antiques-settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -3650,37 +6367,210 @@ el("art-gallery-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeArtGallery();
 });
-el("antiques-camera").addEventListener("click", () => el("antiques-camera-input").click());
-el("antiques-camera-input").addEventListener("change", (event) => uploadFiles(event.target.files, "antiques"));
-el("antiques-quick").addEventListener("click", () => startAntiquesResearch("quick"));
-el("antiques-deep").addEventListener("click", () => startAntiquesResearch("deep"));
-el("antiques-shopping-toggle").addEventListener("click", toggleAntiquesShoppingMode);
-el("antiques-cases").addEventListener("click", () => { renderAntiquesCases(); el("antiques-cases-dialog").showModal(); });
-el("antiques-cases-close").addEventListener("click", () => el("antiques-cases-dialog").close());
-el("antiques-cases-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("antiques-cases-dialog").close(); });
-el("antiques-settings-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    const result = await api("/api/antiques/settings", { method: "POST", body: JSON.stringify({
-      workspace_id: state.workspace.workspace_id,
-      session_id: state.session.session_id,
-      settings: {
-        fee_percent: Number(el("antiques-fee").value),
-        packing_shipping_allowance: Number(el("antiques-shipping").value),
-        uncertainty_reserve_percent: Number(el("antiques-reserve").value),
-        minimum_target_profit: Number(el("antiques-profit").value),
-        quick_buy_cap_percent: Number(el("antiques-cap").value),
-      },
-    }) });
-    state.antiques.settings = result.settings;
-    showToast("Leo’s buying defaults were saved");
-  } catch (error) { showError(error.message || String(error)); }
-});
 el("open-room-files").addEventListener("click", openRoomFileLibrary);
 el("room-file-close").addEventListener("click", closeRoomFileLibrary);
 el("room-file-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeRoomFileLibrary();
+});
+el("open-animation-studio").addEventListener("click", openAnimationStudio);
+el("animation-studio-close").addEventListener("click", closeAnimationStudio);
+el("animation-studio-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAnimationStudio();
+});
+el("animation-project-select").addEventListener("change", loadSelectedAnimationProject);
+el("animation-project-save").addEventListener("click", () => saveAnimationProject());
+el("animation-image-add").addEventListener("click", () => el("animation-image-upload").click());
+el("animation-image-upload").addEventListener("change", (event) => uploadFiles(event.target.files, "animation_image"));
+el("animation-audio-add").addEventListener("click", () => el("animation-audio-upload").click());
+el("animation-audio-upload").addEventListener("change", (event) => uploadFiles(event.target.files, "animation_audio"));
+el("animation-asset-role").addEventListener("change", (event) => updateSelectedAnimationAsset("role", event.target.value));
+[["width", "width_percent"], ["x", "x_percent"], ["y", "y_percent"], ["opacity", "opacity_percent"]].forEach(([control, key]) => {
+  el(`animation-asset-${control}`).addEventListener("input", (event) => updateSelectedAnimationAsset(key, Number(event.target.value)));
+});
+document.querySelectorAll("[data-animation-preset]").forEach((button) => button.addEventListener("click", () => applyAnimationAssetPreset(button.dataset.animationPreset)));
+el("animation-open-gimp").addEventListener("click", () => openAnimationEditor("gimp", selectedAnimationAsset()));
+el("animation-open-synfig").addEventListener("click", () => openAnimationEditor("synfig", selectedAnimationAsset()));
+el("animation-asset-remove").addEventListener("click", removeSelectedAnimationAsset);
+el("animation-storyboard-add").addEventListener("click", addAnimationStoryboardShot);
+const animationTrackFields = {
+  "animation-track-type": ["track_type", String],
+  "animation-track-character": ["character", String],
+  "animation-track-shot": ["shot_id", String],
+  "animation-track-start": ["start_seconds", Number],
+  "animation-track-trim-in": ["trim_in_seconds", Number],
+  "animation-track-trim-out": ["trim_out_seconds", Number],
+  "animation-track-volume": ["volume_db", Number],
+  "animation-track-pan": ["pan_percent", Number],
+  "animation-track-fade-in": ["fade_in_seconds", Number],
+  "animation-track-fade-out": ["fade_out_seconds", Number],
+};
+Object.entries(animationTrackFields).forEach(([id, [key, converter]]) => {
+  el(id).addEventListener("input", (event) => updateSelectedAnimationTrack(key, converter(event.target.value)));
+});
+el("animation-track-mute").addEventListener("change", (event) => updateSelectedAnimationTrack("muted", event.target.checked));
+el("animation-track-solo").addEventListener("change", (event) => updateSelectedAnimationTrack("solo", event.target.checked));
+el("animation-open-audacity").addEventListener("click", () => openAnimationEditor("audacity", selectedAnimationTrack()));
+el("animation-track-remove").addEventListener("click", removeSelectedAnimationTrack);
+el("animation-audio-preview").addEventListener("loadedmetadata", (event) => {
+  const track = selectedAnimationTrack();
+  if (track) event.target.currentTime = Math.min(Number(track.trim_in_seconds || 0), Number(event.target.duration || 0));
+});
+el("animation-audio-preview").addEventListener("play", (event) => {
+  const track = selectedAnimationTrack();
+  if (!track) return;
+  const trimIn = Number(track.trim_in_seconds || 0);
+  const trimOut = Number(track.trim_out_seconds || 0);
+  if (event.target.currentTime < trimIn || (trimOut > 0 && event.target.currentTime >= trimOut)) event.target.currentTime = trimIn;
+  const lipSyncAudio = el("animation-lipsync-audio");
+  if (!lipSyncAudio.paused) lipSyncAudio.pause();
+  if (activateAnimationTakeForTrack(track, event.target)) startAnimationMouthClock(event.target);
+});
+el("animation-audio-preview").addEventListener("timeupdate", (event) => {
+  const track = selectedAnimationTrack();
+  const trimOut = Number(track?.trim_out_seconds || 0);
+  if (trimOut > 0 && event.target.currentTime >= trimOut) event.target.pause();
+  if (state.animation.mouthAudioId === event.target.id) renderLipSyncMouthAt(Number(event.target.currentTime || 0));
+});
+el("animation-audio-preview").addEventListener("seeking", (event) => activateAnimationTakeForTrack(selectedAnimationTrack(), event.target));
+el("animation-audio-preview").addEventListener("seeked", (event) => activateAnimationTakeForTrack(selectedAnimationTrack(), event.target));
+el("animation-audio-preview").addEventListener("pause", (event) => {
+  if (state.animation.mouthAudioId !== event.target.id) return;
+  stopAnimationMouthClock();
+  renderLipSyncMouthAt(Number(event.target.currentTime || 0));
+});
+el("animation-audio-preview").addEventListener("ended", (event) => {
+  if (state.animation.mouthAudioId === event.target.id) stopAnimationMouthClock();
+  renderLipSyncMouthAt(Number.MAX_SAFE_INTEGER);
+});
+el("animation-rig-new").addEventListener("click", createAnimationMouthRig);
+el("animation-rig-remove").addEventListener("click", removeSelectedAnimationRig);
+el("animation-rig-select").addEventListener("change", (event) => {
+  if (!event.target.value) return createAnimationMouthRig();
+  state.animation.selectedRigId = event.target.value;
+  state.animation.selectedTakeId = state.animation.lipsyncTakes.find((take) => take.rig_id === event.target.value)?.take_id || "";
+  renderAnimationLipSync();
+});
+el("animation-rig-character").addEventListener("input", (event) => {
+  const rig = selectedAnimationRig();
+  if (rig) rig.character = event.target.value;
+});
+el("animation-rig-base").addEventListener("change", (event) => updateSelectedAnimationRig("base_asset_id", event.target.value));
+el("animation-mouth-mode").addEventListener("change", (event) => {
+  const rig = selectedAnimationRig();
+  if (!rig) return;
+  rig.animation_mode = event.target.value === "jaw_flap" ? "jaw_flap" : "mouth_shapes";
+  rig.placement_calibrated = false;
+  renderAnimationLipSync();
+});
+el("animation-simple-jaw").addEventListener("change", (event) => {
+  const rig = selectedAnimationRig();
+  if (!rig) return;
+  rig.shapes.X = event.target.value;
+  rig.placement_calibrated = false;
+  rig.mouth_asset_registrations = {};
+  rig.registration_master_asset_id = "";
+  renderAnimationLipSync();
+});
+[["x", "mouth_x_percent"], ["y", "mouth_y_percent"], ["width", "mouth_width_percent"], ["height", "mouth_height_percent"], ["anchor-x", "mouth_anchor_x_percent"], ["anchor-y", "mouth_anchor_y_percent"]].forEach(([control, key]) => {
+  el(`animation-mouth-${control}`).addEventListener("input", (event) => updateSelectedAnimationRig(key, Number(event.target.value)));
+});
+el("animation-mouth-strength").addEventListener("input", (event) => updateSelectedAnimationRig("jaw_open_strength_percent", Number(event.target.value)));
+el("animation-mouth-placement-edit").addEventListener("click", toggleAnimationMouthPlacement);
+el("animation-mouth-calibrate").addEventListener("click", confirmAnimationMouthFit);
+el("animation-mouth-transform-box").addEventListener("pointerdown", (event) => {
+  if (event.target === el("animation-mouth-resize-handle")) return;
+  beginAnimationMouthDrag(event, false);
+});
+el("animation-mouth-transform-box").addEventListener("pointermove", moveManualJawPointer);
+el("animation-mouth-transform-box").addEventListener("pointerup", finishManualJawPointer);
+el("animation-mouth-transform-box").addEventListener("pointercancel", finishManualJawPointer);
+el("animation-mouth-resize-handle").addEventListener("pointerdown", (event) => beginAnimationMouthDrag(event, true));
+el("animation-lipsync-take").addEventListener("change", (event) => {
+  state.animation.selectedTakeId = event.target.value;
+  state.animation.manualSelection = null;
+  state.animation.quickFix = null;
+  state.animation.quickFixHistory = { undo: [], redo: [] };
+  renderAnimationLipSync();
+});
+el("animation-manual-start").addEventListener("input", (event) => {
+  const take = selectedAnimationTake();
+  if (!take) return;
+  const duration = Number(take.duration || 0);
+  const start = Math.max(0, Math.min(duration, Number(event.target.value || 0)));
+  const current = manualJawSelectionForTake(take);
+  state.animation.manualSelection = { takeId: take.take_id, start, end: Math.max(start, current.end) };
+  renderManualJawControls(take, el("animation-lipsync-audio"));
+});
+el("animation-manual-end").addEventListener("input", (event) => {
+  const take = selectedAnimationTake();
+  if (!take) return;
+  const duration = Number(take.duration || 0);
+  const end = Math.max(0, Math.min(duration, Number(event.target.value || 0)));
+  const current = manualJawSelectionForTake(take);
+  state.animation.manualSelection = { takeId: take.take_id, start: Math.min(current.start, end), end };
+  renderManualJawControls(take, el("animation-lipsync-audio"));
+});
+el("animation-manual-playback-rate").addEventListener("change", (event) => {
+  el("animation-lipsync-audio").playbackRate = Number(event.target.value || 1);
+});
+el("animation-quick-fix-start").addEventListener("click", () => beginQuickJawFix());
+el("animation-quick-fix-opening").addEventListener("input", (event) => {
+  const quickFix = state.animation.quickFix;
+  if (!quickFix) return;
+  quickFix.openingPercent = Math.max(0, Math.min(100, Number(event.target.value || 0)));
+  el("animation-quick-fix-opening-value").textContent = `${quickFix.openingPercent.toFixed(0)}%`;
+  renderLipSyncMouthAt(quickFix.time);
+});
+el("animation-quick-fix-save").addEventListener("click", saveQuickJawFix);
+el("animation-quick-fix-cancel").addEventListener("click", cancelQuickJawFix);
+el("animation-quick-fix-delete").addEventListener("click", deleteQuickJawFix);
+el("animation-quick-fix-undo").addEventListener("click", undoQuickJawFix);
+el("animation-manual-advanced").addEventListener("toggle", () => {
+  const take = selectedAnimationTake();
+  const audio = el("animation-lipsync-audio");
+  renderQuickFixControls(take, audio);
+  drawAnimationWaveform(take, audio);
+});
+el("animation-manual-jaw-edit").addEventListener("click", handleManualJawEditButton);
+el("animation-manual-jaw-clear").addEventListener("click", clearManualJawEdits);
+el("animation-manual-jaw-save").addEventListener("click", saveManualJawEditor);
+el("animation-manual-jaw-undo").addEventListener("click", undoManualJawEdit);
+el("animation-manual-jaw-redo").addEventListener("click", redoManualJawEdit);
+el("animation-manual-jaw-close").addEventListener("click", () => closeManualJawEditor());
+el("animation-manual-jaw-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeManualJawEditor(); });
+el("animation-lipsync-waveform").addEventListener("pointerdown", beginAnimationWaveformPointer);
+el("animation-lipsync-waveform").addEventListener("pointermove", moveAnimationWaveformPointer);
+el("animation-lipsync-waveform").addEventListener("pointerup", finishAnimationWaveformPointer);
+el("animation-lipsync-waveform").addEventListener("pointercancel", finishAnimationWaveformPointer);
+el("animation-lipsync-waveform").addEventListener("click", seekAnimationWaveform);
+el("animation-lipsync-audio").addEventListener("play", (event) => {
+  const trackPreview = el("animation-audio-preview");
+  if (!trackPreview.paused) trackPreview.pause();
+  startAnimationMouthClock(event.target);
+});
+el("animation-lipsync-audio").addEventListener("pause", (event) => {
+  if (state.animation.mouthAudioId !== event.target.id) return;
+  stopAnimationMouthClock();
+  renderLipSyncMouthAt(Number(event.target.currentTime || 0));
+});
+el("animation-lipsync-audio").addEventListener("seeking", (event) => renderLipSyncMouthAt(Number(event.target.currentTime || 0)));
+el("animation-lipsync-audio").addEventListener("seeked", (event) => renderLipSyncMouthAt(Number(event.target.currentTime || 0)));
+el("animation-lipsync-audio").addEventListener("timeupdate", (event) => {
+  renderLipSyncMouthAt(Number(event.target.currentTime || 0));
+});
+el("animation-lipsync-audio").addEventListener("ended", () => {
+  stopAnimationMouthClock();
+  if (state.animation.manualEdit) finishManualJawEdit();
+  else renderLipSyncMouthAt(Number.MAX_SAFE_INTEGER);
+});
+el("animation-audio-file").addEventListener("change", renderAnimationStudio);
+el("animation-lipsync-generate").addEventListener("click", generateAnimationLipsync);
+el("animation-video-handoff").addEventListener("click", () => {
+  closeAnimationStudio();
+  el("room-selector").value = "video_production";
+  el("room-selector").dispatchEvent(new Event("change", { bubbles: true }));
 });
 el("open-resume-studio").addEventListener("click", openResumeStudio);
 el("resume-studio-close").addEventListener("click", closeResumeStudio);
@@ -3801,14 +6691,19 @@ async function uploadFiles(fileList, target = "chat") {
       return;
     }
   }
-  if (target === "art" || target === "museum") {
+  if (["art", "museum", "animation_image", "sell"].includes(target)) {
     const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
-    const supportedExtensions = /\.(?:png|jpe?g|webp)$/i;
+    const supportedExtensions = target === "animation_image" ? /\.(?:bmp|gif|png|jpe?g|tiff?|webp)$/i : /\.(?:png|jpe?g|webp)$/i;
     if (files.some((file) => !supportedTypes.has(file.type) && !supportedExtensions.test(file.name))) {
-      showError(target === "art" ? "Art Studio references must be PNG, JPEG, or WebP images." : "Museum analysis requires image files.");
-      el(target === "art" ? "art-reference-input" : "antiques-camera-input").value = "";
+      showError(target === "art" ? "Art Studio references must be PNG, JPEG, or WebP images." : target === "animation_image" ? "Animation Studio requires supported image files." : target === "sell" ? "Marketplace photos must be PNG, JPEG, or WebP images." : "Museum analysis requires image files.");
+      el(target === "art" ? "art-reference-input" : target === "animation_image" ? "animation-image-upload" : target === "sell" ? "marketplace-photo-input" : "antiques-camera-input").value = "";
       return;
     }
+  }
+  if (target === "animation_audio" && files.some((file) => !String(file.type || "").startsWith("audio/") && !/\.(?:aac|flac|m4a|mp3|ogg|wav)$/i.test(file.name))) {
+    showError("Animation Studio requires WAV, M4A, MP3, FLAC, AAC, or OGG audio files.");
+    el("animation-audio-upload").value = "";
+    return;
   }
   if (target === "art") {
     const availableSlots = Math.max(0, 4 - state.artStudio.referenceIds.size);
@@ -3844,6 +6739,9 @@ async function uploadFiles(fileList, target = "chat") {
           state.artStudio.referenceIds.add(result.file.file_id);
           state.artStudio.previewReferenceId = result.file.file_id;
         }
+        else if (target === "animation_image") addAnimationAssetFile(result.file);
+        else if (target === "animation_audio") addAnimationAudioFile(result.file);
+        else if (target === "sell") state.marketplace.selectedPhotoIds.add(result.file.file_id);
         else state.selectedFiles.add(result.file.file_id);
       }
     }
@@ -3852,10 +6750,20 @@ async function uploadFiles(fileList, target = "chat") {
   } finally {
     state.uploading = false;
     state.uploadTarget = "";
-    const inputId = target === "email" ? "email-file-input" : target === "art" ? "art-reference-input" : target === "museum" ? "antiques-camera-input" : "file-input";
+    const inputId = target === "email" ? "email-file-input"
+      : target === "art" ? "art-reference-input"
+        : target === "museum" ? "antiques-camera-input"
+          : target === "sell" ? "marketplace-photo-input"
+          : target === "animation_image" ? "animation-image-upload"
+            : target === "animation_audio" ? "animation-audio-upload" : "file-input";
     el(inputId).value = "";
     render();
     if (target === "art") renderArtStudio();
+    if (target === "sell") {
+      try { await loadMarketplace({ preserveSelection: true }); }
+      catch (error) { showError(error.message || String(error)); }
+    }
+    if (["animation_image", "animation_audio"].includes(target)) renderAnimationStudio();
   }
 }
 
@@ -4084,16 +6992,33 @@ el("new-workspace").addEventListener("click", async () => {
 });
 
 el("open-connected-accounts").addEventListener("click", openConnectedAccounts);
+el("open-marketplace-sell").addEventListener("click", openMarketplaceSell);
+el("marketplace-sell-close").addEventListener("click", () => el("marketplace-sell-dialog").close());
+el("marketplace-sell-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("marketplace-sell-dialog").close(); });
+el("marketplace-new-draft").addEventListener("click", clearMarketplaceForm);
+el("marketplace-source-case").addEventListener("change", (event) => applyMarketplaceCase(event.target.value));
+el("marketplace-add-photos").addEventListener("click", () => el("marketplace-photo-input").click());
+el("marketplace-photo-input").addEventListener("change", (event) => uploadFiles(event.target.files, "sell"));
+el("marketplace-research-help").addEventListener("click", researchMarketplacePhotos);
+el("marketplace-save-draft").addEventListener("click", saveMarketplaceDraft);
+el("marketplace-prepare").addEventListener("click", prepareMarketplaceListing);
+el("marketplace-resume").addEventListener("click", resumeMarketplaceListing);
+el("marketplace-prepare-group").addEventListener("click", prepareNextMarketplaceGroup);
+el("marketplace-group-form").addEventListener("submit", saveMarketplaceGroup);
 el("connected-accounts-close").addEventListener("click", () => el("connected-accounts-dialog").close());
 el("connected-accounts-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("connected-accounts-dialog").close(); });
 el("instagram-connect-form").addEventListener("submit", connectInstagram);
 el("instagram-verify").addEventListener("click", () => integrationAction("/api/integrations/instagram/verify", "Instagram status refreshed."));
 el("instagram-disconnect").addEventListener("click", () => integrationAction("/api/integrations/instagram/disconnect", "Instagram was unassigned. Its local browser profile was preserved."));
+el("facebook-connect").addEventListener("click", connectFacebook);
+el("facebook-refresh").addEventListener("click", () => integrationAction("/api/integrations/facebook/verify", "Facebook status refreshed."));
 el("gmail-connect").addEventListener("click", connectGmail);
 el("gmail-refresh").addEventListener("click", () => refreshConnectedAccounts("Gmail status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
 el("gmail-disconnect").addEventListener("click", () => integrationAction("/api/integrations/gmail/disconnect", "Gmail was unassigned from this workspace."));
 el("ebay-connect").addEventListener("click", connectEbay);
 el("ebay-refresh").addEventListener("click", () => refreshConnectedAccounts("eBay status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
+el("ebay-notifications-auto").addEventListener("click", toggleEbayAutomaticNotifications);
+el("ebay-notifications-check").addEventListener("click", checkEbayNotifications);
 el("ebay-disconnect").addEventListener("click", () => integrationAction("/api/integrations/ebay/disconnect", "eBay was disconnected from this workspace."));
 
 el("new-session").addEventListener("click", async () => {

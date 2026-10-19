@@ -28,6 +28,7 @@ DEFAULT_SCOPES = [
     "https://api.ebay.com/oauth/api_scope/sell.finances",
     "https://api.ebay.com/oauth/api_scope/sell.marketing",
     "https://api.ebay.com/oauth/api_scope/commerce.message",
+    "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription",
 ]
 
 

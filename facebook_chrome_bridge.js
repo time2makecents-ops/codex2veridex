@@ -181,6 +181,22 @@ async function evaluate(client, expression) {
   return result.result && result.result.value !== undefined ? result.result.value : {};
 }
 
+function classifyFacebookSession(state) {
+  const value = state && typeof state === "object" ? state : {};
+  let current;
+  try { current = new URL(String(value.url || "")); } catch (_) { return { signed_in: false, evidence: "invalid_url" }; }
+  const facebookHost = /(^|\.)facebook\.com$/i.test(current.hostname);
+  const loginRoute = /^\/(?:login(?:\.php)?|recover|checkpoint|two_step_verification)(?:\/|$)/i.test(current.pathname);
+  if (!facebookHost || value.checkpoint || value.login_form || loginRoute) {
+    return { signed_in: false, evidence: value.checkpoint ? "checkpoint" : value.login_form || loginRoute ? "login" : "not_facebook" };
+  }
+  if (value.navigation_shell) return { signed_in: true, evidence: "authenticated_navigation" };
+  if (/^\/(?:home\.php|me)(?:\/|$)/i.test(current.pathname)) {
+    return { signed_in: true, evidence: "authenticated_route" };
+  }
+  return { signed_in: false, evidence: "inconclusive" };
+}
+
 async function withTab(url, callback, keepOpen = false) {
   await ensureChrome("https://www.facebook.com/");
   const target = await createTab(url);
@@ -198,7 +214,7 @@ async function withTab(url, callback, keepOpen = false) {
 }
 
 async function pageState(client) {
-  return evaluate(client, `(() => {
+  const state = await evaluate(client, `(() => {
     const text = String(document.body ? document.body.innerText : '').slice(0, 12000);
     const loginForm = Boolean(document.querySelector('#email, input[name="email"], #pass, input[name="pass"]'));
     const nav = Boolean(document.querySelector('a[aria-label="Home"], [aria-label^="Your profile" i], [aria-label="Account"], [aria-label="Facebook"]'));
@@ -210,9 +226,21 @@ async function pageState(client) {
       text,
       login_form: loginForm,
       checkpoint,
-      signed_in: nav && !loginForm && !/\\/login\\/?/i.test(location.pathname),
+      navigation_shell: nav,
     };
   })()`);
+  const session = classifyFacebookSession(state);
+  return { ...state, signed_in: session.signed_in, session_evidence: session.evidence };
+}
+
+async function waitForLoginState(client) {
+  let state = await pageState(client);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (state.signed_in || state.checkpoint || state.login_form) return state;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    state = await pageState(client);
+  }
+  return state;
 }
 
 function normalizeTarget(value) {
@@ -254,7 +282,7 @@ async function status() {
       signed_in: false,
     };
   }
-  const state = await withTab("https://www.facebook.com/me", (client) => pageState(client));
+  const state = await withTab("https://www.facebook.com/me", (client) => waitForLoginState(client));
   return {
     ok: true,
     configured: Boolean(configuredUsername && configuredPassword),
@@ -262,6 +290,7 @@ async function status() {
     profile_root: profileRoot,
     chrome_debugging: true,
     signed_in: Boolean(state.signed_in),
+    session_evidence: String(state.session_evidence || "inconclusive"),
     requires_interaction: Boolean(state.checkpoint),
     page_url: state.url,
   };
@@ -272,8 +301,17 @@ async function login() {
     throw new Error("FACEBOOK_USERNAME (or FACEBOOK_EMAIL) and FACEBOOK_PASSWORD must be set in local.env or .env.local.");
   }
   return withTab("https://www.facebook.com/login/", async (client) => {
-    const initial = await pageState(client);
+    const initial = await waitForLoginState(client);
     if (initial.signed_in) return { ok: true, signed_in: true, username: configuredUsername, already_signed_in: true };
+    if (initial.checkpoint) {
+      return {
+        ok: true,
+        signed_in: false,
+        username: configuredUsername,
+        requires_interaction: true,
+        instruction: "Complete Facebook's security check in the visible Chrome window, then run facebook-status.",
+      };
+    }
     const prepared = await evaluate(client, `(() => {
       const consent = Array.from(document.querySelectorAll('button')).find((node) => /allow all cookies|only allow essential cookies|decline optional cookies/i.test(node.innerText || ''));
       if (consent) consent.click();
@@ -431,6 +469,249 @@ async function composeMessage(target, message, confirmed) {
   }, true);
 }
 
+function readPayload() {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try { resolve(body.trim() ? JSON.parse(body) : {}); }
+      catch (error) { reject(new Error("Facebook bridge payload was not valid JSON.")); }
+    });
+    process.stdin.on("error", reject);
+  });
+}
+
+async function setFileInputFiles(client, files) {
+  if (!Array.isArray(files) || !files.length) throw new Error("At least one verified image path is required.");
+  await client.send("DOM.enable");
+  const documentNode = await client.send("DOM.getDocument", { depth: -1, pierce: true });
+  const found = await client.send("DOM.querySelector", {
+    nodeId: documentNode.root.nodeId,
+    selector: 'input[type="file"]',
+  });
+  if (!found.nodeId) throw new Error("Facebook's Marketplace photo control was not found.");
+  await client.send("DOM.setFileInputFiles", { nodeId: found.nodeId, files });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+}
+
+async function fillMarketplaceFields(client, draft) {
+  const fields = {
+    title: String(draft.title || ""),
+    price: String(draft.price ?? ""),
+    category: String(draft.category || ""),
+    condition: String(draft.condition || "good").replaceAll("_", " "),
+    description: String(draft.description || ""),
+  };
+  return evaluate(client, `(() => {
+    const requested = ${JSON.stringify(fields)};
+    const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    const label = (node) => String(node && (node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.innerText || node.textContent) || '').replace(/\\s+/g, ' ').trim();
+    const controls = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"][role="textbox"]')).filter(visible);
+    const setValue = (node, value) => {
+      node.focus();
+      if (node.tagName === 'INPUT') {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(node, value);
+      } else if (node.tagName === 'TEXTAREA') {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(node, value);
+      } else {
+        node.textContent = value;
+      }
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+      node.dispatchEvent(new Event('blur', { bubbles: true }));
+    };
+    const find = (patterns) => controls.find((node) => patterns.some((pattern) => pattern.test(label(node))));
+    const title = find([/^title$/i, /listing title/i]);
+    const price = find([/^price$/i, /asking price/i]);
+    const description = find([/^description$/i, /describe.*item/i]);
+    if (title) setValue(title, requested.title);
+    if (price) setValue(price, requested.price);
+    if (description) setValue(description, requested.description);
+    const clickChoice = (fieldPattern, requestedValue) => {
+      const buttons = Array.from(document.querySelectorAll('[role="button"], [role="combobox"], button')).filter(visible);
+      const control = buttons.find((node) => fieldPattern.test(label(node)));
+      if (!control) return false;
+      control.click();
+      return true;
+    };
+    return {
+      title: Boolean(title),
+      price: Boolean(price),
+      description: Boolean(description),
+      category_opened: clickChoice(/category/i, requested.category),
+      condition_opened: false,
+      requested_category: requested.category,
+      requested_condition: requested.condition,
+      page_url: location.href,
+    };
+  })()`);
+}
+
+async function chooseOpenMarketplaceOption(client, requestedValue) {
+  const chosen = await evaluate(client, `(() => {
+    const requested = ${JSON.stringify(String(requestedValue || ""))}.toLowerCase().replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    if (!requested) return false;
+    const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    const text = (node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || '').toLowerCase().replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim();
+    const candidates = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], [role="radio"], div[tabindex="0"]')).filter(visible);
+    const exact = candidates.find((node) => text(node) === requested);
+    const partial = candidates.find((node) => text(node).includes(requested) || requested.includes(text(node)));
+    const match = exact || partial;
+    if (!match) return false;
+    match.click();
+    return true;
+  })()`);
+  if (chosen) await new Promise((resolve) => setTimeout(resolve, 700));
+  return Boolean(chosen);
+}
+
+async function openMarketplaceChoice(client, pattern) {
+  const opened = await evaluate(client, `(() => {
+    const pattern = new RegExp(${JSON.stringify(pattern)}, 'i');
+    const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    const label = (node) => String(node.getAttribute('aria-label') || node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
+    const candidates = Array.from(document.querySelectorAll('[role="button"], [role="combobox"], button')).filter(visible);
+    const control = candidates.find((node) => pattern.test(label(node)));
+    if (!control) return false;
+    control.click();
+    return true;
+  })()`);
+  if (opened) await new Promise((resolve) => setTimeout(resolve, 700));
+  return Boolean(opened);
+}
+
+async function prepareMarketplace(payload) {
+  const draft = payload && payload.draft && typeof payload.draft === "object" ? payload.draft : {};
+  const imagePaths = Array.isArray(payload.image_paths) ? payload.image_paths.map(String) : [];
+  if (!String(draft.title || "").trim()) throw new Error("Marketplace draft title is required.");
+  return withTab("https://www.facebook.com/marketplace/create/item", async (client) => {
+    const initial = await pageState(client);
+    if (initial.checkpoint) {
+      return { ok: true, status: "human_action_required", page_url: initial.url, instruction: "Complete Facebook's security check in the visible Chrome window, then retry preparation." };
+    }
+    if (!initial.signed_in) throw new Error("The dedicated Facebook profile is not signed in. Run facebook-login first.");
+    await setFileInputFiles(client, imagePaths);
+    const fields = await fillMarketplaceFields(client, draft);
+    if (fields.category_opened) await chooseOpenMarketplaceOption(client, draft.category);
+    const conditionOpened = await openMarketplaceChoice(client, "condition");
+    const conditionSelected = conditionOpened ? await chooseOpenMarketplaceOption(client, String(draft.condition || "good").replaceAll("_", " ")) : false;
+    const finalState = await pageState(client);
+    if (finalState.checkpoint) {
+      return { ok: true, status: "human_action_required", page_url: finalState.url, instruction: "Complete Facebook's security check in the visible Chrome window, then retry preparation." };
+    }
+    if (!fields.title || !fields.price || !fields.description) {
+      return {
+        ok: true,
+        status: "human_action_required",
+        page_url: finalState.url,
+        fields,
+        instruction: "Facebook changed or withheld one or more Marketplace fields. Finish the visible form manually; Veridex did not click Next or Publish.",
+      };
+    }
+    return {
+      ok: true,
+      status: "facebook_prepared",
+      page_url: finalState.url,
+      fields: { ...fields, condition_selected: conditionSelected },
+      publish_clicked: false,
+      instruction: "Review every visible field in Facebook, choose any account-specific options, then click Next and Publish yourself.",
+    };
+  }, true);
+}
+
+async function resumeMarketplace(payload) {
+  const draft = payload && payload.draft && typeof payload.draft === "object" ? payload.draft : {};
+  const title = String(draft.title || "").replace(/\s+/g, " ").trim();
+  if (!title) throw new Error("Marketplace draft title is required.");
+  return withTab("https://www.facebook.com/marketplace/you/selling", async (client) => {
+    const state = await pageState(client);
+    if (state.checkpoint) return { ok: true, status: "human_action_required", page_url: state.url, instruction: "Complete Facebook's security check, then resume again." };
+    if (!state.signed_in) throw new Error("The dedicated Facebook profile is not signed in. Run facebook-login first.");
+    const evidence = await evaluate(client, `(() => {
+      const expected = ${JSON.stringify(title)}.toLowerCase();
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const anchors = Array.from(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+      const cardText = (node) => {
+        let current = node;
+        for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+          const value = clean(current.innerText || current.textContent);
+          if (value.length <= 1200 && value.toLowerCase().includes(expected)) return value;
+        }
+        return '';
+      };
+      const match = anchors.find((node) => clean(node.innerText || node.textContent).toLowerCase().includes(expected))
+        || anchors.find((node) => Boolean(cardText(node)));
+      if (!match) return { matched: false, visible_text: clean(document.body && document.body.innerText).slice(0, 1200) };
+      return { matched: true, listing_url: new URL(match.getAttribute('href'), location.origin).href, visible_title: clean(match.innerText || match.textContent) || cardText(match), page_url: location.href };
+    })()`);
+    if (!evidence.matched || !evidence.listing_url) {
+      return {
+        ok: true,
+        status: "human_action_required",
+        page_url: state.url,
+        instruction: "No matching published listing is visibly available yet. Publish it in Facebook, then resume again.",
+      };
+    }
+    return { ok: true, status: "published_observed", listing_url: evidence.listing_url, page_url: evidence.page_url, visible_title: evidence.visible_title };
+  });
+}
+
+async function prepareGroupShare(payload) {
+  const draft = payload && payload.draft && typeof payload.draft === "object" ? payload.draft : {};
+  const group = payload && payload.group && typeof payload.group === "object" ? payload.group : {};
+  const listingUrl = String(draft.listing_url || "").trim();
+  const groupUrl = String(group.url || "").trim();
+  if (!/^https:\/\/www\.facebook\.com\/marketplace\/item\//i.test(listingUrl)) throw new Error("A verified Facebook Marketplace listing URL is required.");
+  if (!/^https:\/\/www\.facebook\.com\/groups\/[A-Za-z0-9._-]+$/i.test(groupUrl)) throw new Error("An approved Facebook group URL is required.");
+  const postText = `${String(draft.title || "").trim()}\n${listingUrl}`;
+  return withTab(groupUrl, async (client) => {
+    const state = await pageState(client);
+    if (state.checkpoint) return { ok: true, status: "human_action_required", group_id: group.group_id, page_url: state.url, instruction: "Complete Facebook's security check, then retry the group preparation." };
+    if (!state.signed_in) throw new Error("The dedicated Facebook profile is not signed in. Run facebook-login first.");
+    const opened = await evaluate(client, `(() => {
+      const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+      const text = (node) => String(node.innerText || node.textContent || node.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
+      const candidates = Array.from(document.querySelectorAll('[role="button"], button')).filter(visible);
+      const control = candidates.find((node) => /write something|create (?:a )?post|what(?:'s| is) on your mind/i.test(text(node)));
+      if (!control) return false;
+      control.click();
+      return true;
+    })()`);
+    if (opened) await new Promise((resolve) => setTimeout(resolve, 1200));
+    const composed = await evaluate(client, `(() => {
+      const requested = ${JSON.stringify(postText)};
+      const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+      const boxes = Array.from(document.querySelectorAll('div[contenteditable="true"][role="textbox"], textarea')).filter(visible);
+      const box = boxes[boxes.length - 1];
+      if (!box) return { ready: false };
+      const existing = String(box.value || box.innerText || box.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (existing && existing !== requested.replace(/\\s+/g, ' ').trim()) return { ready: false, conflict: true };
+      box.focus();
+      if (!existing && box.tagName === 'TEXTAREA') {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(box, requested);
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return { ready: true, tag: box.tagName, existing: Boolean(existing) };
+    })()`);
+    if (!composed.ready) {
+      return { ok: true, status: "human_action_required", group_id: group.group_id, page_url: state.url, instruction: composed.conflict ? "A different unsent group post is already present. Review it manually." : "Facebook's group composer was not found. Open it manually and paste the verified listing URL." };
+    }
+    if (!composed.existing && composed.tag !== "TEXTAREA") await client.send("Input.insertText", { text: postText });
+    return {
+      ok: true,
+      status: "group_share_prepared",
+      group_id: String(group.group_id || ""),
+      page_url: groupUrl,
+      post_clicked: false,
+      instruction: "Review the visible group post and click Post yourself.",
+    };
+  }, true);
+}
+
 async function main() {
   const action = String(process.argv[2] || "status").toLowerCase();
   if (action === "status") return output(await status());
@@ -451,12 +732,19 @@ async function main() {
     const message = process.argv.slice(4).join(" ");
     return output(await composeMessage(target, message, action === "send-message"));
   }
+  if (action === "marketplace-prepare") return output(await prepareMarketplace(await readPayload()));
+  if (action === "marketplace-resume") return output(await resumeMarketplace(await readPayload()));
+  if (action === "group-share-prepare") return output(await prepareGroupShare(await readPayload()));
   throw new Error(`Unknown action: ${action}`);
 }
 
-main().catch((error) => output({
-  ok: false,
-  error: error.message || String(error),
-  username: configuredUsername,
-  profile_root: profileRoot,
-}, 1));
+if (require.main === module) {
+  main().catch((error) => output({
+    ok: false,
+    error: error.message || String(error),
+    username: configuredUsername,
+    profile_root: profileRoot,
+  }, 1));
+}
+
+module.exports = { classifyFacebookSession };

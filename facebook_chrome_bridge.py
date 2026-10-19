@@ -18,7 +18,13 @@ class FacebookChromeBridgeError(RuntimeError):
     """Raised when the local Facebook browser bridge cannot complete an action."""
 
 
-def _run(action: str, *arguments: str, timeout: int = 90, env: Dict[str, str] | None = None) -> Dict[str, Any]:
+def _run(
+    action: str,
+    *arguments: str,
+    timeout: int = 90,
+    env: Dict[str, str] | None = None,
+    payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     node = shutil.which(os.environ.get("VERIDEX_NODE_COMMAND", "node"))
     if not node:
         raise FacebookChromeBridgeError("Node.js was not found; the Facebook Chrome bridge cannot run.")
@@ -27,6 +33,7 @@ def _run(action: str, *arguments: str, timeout: int = 90, env: Dict[str, str] | 
     completed = subprocess.run(
         [node, str(BRIDGE), action, *[str(value) for value in arguments]],
         cwd=str(ROOT),
+        input=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -50,6 +57,18 @@ def _invoke(action: str, *arguments: str, timeout: int, env: Dict[str, str] | No
     if env is None:
         return _run(action, *arguments, timeout=timeout)
     return _run(action, *arguments, timeout=timeout, env=env)
+
+
+def _invoke_payload(
+    action: str,
+    payload: Dict[str, Any],
+    *,
+    timeout: int,
+    env: Dict[str, str] | None,
+) -> Dict[str, Any]:
+    if env is None:
+        return _run(action, timeout=timeout, payload=payload)
+    return _run(action, timeout=timeout, env=env, payload=payload)
 
 
 def facebook_profile_status(*, env: Dict[str, str] | None = None) -> Dict[str, Any]:
@@ -88,3 +107,42 @@ def send_facebook_message(
             "sent": False,
         }
     return _invoke("send-message", target, message, timeout=60, env=env)
+
+
+def prepare_marketplace_listing(
+    draft: Dict[str, Any],
+    image_paths: list[str],
+    *,
+    env: Dict[str, str] | None = None,
+) -> Dict[str, Any]:
+    """Fill a visible Marketplace form without activating Next or Publish."""
+    return _invoke_payload(
+        "marketplace-prepare",
+        {"draft": dict(draft), "image_paths": [str(value) for value in image_paths]},
+        timeout=120,
+        env=env,
+    )
+
+
+def resume_marketplace_listing(
+    draft: Dict[str, Any],
+    *,
+    env: Dict[str, str] | None = None,
+) -> Dict[str, Any]:
+    """Look for direct visible evidence that the reviewed listing was published."""
+    return _invoke_payload("marketplace-resume", {"draft": dict(draft)}, timeout=90, env=env)
+
+
+def prepare_facebook_group_share(
+    draft: Dict[str, Any],
+    group: Dict[str, Any],
+    *,
+    env: Dict[str, str] | None = None,
+) -> Dict[str, Any]:
+    """Compose a group post containing a verified listing URL, without posting it."""
+    return _invoke_payload(
+        "group-share-prepare",
+        {"draft": dict(draft), "group": dict(group)},
+        timeout=90,
+        env=env,
+    )

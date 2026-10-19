@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from ebay_gateway import EbayGateway
+from ebay_notifications import EbayNotificationConsumer
 from gmail_gateway import GmailGateway, _default_env
 
 
@@ -195,11 +196,13 @@ class ConnectedAccounts:
                     f"eBay {target_environment} account {seller} is already assigned to another workspace."
                 )
         data = self.read(workspace_id)
+        existing = data.get("ebay") if isinstance(data.get("ebay"), dict) else {}
         data["ebay"] = {
             "assigned": True,
             "username": seller,
             "environment": target_environment,
             "marketplace_id": market,
+            "automatic_notifications": existing.get("automatic_notifications") is not False,
         }
         self.write(workspace_id, data)
         return dict(data["ebay"])
@@ -222,6 +225,9 @@ class ConnectedAccounts:
         config = self.ebay_config(workspace_id, required=required)
         base = _default_env()
         base["VERIDEX_EBAY_DB_PATH"] = str(workspace_dir / "integrations" / "ebay.db")
+        base["VERIDEX_EBAY_NOTIFICATIONS_DB_PATH"] = str(
+            workspace_dir / "integrations" / "ebay_notifications.db"
+        )
         base["VERIDEX_EBAY_USERNAME"] = str(username or config.get("username") or "")
         base["EBAY_ENVIRONMENT"] = str(environment or config.get("environment") or base.get("EBAY_ENVIRONMENT") or "sandbox")
         base["EBAY_MARKETPLACE_ID"] = str(marketplace_id or config.get("marketplace_id") or base.get("EBAY_MARKETPLACE_ID") or "EBAY_US")
@@ -229,6 +235,47 @@ class ConnectedAccounts:
 
     def ebay(self, workspace_id: str) -> EbayGateway:
         return EbayGateway(env=self.ebay_env(workspace_id, required=True))
+
+    def ebay_notifications(self, workspace_id: str) -> EbayNotificationConsumer:
+        self.ebay_config(workspace_id, required=True)
+        return EbayNotificationConsumer(workspace_id, self.ebay_env(workspace_id, required=True))
+
+    def assigned_ebay_workspace_ids(self) -> list[str]:
+        """Return only valid workspaces that explicitly assigned an eBay account."""
+        workspaces_root = self.data_root / "workspaces"
+        if not workspaces_root.is_dir():
+            return []
+        result: list[str] = []
+        for workspace_dir in workspaces_root.iterdir():
+            if not workspace_dir.is_dir() or not (workspace_dir / "workspace.json").is_file():
+                continue
+            workspace_id = workspace_dir.name
+            try:
+                config = self.ebay_config(workspace_id)
+            except ConnectedAccountError:
+                continue
+            if config.get("assigned"):
+                result.append(workspace_id)
+        return sorted(result)
+
+    def ebay_automatic_notifications_enabled(self, workspace_id: str) -> bool:
+        config = self.ebay_config(workspace_id)
+        return bool(config and config.get("automatic_notifications") is not False)
+
+    def set_ebay_automatic_notifications(self, workspace_id: str, enabled: bool) -> Dict[str, Any]:
+        config = self.ebay_config(workspace_id, required=True)
+        data = self.read(workspace_id)
+        config["automatic_notifications"] = bool(enabled)
+        data["ebay"] = config
+        self.write(workspace_id, data)
+        return dict(config)
+
+    def automatic_ebay_workspace_ids(self) -> list[str]:
+        return [
+            workspace_id
+            for workspace_id in self.assigned_ebay_workspace_ids()
+            if self.ebay_automatic_notifications_enabled(workspace_id)
+        ]
 
     def public_status(
         self,

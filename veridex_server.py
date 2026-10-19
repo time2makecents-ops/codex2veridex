@@ -26,18 +26,25 @@ from urllib.parse import parse_qs, urlparse
 from PIL import Image, ImageChops, ImageEnhance, ImageOps
 
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
+from animation_studio import AnimationStudio, ROOM_ID as ANIMATION_STUDIO_ROOM_ID
 from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
 from connected_accounts import ConnectedAccountError, ConnectedAccounts
 from ebay_gateway import EbayGateway, EbayGatewayError
+from ebay_notifications import EbayNotificationConsumer, EbayNotificationError, EbayNotificationPoller
 from facebook_chrome_bridge import (
     draft_facebook_message,
     facebook_profile_status,
+    login_facebook,
+    prepare_facebook_group_share,
+    prepare_marketplace_listing,
     read_facebook_profile,
+    resume_marketplace_listing,
     send_facebook_message,
 )
+from facebook_marketplace import FacebookMarketplace
 from google_chrome_search import (
     GoogleChromeSearchError,
     continues_google_search,
@@ -90,6 +97,7 @@ from veridex_rooms import ROOMS, configure_room_catalog, room_by_id, room_direct
 
 ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
+VIDEO_PRODUCTION_ROOM_ID = "video_production"
 LOCAL_ROOM_QUERY = re.compile(
     r"\b(?:where am i|what(?:'s| is) (?:my |the |current |active )?room|current room|active room)\b",
     re.IGNORECASE,
@@ -172,11 +180,14 @@ ADMIN = AdminService(DATA_ROOT, ROOT, ROOMS, ROOT / "governance" / "navigator_go
 configure_room_catalog(ADMIN.room_catalog_path)
 STORE = VeridexStore(DATA_ROOT, ADMIN.active_governance_path)
 RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
+ANIMATION = AnimationStudio(DATA_ROOT)
 ART = ArtStudio(DATA_ROOT)
 ANTIQUES = AntiquesDepartment(DATA_ROOT)
+FACEBOOK_MARKETPLACE = FacebookMarketplace(DATA_ROOT)
 SELLER_INTAKE = SellerIntakeCatalog(DATA_ROOT)
 ART_JOBS = ArtJobManager()
 MUSEUM_JOBS = ArtJobManager(workers=1, prefix="museumjob", label="Museum analysis")
+ITEM_SELECTION_JOBS = ArtJobManager(workers=1, prefix="itemsearch", label="Museum item search")
 PRICE_SEARCH_JOBS = PriceSearchJobManager(workers=2)
 MUSEUM_VISUAL = MuseumVisualAnalyzer(DATA_ROOT)
 GMAIL = GmailGateway()
@@ -186,7 +197,6 @@ MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACH
 ACTIVE_REQUESTS = ActiveRequestRegistry()
 REMOTE_ACCESS_PATH = DATA_ROOT / "system" / "remote_access.json"
 REMOTE_COOKIE = "veridex_remote_session"
-
 MAX_THREAD_IMPORT_IMAGES = 8
 MAX_THREAD_IMPORT_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -364,6 +374,29 @@ def touch_up_intake_photo(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"asset": saved, "item": SELLER_INTAKE.get_item(item_id)}
 
 
+def _environment_flag(name: str, default: bool) -> bool:
+    value = str(os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
+def _environment_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.environ.get(name) or default).strip())
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, value))
+
+
+EBAY_NOTIFICATION_POLLER = EbayNotificationPoller(
+    ACCOUNTS.automatic_ebay_workspace_ids,
+    ACCOUNTS.ebay_notifications,
+    enabled=_environment_flag("VERIDEX_EBAY_NOTIFICATION_AUTO_POLL", True),
+    interval_seconds=_environment_int("VERIDEX_EBAY_NOTIFICATION_POLL_SECONDS", 60, 15, 3600),
+    max_events=_environment_int("VERIDEX_EBAY_NOTIFICATION_POLL_MAX_EVENTS", 100, 1, 500),
+)
+
 
 def workspace_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
     workspace = STORE.get_workspace(str(workspace_id or "").strip())
@@ -379,6 +412,204 @@ def workspace_from_args(args: Dict[str, Any]) -> tuple[str, str]:
     workspace_id = str(args.get("workspace_id") or session.get("workspace_id") or "").strip()
     workspace_context(workspace_id, session_id)
     return workspace_id, session_id
+
+
+def _verified_marketplace_photos(workspace_id: str, file_ids: Any) -> list[Dict[str, Any]]:
+    wanted = list(dict.fromkeys(str(value).strip() for value in (file_ids or []) if str(value).strip()))
+    if not wanted:
+        raise ValueError("Select at least one item photo")
+    if len(wanted) > 10:
+        raise ValueError("Facebook Marketplace drafts support up to 10 photos")
+    ledger = {
+        str(row.get("file_id") or ""): row
+        for row in STORE.list_artifact_ledger(workspace_id)
+        if isinstance(row, dict) and str(row.get("file_id") or "").strip()
+    }
+    workspace_root = STORE.workspace_dir(workspace_id).resolve()
+    verified: list[Dict[str, Any]] = []
+    for file_id in wanted:
+        row = ledger.get(file_id)
+        if not row:
+            raise ValueError(f"Marketplace photo is not ledgered in this workspace: {file_id}")
+        content_type = str(row.get("content_type") or row.get("mime_type") or "")
+        if not content_type.startswith("image/"):
+            raise ValueError(f"Marketplace attachment is not an image: {file_id}")
+        path = Path(str(row.get("path") or row.get("storage_path") or "")).resolve()
+        if workspace_root not in path.parents or not path.is_file():
+            raise ValueError(f"Marketplace photo is unavailable: {file_id}")
+        content = path.read_bytes()
+        if not content or len(content) != int(row.get("size") or row.get("byte_size") or -1):
+            raise ValueError(f"Marketplace photo size verification failed: {file_id}")
+        sha256 = hashlib.sha256(content).hexdigest()
+        if sha256 != str(row.get("sha256") or "").lower():
+            raise ValueError(f"Marketplace photo checksum verification failed: {file_id}")
+        verified.append({
+            "file_id": file_id,
+            "session_id": str(row.get("session_id") or ""),
+            "name": str(row.get("name") or "photo"),
+            "content_type": content_type,
+            "size": len(content),
+            "sha256": sha256,
+            "path": str(path),
+        })
+    return verified
+
+
+def _marketplace_price_suggestion(case: Dict[str, Any]) -> Dict[str, Any]:
+    report = case.get("latest_report") if isinstance(case.get("latest_report"), dict) else {}
+    evaluation = report.get("price_evaluation") if isinstance(report.get("price_evaluation"), dict) else {}
+    expected = evaluation.get("expected_resale")
+    amount: float | None = None
+    if isinstance(expected, dict):
+        for key in ("recommended", "midpoint", "amount", "likely", "high", "low"):
+            if expected.get(key) is not None:
+                try:
+                    amount = float(expected[key])
+                    break
+                except (TypeError, ValueError):
+                    pass
+    elif expected is not None:
+        try:
+            amount = float(expected)
+        except (TypeError, ValueError):
+            pass
+    valuation = report.get("valuation") if isinstance(report.get("valuation"), dict) else {}
+    if amount is None:
+        candidates = []
+        for key in ("conservative_low", "likely_high"):
+            try:
+                candidates.append(float(valuation[key]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        if candidates:
+            amount = sum(candidates) / len(candidates)
+    summary = evaluation.get("evidence_summary")
+    if isinstance(summary, dict):
+        basis = "; ".join(f"{key.replace('_', ' ')}: {value}" for key, value in summary.items() if value not in (None, ""))
+    else:
+        basis = str(summary or "")
+    if not basis:
+        basis = "Suggested from the latest saved Veridex research; review comparable evidence before accepting."
+    return {
+        "amount": round(amount, 2) if amount is not None and math.isfinite(amount) and amount >= 0 else None,
+        "currency": str(valuation.get("currency") or "USD"),
+        "basis": basis[:1000],
+        "case_id": str(case.get("case_id") or ""),
+        "generated_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def _marketplace_case_option(case: Dict[str, Any]) -> Dict[str, Any]:
+    report = case.get("latest_report") if isinstance(case.get("latest_report"), dict) else {}
+    observed = report.get("observed_features") if isinstance(report.get("observed_features"), list) else []
+    condition = report.get("condition_notes") if isinstance(report.get("condition_notes"), list) else []
+    description_parts = [
+        str(report.get("identification") or case.get("title") or "").strip(),
+        ", ".join(str(value) for value in observed[:8] if str(value).strip()),
+        "Condition: " + "; ".join(str(value) for value in condition[:6] if str(value).strip()) if condition else "",
+    ]
+    return {
+        "case_id": str(case.get("case_id") or ""),
+        "title": str(report.get("identification") or case.get("title") or "")[:200],
+        "category": str(case.get("category") or report.get("category") or "Antiques & collectibles")[:120],
+        "description": "\n\n".join(value for value in description_parts if value)[:5000],
+        "photo_ids": [str(value) for value in case.get("attachment_ids") or [] if str(value).strip()],
+        "price_suggestion": _marketplace_price_suggestion(case),
+    }
+
+
+def facebook_marketplace_bootstrap(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace_context(workspace_id, session_id)
+    value = FACEBOOK_MARKETPLACE.bootstrap(workspace_id)
+    available_images = []
+    workspace_root = STORE.workspace_dir(workspace_id).resolve()
+    for row in STORE.list_artifact_ledger(workspace_id):
+        if not isinstance(row, dict) or not str(row.get("content_type") or row.get("mime_type") or "").startswith("image/"):
+            continue
+        try:
+            path = Path(str(row.get("path") or row.get("storage_path") or "")).resolve()
+        except OSError:
+            continue
+        if workspace_root not in path.parents or not path.is_file():
+            continue
+        available_images.append({key: row.get(key) for key in (
+            "file_id", "session_id", "name", "content_type", "size", "sha256", "created_at"
+        ) if row.get(key) not in (None, "")})
+    value.update({
+        "images": available_images[-200:],
+        "cases": [_marketplace_case_option(case) for case in ANTIQUES.list_cases(workspace_id)],
+    })
+    return value
+
+
+def save_facebook_marketplace_draft(args: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id, session_id = workspace_from_args(args)
+    source_case_id = str(args.get("source_case_id") or "").strip()
+    case = ANTIQUES.get_case(workspace_id, source_case_id) if source_case_id else {}
+    case_option = _marketplace_case_option(case) if case else {}
+    file_ids = args.get("photo_ids") or case_option.get("photo_ids") or []
+    photos = _verified_marketplace_photos(workspace_id, file_ids)
+    payload = {
+        **args,
+        "source_case_id": source_case_id,
+        "title": args.get("title") or case_option.get("title"),
+        "description": args.get("description") or case_option.get("description"),
+        "category": args.get("category") or case_option.get("category") or "Other",
+        "condition": args.get("condition") or "good",
+        "price": args.get("price") if args.get("price") not in (None, "") else (case_option.get("price_suggestion") or {}).get("amount"),
+    }
+    suggestion = case_option.get("price_suggestion") if case_option else args.get("price_suggestion")
+    draft = FACEBOOK_MARKETPLACE.save_draft(
+        workspace_id,
+        session_id,
+        payload,
+        photos,
+        price_suggestion=suggestion if isinstance(suggestion, dict) else None,
+    )
+    return FACEBOOK_MARKETPLACE.public_draft(draft)
+
+
+def prepare_facebook_marketplace_draft(workspace_id: str, draft_id: str) -> Dict[str, Any]:
+    draft = FACEBOOK_MARKETPLACE.get_draft(workspace_id, draft_id)
+    photos = _verified_marketplace_photos(workspace_id, [row.get("file_id") for row in draft.get("photos") or []])
+    public = FACEBOOK_MARKETPLACE.public_draft(draft)
+    result = prepare_marketplace_listing(public, [row["path"] for row in photos])
+    status = str(result.get("status") or "failed")
+    if status not in {"facebook_prepared", "human_action_required"}:
+        status = "failed"
+    updated = FACEBOOK_MARKETPLACE.update_status(
+        workspace_id,
+        draft_id,
+        status,
+        result=result,
+        error=str(result.get("error") or "") if status == "failed" else "",
+    )
+    return {"result": result, "draft": FACEBOOK_MARKETPLACE.public_draft(updated)}
+
+
+def resume_facebook_marketplace_draft(workspace_id: str, draft_id: str) -> Dict[str, Any]:
+    draft = FACEBOOK_MARKETPLACE.get_draft(workspace_id, draft_id)
+    result = resume_marketplace_listing(FACEBOOK_MARKETPLACE.public_draft(draft))
+    status = str(result.get("status") or "human_action_required")
+    if status not in {"published_observed", "human_action_required"}:
+        status = "human_action_required"
+    updated = FACEBOOK_MARKETPLACE.update_status(workspace_id, draft_id, status, result=result)
+    return {"result": result, "draft": FACEBOOK_MARKETPLACE.public_draft(updated)}
+
+
+def prepare_facebook_marketplace_group(workspace_id: str, draft_id: str, group_id: str) -> Dict[str, Any]:
+    draft = FACEBOOK_MARKETPLACE.get_draft(workspace_id, draft_id)
+    if str(draft.get("status") or "") not in {"published_observed", "group_share_prepared"} or not draft.get("listing_url"):
+        raise ValueError("Resume the published Marketplace listing before preparing group shares")
+    group = next((row for row in FACEBOOK_MARKETPLACE.list_groups(workspace_id) if row.get("group_id") == group_id), None)
+    if not group or group_id not in set(draft.get("group_ids") or []):
+        raise ValueError("Choose an approved group selected on this draft")
+    result = prepare_facebook_group_share(FACEBOOK_MARKETPLACE.public_draft(draft), group)
+    status = str(result.get("status") or "human_action_required")
+    if status not in {"group_share_prepared", "human_action_required"}:
+        status = "human_action_required"
+    updated = FACEBOOK_MARKETPLACE.update_status(workspace_id, draft_id, status, result={**result, "group_id": group_id})
+    return {"result": result, "draft": FACEBOOK_MARKETPLACE.public_draft(updated), "group": group}
 
 
 def workspace_gmail(workspace_id: str) -> GmailGateway:
@@ -422,6 +653,16 @@ def gmail_for_request(
 
 def workspace_ebay(workspace_id: str, *, require_assignment: bool = True) -> EbayGateway:
     return ACCOUNTS.ebay(workspace_id) if require_assignment else EbayGateway(env=ACCOUNTS.ebay_env(workspace_id))
+
+
+def workspace_ebay_notifications(workspace_id: str) -> EbayNotificationConsumer:
+    return ACCOUNTS.ebay_notifications(workspace_id)
+
+
+def ebay_automatic_notification_status(workspace_id: str) -> Dict[str, Any]:
+    status = EBAY_NOTIFICATION_POLLER.status(workspace_id)
+    status["workspace_enabled"] = ACCOUNTS.ebay_automatic_notifications_enabled(workspace_id)
+    return status
 
 
 def workspace_instagram_env(workspace_id: str) -> Dict[str, str]:
@@ -1816,6 +2057,7 @@ def _antiques_model_analysis(
     task_type: str = "media",
     *,
     cancel_event: Any = None,
+    timeout_seconds: int = 90,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     request = {
         "task_type": task_type,
@@ -1828,11 +2070,261 @@ def _antiques_model_analysis(
         "context": {"current_room": {"id": ANTIQUES_ROOM_ID, "title": "Museum", "active_persona": "Leo"}},
         "attachment_paths": [str(row.get("path") or "") for row in attachments],
         "artifact_output_dir": "",
+        "timeout_seconds": max(10, min(int(timeout_seconds), 180)),
     }
     if cancel_event is not None:
         request["cancel_event"] = cancel_event
     result = invoke_codex(request)
     return _antiques_json_result(result, {}), result
+
+
+def animation_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace = STORE.get_workspace(str(workspace_id or ""))
+    session = STORE.find_session(str(session_id or ""))
+    if str(session.get("workspace_id") or "") != str(workspace.get("workspace_id") or ""):
+        raise KeyError("Session does not belong to workspace")
+    if str(session.get("active_room") or "") != ANIMATION_STUDIO_ROOM_ID:
+        raise ValueError("Animation Studio is available only in the Animation Studio room.")
+    return {"workspace": workspace, "session": session}
+
+
+def animation_bootstrap(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    animation_context(workspace_id, session_id)
+    return ANIMATION.bootstrap(workspace_id)
+
+
+def animation_source_file(workspace_id: str, session_id: str, file_id: str, source_session_id: str = "") -> Dict[str, Any]:
+    source_session = str(source_session_id or session_id).strip()
+    source_context = STORE.find_session(source_session)
+    if str(source_context.get("workspace_id") or "") != workspace_id:
+        raise KeyError("Source file session does not belong to workspace")
+    matches = STORE.resolve_files(workspace_id, source_session, [str(file_id or "")])
+    if not matches:
+        raise KeyError("The selected file is unavailable in this workspace")
+    return matches[0]
+
+
+def generate_animation_lipsync(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    animation_context(workspace_id, session_id)
+    source = animation_source_file(
+        workspace_id,
+        session_id,
+        str(payload.get("file_id") or ""),
+        str(payload.get("source_session_id") or ""),
+    )
+    raw_binding = payload.get("binding") if isinstance(payload.get("binding"), dict) else {}
+    raw_shapes = raw_binding.get("shapes") if isinstance(raw_binding.get("shapes"), dict) else {}
+
+    def safe_id(value: Any) -> str:
+        return re.sub(r"[^A-Za-z0-9_-]+", "", str(value or ""))[:100]
+
+    def bounded(value: Any, default: float, minimum: float, maximum: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return min(maximum, max(minimum, number))
+
+    binding = {
+        "track_id": safe_id(raw_binding.get("track_id")),
+        "rig_id": safe_id(raw_binding.get("rig_id")),
+        "character": " ".join(str(raw_binding.get("character") or "Character").split())[:160],
+        "base_asset_id": safe_id(raw_binding.get("base_asset_id")),
+        "shapes": {shape: safe_id(raw_shapes.get(shape)) for shape in "ABCDEFGHX"},
+        "mouth_x_percent": bounded(raw_binding.get("mouth_x_percent"), 50, -100, 200),
+        "mouth_y_percent": bounded(raw_binding.get("mouth_y_percent"), 58, -100, 200),
+        "mouth_width_percent": bounded(raw_binding.get("mouth_width_percent"), 16, 1, 100),
+    }
+    extended_shapes = "".join(shape for shape in "GHX" if binding["shapes"].get(shape))
+    cues = ANIMATION.generate_lipsync(
+        Path(str(source.get("path") or "")),
+        str(payload.get("transcript") or ""),
+        str(payload.get("recognizer") or "pocketSphinx"),
+        extended_shapes,
+    )
+    cues["binding"] = binding
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(source.get("name") or "voice-over")).stem).strip("-") or "voice-over"
+    content = (json.dumps(cues, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    saved = STORE.save_file(
+        workspace_id,
+        session_id,
+        f"{stem}-mouth-cues.json",
+        content,
+        "application/json",
+        source="generated",
+        source_path=str(source.get("path") or ""),
+        kind="generated_document",
+        scope="room",
+        scope_ref=ANIMATION_STUDIO_ROOM_ID,
+        description=f"Rhubarb mouth cues generated from {source.get('name') or 'voice-over'}.",
+        uploaded_by_session_id=session_id,
+        metadata={"animation": {
+            "operation": "lip_sync",
+            "source_file_id": source.get("file_id"),
+            "track_id": binding["track_id"],
+            "rig_id": binding["rig_id"],
+            "character": binding["character"],
+            "recognizer": cues["recognizer"],
+            "extended_shapes": cues["extended_shapes"],
+            "cue_count": len(cues["mouthCues"]),
+        }},
+    )
+    return {
+        "status": "completed",
+        "cue_count": len(cues["mouthCues"]),
+        "duration": cues["duration"],
+        "recognizer": cues["recognizer"],
+        "extended_shapes": cues["extended_shapes"],
+        "mouth_cues": cues["mouthCues"],
+        "binding": binding,
+        "file": public_file(saved),
+    }
+
+
+def launch_animation_editor(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    animation_context(workspace_id, session_id)
+    if not payload.get("confirm"):
+        return {"status": "confirmation_required", "message": "Confirm opening the selected file in the local editor."}
+    source = animation_source_file(
+        workspace_id,
+        session_id,
+        str(payload.get("file_id") or ""),
+        str(payload.get("source_session_id") or ""),
+    )
+    tool = str(payload.get("tool") or "").lower()
+    source_path = Path(str(source.get("path") or ""))
+    starter = None
+    launch_path = source_path
+    if tool == "synfig" and source_path.suffix.lower() not in {".sif", ".sifz", ".sfg"}:
+        starter_content = ANIMATION.build_synfig_starter(source_path, str(source.get("name") or source_path.stem))
+        starter_name = f"{source_path.stem}-synfig-starter.sif"
+        starter = STORE.save_file(
+            workspace_id,
+            session_id,
+            starter_name,
+            starter_content,
+            "application/xml",
+            source="generated",
+            kind="generated_document",
+            scope="room",
+            scope_ref=ANIMATION_STUDIO_ROOM_ID,
+            description=f"Synfig starter document for {source.get('name') or source_path.name}.",
+            uploaded_by_session_id=session_id,
+            metadata={"animation": {
+                "operation": "synfig_starter",
+                "source_file_id": source.get("file_id"),
+                "source_name": source.get("name"),
+            }},
+        )
+        launch_path = Path(str(starter.get("path") or ""))
+    launched = ANIMATION.launch_editor(tool, launch_path)
+    result = {**launched, "file": public_file(source)}
+    if starter:
+        result["document"] = public_file(starter)
+    return result
+
+
+def _animation_project_for_payload(workspace_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw_project = payload.get("project") if isinstance(payload.get("project"), dict) else None
+    if raw_project is not None:
+        return raw_project
+    project_id = str(payload.get("project_id") or "").strip()
+    if not project_id:
+        raise ValueError("Select or save an Animation Studio project first.")
+    project = ANIMATION.load_project(workspace_id, project_id)
+    if not project:
+        raise KeyError("The selected Animation Studio project does not exist")
+    return project
+
+
+def export_animation_shot(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    animation_context(workspace_id, session_id)
+    if not payload.get("confirm"):
+        return {
+            "status": "confirmation_required",
+            "message": "Confirm exporting this storyboard shot as a Synfig package.",
+        }
+    project = _animation_project_for_payload(workspace_id, payload)
+    shot_id = str(payload.get("shot_id") or "").strip()
+    if not shot_id:
+        raise ValueError("Select a storyboard shot to export.")
+    source_files: Dict[str, Dict[str, Any]] = {}
+    rows = list(project.get("assets") or []) + list(project.get("audio_tracks") or [])
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("file_id"):
+            continue
+        file_id = str(row.get("file_id") or "")
+        source_files[file_id] = animation_source_file(
+            workspace_id,
+            session_id,
+            file_id,
+            str(row.get("source_session_id") or ""),
+        )
+    package = ANIMATION.build_shot_package(project, shot_id, source_files)
+    saved = STORE.save_file(
+        workspace_id,
+        session_id,
+        package["filename"],
+        package["content"],
+        "application/zip",
+        source="generated",
+        kind="generated_file",
+        scope="room",
+        scope_ref=ANIMATION_STUDIO_ROOM_ID,
+        description=f"Synfig shot package for {package['manifest']['shot']['title']}.",
+        uploaded_by_session_id=session_id,
+        metadata={"animation": {
+            "operation": "synfig_shot_package",
+            "project_id": package["manifest"]["project"]["project_id"],
+            "shot_id": shot_id,
+            "asset_count": len(package["manifest"]["assets"]),
+            "audio_count": len(package["manifest"]["audio_tracks"]),
+            "cue_take_count": len(package["manifest"]["lip_sync"]["takes"]),
+        }},
+    )
+    return {
+        "status": "completed",
+        "file": public_file(saved),
+        "manifest": {
+            "shot": package["manifest"]["shot"],
+            "asset_count": len(package["manifest"]["assets"]),
+            "audio_count": len(package["manifest"]["audio_tracks"]),
+            "cue_take_count": len(package["manifest"]["lip_sync"]["takes"]),
+        },
+        "files": [public_file(row) for row in STORE.list_files(workspace_id, session_id)],
+    }
+
+
+def import_animation_render(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    animation_context(workspace_id, session_id)
+    if not payload.get("confirm"):
+        return {
+            "status": "confirmation_required",
+            "message": "Confirm importing this rendered shot into the project.",
+        }
+    file_id = str(payload.get("file_id") or "").strip()
+    source_session_id = str(payload.get("source_session_id") or session_id).strip()
+    source = animation_source_file(workspace_id, session_id, file_id, source_session_id)
+    source["source_session_id"] = source_session_id
+    project = _animation_project_for_payload(workspace_id, payload)
+    shot_id = str(payload.get("shot_id") or "").strip()
+    if not shot_id:
+        raise ValueError("Select the storyboard shot for this render.")
+    saved_project = ANIMATION.attach_render(workspace_id, project, shot_id, source)
+    return {
+        "status": "completed",
+        "project": saved_project,
+        "projects": ANIMATION.list_projects(workspace_id),
+        "file": public_file(source),
+    }
 
 
 def _museum_unique_strings(values: Any, limit: int = 30) -> list[str]:
@@ -2063,6 +2555,7 @@ def _antiques_source_excerpt(row: Dict[str, Any]) -> Dict[str, Any]:
         "result_text": str(row.get("result_text") or row.get("raw_result_text") or "")[:10000],
         "links": list(row.get("links") or [])[:20],
         "opened_sources": list(row.get("opened_sources") or [])[:5],
+        "error": str(row.get("error") or "")[:1000],
     }
 
 
@@ -2365,8 +2858,239 @@ def antiques_report_text(case: Dict[str, Any]) -> str:
         )
     if report.get("missing_photos"):
         lines.append("Helpful additional photos: " + ", ".join(str(value) for value in report["missing_photos"][:6]))
+    warnings = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+    for warning in warnings[:3]:
+        value = " ".join(str(warning or "").split())
+        if value:
+            lines.append(f"Research limitation: {value}")
+    source_errors = report.get("source_errors") if isinstance(report.get("source_errors"), list) else []
+    for error in source_errors[:2]:
+        if not isinstance(error, dict):
+            continue
+        detail = " ".join(str(error.get("error") or "").split())[:300]
+        if detail:
+            lines.append(f"{str(error.get('source_id') or 'Source')} unavailable: {detail}")
     lines.append("This is research-supported guidance, not authentication or a professional appraisal.")
     return "\n".join(lines)
+
+
+MAX_ITEM_SELECTIONS = 12
+
+
+def _validated_item_selections(values: Any, image_size: tuple[int, int]) -> list[Dict[str, Any]]:
+    if not isinstance(values, list) or not values:
+        raise ValueError("Draw at least one item box")
+    if len(values) > MAX_ITEM_SELECTIONS:
+        raise ValueError(f"Select no more than {MAX_ITEM_SELECTIONS} items in one batch")
+    image_width, image_height = image_size
+    rows: list[Dict[str, Any]] = []
+    identifiers: set[str] = set()
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, dict):
+            raise ValueError(f"Item {index} is invalid")
+        selection_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(value.get("selection_id") or ""))[:80]
+        if not selection_id:
+            selection_id = f"selection_{index:02d}"
+        if selection_id in identifiers:
+            raise ValueError("Item selection identifiers must be unique")
+        identifiers.add(selection_id)
+        region = value.get("region") if isinstance(value.get("region"), dict) else {}
+        try:
+            x = float(region.get("x"))
+            y = float(region.get("y"))
+            width = float(region.get("width"))
+            height = float(region.get("height"))
+        except (TypeError, ValueError):
+            raise ValueError(f"Item {index} has invalid box coordinates") from None
+        if not all(math.isfinite(number) for number in (x, y, width, height)):
+            raise ValueError(f"Item {index} has invalid box coordinates")
+        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > 1.000001 or y + height > 1.000001:
+            raise ValueError(f"Item {index} box must stay inside the source photo")
+        left = max(0, min(image_width - 1, round(x * image_width)))
+        top = max(0, min(image_height - 1, round(y * image_height)))
+        right = max(left + 1, min(image_width, round((x + width) * image_width)))
+        bottom = max(top + 1, min(image_height, round((y + height) * image_height)))
+        if width < 0.01 or height < 0.01 or right - left < 32 or bottom - top < 32:
+            raise ValueError(f"Item {index} box is too small; draw at least 32 pixels and 1% in each direction")
+        rows.append({
+            "selection_id": selection_id,
+            "label": " ".join(str(value.get("label") or f"Item {index}").split())[:120] or f"Item {index}",
+            "region": {"x": x, "y": y, "width": width, "height": height},
+            "region_pixels": {"x": left, "y": top, "width": right - left, "height": bottom - top},
+        })
+    return rows
+
+
+def _item_selection_crop(source_path: Path, region_pixels: Dict[str, int]) -> bytes:
+    with Image.open(source_path) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+        left = int(region_pixels["x"])
+        top = int(region_pixels["y"])
+        right = left + int(region_pixels["width"])
+        bottom = top + int(region_pixels["height"])
+        crop = image.crop((left, top, right, bottom))
+        output = io.BytesIO()
+        crop.save(output, "JPEG", quality=94, optimize=True)
+        return output.getvalue()
+
+
+def _lens_sourced_matches(source: Dict[str, Any]) -> list[Dict[str, str]]:
+    rows: list[Dict[str, str]] = []
+    for value in source.get("links") or []:
+        if isinstance(value, dict):
+            url = str(value.get("url") or value.get("href") or "")
+            claim = str(value.get("title") or value.get("text") or "Visual match")
+        else:
+            url = str(value or "")
+            claim = "Visual match"
+        if re.match(r"^https?://", url, re.IGNORECASE):
+            rows.append({"claim": " ".join(claim.split())[:600], "url": url[:2000], "source": "google_lens", "source_id": "google_lens", "source_url": url[:2000]})
+        if len(rows) >= 20:
+            break
+    return rows
+
+
+def submit_item_selection_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    session = STORE.find_session(session_id)
+    workspace_id = str(payload.get("workspace_id") or session.get("workspace_id") or "").strip()
+    antiques_context(workspace_id, session_id)
+    source_file_id = str(payload.get("source_file_id") or "").strip()
+    source_rows = STORE.resolve_files(workspace_id, session_id, [source_file_id])
+    if len(source_rows) != 1 or not str(source_rows[0].get("content_type") or "").startswith("image/"):
+        raise ValueError("Choose one available Museum image")
+    source = source_rows[0]
+    with Image.open(Path(str(source["path"]))) as opened:
+        oriented = ImageOps.exif_transpose(opened)
+        image_size = oriented.size
+    selections = _validated_item_selections(payload.get("selections"), image_size)
+    search_mode = "visual_match" if str(payload.get("search_mode") or "").lower() == "visual_match" else "full"
+    research_depth = "deep" if str(payload.get("research_depth") or "").lower() == "deep" else "quick"
+    confirmed = bool(payload.get("confirm_external"))
+    allowed, consent_basis = ANTIQUES.may_upload_photo(workspace_id, session_id, ANTIQUES_ROOM_ID, confirmed)
+    if not allowed:
+        return {
+            "status": "confirmation_required",
+            "message": f"Confirm sending {len(selections)} cropped item image{'s' if len(selections) != 1 else ''} to Google Lens.",
+            "pending": {"destination": "Google Lens", "crop_count": len(selections), "search_mode": search_mode},
+            "shopping_mode": ANTIQUES.shopping_status(workspace_id, session_id, ANTIQUES_ROOM_ID),
+        }
+    if consent_basis == "shopping_mode":
+        ANTIQUES.touch_shopping_mode(workspace_id, session_id, ANTIQUES_ROOM_ID)
+    batch_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(payload.get("batch_id") or ""))[:80] or f"batch_{uuid.uuid4().hex[:16]}"
+    safe_payload = {
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "source_file_id": source_file_id,
+        "batch_id": batch_id,
+        "search_mode": search_mode,
+        "research_depth": research_depth,
+        "selections": selections,
+        "operation": "item_selection_research",
+    }
+
+    def runner(job_id: str, progress: Any, cancelled: Any) -> Dict[str, Any]:
+        results: list[Dict[str, Any]] = []
+        total = len(selections)
+        cancel_view = type("CancellationView", (), {"is_set": lambda self: bool(cancelled())})()
+        for index, selection in enumerate(selections, start=1):
+            if cancelled():
+                break
+            progress(max(6, round(((index - 1) / total) * 92)), f"Researching item {index} of {total}: {selection['label']}")
+            crop_file: Dict[str, Any] | None = None
+            try:
+                crop_content = _item_selection_crop(Path(str(source["path"])), selection["region_pixels"])
+                provenance = {
+                    "batch_id": batch_id,
+                    "selection_id": selection["selection_id"],
+                    "label": selection["label"],
+                    "source_file_id": source_file_id,
+                    "region_normalized": selection["region"],
+                    "region_pixels": selection["region_pixels"],
+                }
+                crop_file = STORE.save_file(
+                    workspace_id,
+                    session_id,
+                    f"selected-item-{index:02d}.jpg",
+                    crop_content,
+                    "image/jpeg",
+                    source="generated",
+                    kind="generated_image",
+                    scope="room",
+                    scope_ref=ANTIQUES_ROOM_ID,
+                    description=f"Museum selected item crop: {selection['label']}",
+                    uploaded_by_session_id=session_id,
+                    metadata={"item_selection": provenance},
+                )
+                crop_public = public_file(crop_file)
+                case_attachment_ids = [source_file_id, str(crop_file["file_id"])]
+                if search_mode == "full":
+                    researched = antiques_research({
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "attachment_ids": [crop_file["file_id"]],
+                        "case_attachment_ids": case_attachment_ids,
+                        "mode": research_depth,
+                        "notes": f"Selected item label: {selection['label']}",
+                        "confirm_external": True,
+                        "selection_provenance": provenance,
+                        "selection_artifact": crop_public,
+                    }, cancel_event=cancel_view)
+                    case = researched["case"]
+                    sources = researched.get("sources") or []
+                else:
+                    sanitized = ANTIQUES.prepare_external_image(workspace_id, str(crop_file["file_id"]), Path(str(crop_file["path"])))
+                    audit = ANTIQUES.log_external_upload(workspace_id, session_id, "Google Lens", [str(crop_file["file_id"])], consent_basis)
+                    lens = search_google_lens(sanitized, cancel_event=cancel_view)
+                    source_result = {**_antiques_source_excerpt(lens), "source_id": "google_lens", "upload_id": audit["upload_id"]}
+                    report = {
+                        "identification": selection["label"],
+                        "category": "visual match",
+                        "confidence": "low",
+                        "observed_facts": ["User-selected item crop submitted for visual-match research."],
+                        "sourced_matches": _lens_sourced_matches(source_result),
+                        "valuation": {"currency": str(ANTIQUES.settings(workspace_id).get("currency") or "USD"), "conservative_low": None, "likely_high": None},
+                        "warnings": ["Visual matches are leads, not identification, authentication, or valuation."],
+                        "research_mode": "visual_match",
+                        "selection_provenance": provenance,
+                        "evidence_artifacts": [crop_public],
+                        "provenance": [{"statement": f"Crop {selection['label']} was selected from source attachment {source_file_id}.", "source_ref": source_file_id}],
+                    }
+                    case = ANTIQUES.save_case(workspace_id, session_id, case_attachment_ids, report, "visual_match", selection["label"], source_results=[source_result])
+                    sources = [source_result]
+                results.append({
+                    "selection_id": selection["selection_id"],
+                    "label": selection["label"],
+                    "status": "completed",
+                    "crop": crop_public,
+                    "case_id": case.get("case_id"),
+                    "case": case,
+                    "sources": sources,
+                })
+            except RequestCancelled:
+                break
+            except Exception as exc:
+                results.append({
+                    "selection_id": selection["selection_id"],
+                    "label": selection["label"],
+                    "status": "failed",
+                    "crop": public_file(crop_file) if crop_file else None,
+                    "error": str(exc)[:1000],
+                })
+        completed = len([row for row in results if row["status"] == "completed"])
+        failed = len([row for row in results if row["status"] == "failed"])
+        return {
+            "status": "canceled" if cancelled() else "partial" if failed else "completed",
+            "batch_id": batch_id,
+            "search_mode": search_mode,
+            "source_file_id": source_file_id,
+            "completed_count": completed,
+            "failed_count": failed,
+            "remaining_count": total - len(results),
+            "items": results,
+        }
+
+    return ITEM_SELECTION_JOBS.submit(safe_payload, runner)
 
 
 def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict[str, Any]:
@@ -2406,9 +3130,13 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         "(array), frame_observations (array), missing_photos (array), search_query, and confidence. Do not estimate value yet. "
         f"User notes: {str(payload.get('notes') or '')[:2000]}"
     )
-    visual, visual_route = _antiques_model_analysis(visual_prompt, attachments, "media")
-    query = " ".join(str(visual.get(key) or "") for key in ("search_query", "identification", "signature_or_mark", "medium_or_material"))
-    query = " ".join(query.split())[:500] or "antique vintage item identification sold comparables"
+    visual: Dict[str, Any] = {}
+    visual_route: Dict[str, Any] = {
+        "provider": "not_used",
+        "model": "none",
+        "reasoning_effort": "none",
+        "task_type": "media",
+    }
     source_results: list[Dict[str, Any]] = []
     source_errors: list[Dict[str, str]] = []
     lens_limit = min(len(attachments), 4 if mode == "deep" else 2)
@@ -2416,10 +3144,34 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         sanitized = ANTIQUES.prepare_external_image(workspace_id, str(row["file_id"]), Path(str(row["path"])))
         audit = ANTIQUES.log_external_upload(workspace_id, session_id, "Google Lens", [str(row["file_id"])], consent_basis)
         try:
-            lens = search_google_lens(sanitized, cancel_event=cancel_event)
+            lens = search_google_lens(
+                sanitized,
+                cancel_event=cancel_event,
+                timeout=45 if mode == "deep" else 35,
+            )
             source_results.append({**_antiques_source_excerpt(lens), "source_id": "google_lens", "upload_id": audit["upload_id"]})
         except GoogleChromeSearchError as exc:
             source_errors.append({"source_id": "google_lens", "error": str(exc), "manual_url": "https://lens.google.com/"})
+    limited_lens_failure = mode == "quick" and not source_results
+    if mode == "deep" or limited_lens_failure:
+        visual, visual_route = _antiques_model_analysis(
+            visual_prompt,
+            attachments,
+            "media",
+            cancel_event=cancel_event,
+            timeout_seconds=120 if mode == "deep" else 75,
+        )
+    lens_query = " ".join(
+        str(result.get("title") or result.get("snippet") or "")
+        for source in source_results
+        for result in list(source.get("results") or [])[:6]
+        if isinstance(result, dict)
+    )
+    query = " ".join(
+        str(visual.get(key) or "")
+        for key in ("search_query", "identification", "signature_or_mark", "medium_or_material")
+    ) or lens_query
+    query = " ".join(query.split())[:500] or "antique vintage item identification sold comparables"
     searches = [("google", query), ("ebay", query)]
     if mode == "deep":
         searches.extend([
@@ -2429,12 +3181,20 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
             ("smithsonian", f"{query} site:si.edu OR site:americanart.si.edu"),
             ("worthpoint", f"{query} site:worthpoint.com sold price"),
         ])
-    for source_id, source_query in searches:
+    for source_id, source_query in ([] if limited_lens_failure else searches):
         try:
             found = (
-                search_ebay_product_research(source_query, cancel_event=cancel_event)
+                search_ebay_product_research(
+                    source_query,
+                    cancel_event=cancel_event,
+                    timeout=45 if mode == "deep" else 30,
+                )
                 if source_id == "ebay"
-                else search_google(f"Google search for {source_query}", cancel_event=cancel_event)
+                else search_google(
+                    f"Google search for {source_query}",
+                    cancel_event=cancel_event,
+                    timeout=45 if mode == "deep" else 30,
+                )
             )
             source_results.append({**_antiques_source_excerpt(found), "source_id": source_id})
         except GoogleChromeSearchError as exc:
@@ -2464,7 +3224,39 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         "replacement_cost_high,contribution_notes}, warnings (array). Never claim definitive authentication or appraisal.\n\n"
         + json.dumps({"visual": visual, "sources": source_results, "source_errors": source_errors}, ensure_ascii=False)[:50000]
     )
-    report, synthesis_route = _antiques_model_analysis(synthesis_prompt, [], "search_deep")
+    if limited_lens_failure:
+        report = {
+            "identification": visual.get("identification") or "Item requires additional research",
+            "category": visual.get("category") or "unknown",
+            "artist_or_maker": "",
+            "signature_or_mark": visual.get("signature_or_mark") or "",
+            "medium_or_material": visual.get("medium_or_material") or "",
+            "likely_period": visual.get("likely_period") or "",
+            "observed_facts": visual.get("observed_features") or [],
+            "condition_notes": visual.get("condition_notes") or [],
+            "missing_photos": visual.get("missing_photos") or [],
+            "confidence": visual.get("confidence") or "low",
+            "price_observations": [],
+            "valuation": {"currency": "USD", "conservative_low": None, "likely_high": None},
+            "frame": {"assessment": "; ".join(str(value) for value in visual.get("frame_observations") or [])},
+            "warnings": [
+                "Google Lens returned no usable visual-match evidence, so broader searches and sold-comparable valuation were not attempted."
+            ],
+        }
+        synthesis_route = {
+            "provider": "not_used",
+            "model": "none",
+            "reasoning_effort": "none",
+            "task_type": "search_deep",
+        }
+    else:
+        report, synthesis_route = _antiques_model_analysis(
+            synthesis_prompt,
+            attachments if mode == "quick" and not visual else [],
+            "search_deep",
+            cancel_event=cancel_event,
+            timeout_seconds=120 if mode == "deep" else 90,
+        )
     if not report:
         report = {
             "identification": visual.get("identification") or "Item requires additional research",
@@ -2486,10 +3278,33 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
     report["source_errors"] = source_errors
     report["research_mode"] = mode
     report["research_disclaimer"] = "Research-supported estimate only; not authentication or a professional appraisal."
+    selection_provenance = payload.get("selection_provenance") if isinstance(payload.get("selection_provenance"), dict) else {}
+    if selection_provenance:
+        report["selection_provenance"] = selection_provenance
+        report["provenance"] = [
+            *(report.get("provenance") if isinstance(report.get("provenance"), list) else []),
+            {
+                "statement": f"Crop {selection_provenance.get('label') or selection_provenance.get('selection_id') or 'item'} was selected from source attachment {selection_provenance.get('source_file_id') or ''}.",
+                "source_ref": str(selection_provenance.get("source_file_id") or ""),
+            },
+        ]
+    selection_artifact = payload.get("selection_artifact") if isinstance(payload.get("selection_artifact"), dict) else {}
+    if selection_artifact:
+        report["evidence_artifacts"] = [
+            *(report.get("evidence_artifacts") if isinstance(report.get("evidence_artifacts"), list) else []),
+            selection_artifact,
+        ]
+    case_attachment_ids = [
+        str(value) for value in payload.get("case_attachment_ids", attachment_ids)
+        if str(value).strip()
+    ]
+    resolved_case_attachments = STORE.resolve_files(workspace_id, session_id, case_attachment_ids)
+    if len(resolved_case_attachments) != len(set(case_attachment_ids)):
+        raise ValueError("One or more Antiques case attachments are unavailable")
     case = ANTIQUES.save_case(
         workspace_id,
         session_id,
-        attachment_ids,
+        case_attachment_ids,
         report,
         mode,
         str(payload.get("notes") or ""),
@@ -2498,7 +3313,7 @@ def antiques_research(payload: Dict[str, Any], cancel_event: Any = None) -> Dict
         payload.get("valuation_overrides") or {},
     )
     return {
-        "status": "completed",
+        "status": "limited" if limited_lens_failure else "completed",
         "case": case,
         "report": report,
         "sources": source_results,
@@ -3066,6 +3881,13 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "saved_profile": RESUME.load_profile(workspace_id),
             "latest_saved_project": saved_projects[0] if saved_projects else None,
         }
+    if active_room == ANIMATION_STUDIO_ROOM_ID:
+        animation_projects = ANIMATION.list_projects(workspace_id)
+        context["animation_studio"] = {
+            "tools": ANIMATION.tools(),
+            "latest_saved_project": animation_projects[0] if animation_projects else None,
+            "default_pipeline": "Synfig Studio + Rhubarb Lip Sync + Video Production",
+        }
     context["current_local_date"] = datetime.now().astimezone().date().isoformat()
     context["event_time_scope"] = (
         "upcoming_only"
@@ -3127,6 +3949,20 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "Separate visible observations, sourced evidence, and inference. Distinguish frame value from artwork value. Never claim definitive "
                 "authentication, professional appraisal, gemstone identity, or precious-metal content from photographs alone."
                 if active_room == ANTIQUES_ROOM_ID else ""
+            )
+            + (
+                " As Beta, direct video-production work across pre-production, footage review, edit planning, post-production, captions, export specifications, "
+                "and delivery. Preserve source media and keep proposed edits distinct from completed edits. Never claim a video was edited, rendered, exported, "
+                "or delivered unless the governed request includes matching execution and verified artifact evidence. Be explicit when a requested timeline or "
+                "rendering capability is not available in the current workspace."
+                if active_room == VIDEO_PRODUCTION_ROOM_ID else ""
+            )
+            + (
+                " As Beta in Animation Studio, direct commercial-safe 2.5D animation work across reusable sets, character rigs, visual storyboards, recorded voice-over, lip sync, "
+                "shot blocking, and rendering. Keep image placement and audio timing non-destructive; use GIMP and Audacity for full source editing. Prefer Synfig Studio plus Rhubarb "
+                "for the current Eternia Late Night workflow, and hand verified renders to Video Production. "
+                "Never claim a tool is installed or a cue file, animation, or render exists without matching execution and verified artifact evidence."
+                if active_room == ANIMATION_STUDIO_ROOM_ID else ""
             )
         ),
         "user_prompt": governed_prompt,
@@ -3360,12 +4196,18 @@ TOOLS = [
     {"name": "office.facebook_profile_get", "description": "Read bounded visible profile information for one Facebook profile through the dedicated local Chrome profile."},
     {"name": "office.facebook_message_draft", "description": "Open a Facebook conversation and compose a message for visible human review without sending it."},
     {"name": "office.facebook_message_send", "description": "Send a Facebook message only when confirm=true; otherwise return a confirmation requirement."},
+    {"name": "office.facebook_marketplace_draft_create", "description": "Create or update a workspace-scoped Facebook Marketplace draft from ledgered photo IDs; this does not open Facebook or publish."},
+    {"name": "office.facebook_marketplace_prepare", "description": "Fill a visible Facebook Marketplace item form from a saved draft and stop before Next or Publish."},
+    {"name": "office.facebook_marketplace_resume", "description": "Check for matching visible evidence after the user manually publishes a prepared Marketplace listing."},
+    {"name": "office.facebook_group_share_prepare", "description": "Prepare a reviewed Marketplace listing link in one approved Facebook group and stop before Post."},
     {"name": "ebay.status", "description": "Read the workspace-scoped eBay seller connection status without changing the account."},
     {"name": "ebay.inventory_list", "description": "List eBay inventory items for the seller account assigned to this workspace."},
     {"name": "ebay.offer_list", "description": "List eBay offers and listings for the seller account assigned to this workspace."},
     {"name": "ebay.order_list", "description": "List completed-checkout eBay orders for the assigned seller account."},
     {"name": "ebay.transaction_list", "description": "List eBay seller financial transactions for the assigned account."},
     {"name": "ebay.policy_list", "description": "List the eBay payment, fulfillment, and return policies required for listings."},
+    {"name": "ebay.notification_check", "description": "Pull verified eBay events into the assigned workspace and acknowledge each remote queue item only after durable local storage."},
+    {"name": "ebay.notification_list", "description": "List recent locally stored eBay seller alerts for the assigned workspace without contacting eBay or Cloudflare."},
     {"name": "ebay.listing_preview", "description": "Validate and preview a proposed eBay listing locally without changing eBay."},
     {"name": "ebay.listing_publish", "description": "Create inventory, offer, and a live eBay listing only when confirm=true."},
     {"name": "ebay.offer_update", "description": "Replace an existing eBay offer with reviewed offer data only when confirm=true."},
@@ -3436,7 +4278,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
         )
 
     def _reject_remote(self) -> None:
-        self._json({"error": "This device is not paired with Veridex. Open the private pairing URL shown by .\\veridex.ps1 tailscale."}, HTTPStatus.UNAUTHORIZED)
+        self._json({"error": "This device is not paired with Veridex. Open the one-time pairing URL shown by .\\veridex.ps1 tailscale or .\\veridex.ps1 lan."}, HTTPStatus.UNAUTHORIZED)
 
     def _pair_remote(self, token: str) -> None:
         access = remote_access_state()
@@ -3451,7 +4293,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
         save_remote_access_state(access)
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/")
-        self.send_header("Set-Cookie", f"{REMOTE_COOKIE}={session_token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000")
+        cookie_flags = "Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
+        if not bool(getattr(self.server, "allow_insecure_remote_cookie", False)):
+            cookie_flags += "; Secure"
+        self.send_header("Set-Cookie", f"{REMOTE_COOKIE}={session_token}; {cookie_flags}")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
@@ -3593,6 +4438,12 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 session_id = str(query.get("session_id", [""])[0]).strip()
                 workspace_context(workspace_id, session_id)
                 value = ACCOUNTS.public_status(workspace_id, shared_gmail_status=GMAIL.connection_status())
+                if value["ebay"].get("assigned"):
+                    try:
+                        value["ebay"]["notifications"] = workspace_ebay_notifications(workspace_id).status()
+                        value["ebay"]["notifications"]["automatic"] = ebay_automatic_notification_status(workspace_id)
+                    except EbayNotificationError as exc:
+                        value["ebay"]["notifications"] = {"configured": False, "error": str(exc)}
                 instagram = ACCOUNTS.instagram_config(workspace_id)
                 if instagram:
                     try:
@@ -3604,6 +4455,24 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         })
                     except Exception as exc:
                         value["instagram"]["error"] = str(exc)
+                try:
+                    bridge_status = facebook_profile_status()
+                    value["facebook"] = {
+                        "configured": bool(bridge_status.get("configured")),
+                        "connected": bool(bridge_status.get("signed_in")),
+                        "username": str(bridge_status.get("username") or ""),
+                        "requires_interaction": bool(bridge_status.get("requires_interaction")),
+                        "session_evidence": str(bridge_status.get("session_evidence") or ""),
+                        "scope": "dedicated_repository_profile",
+                    }
+                except Exception as exc:
+                    value["facebook"] = {
+                        "configured": False,
+                        "connected": False,
+                        "username": "",
+                        "scope": "dedicated_repository_profile",
+                        "error": str(exc),
+                    }
                 oauth_log = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
                 if not value["gmail"].get("connected") and oauth_log.is_file():
                     try:
@@ -3623,8 +4492,17 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     except OSError:
                         pass
                 self._json(value)
+            elif parsed.path == "/api/facebook/marketplace":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                self._json(facebook_marketplace_bootstrap(workspace_id, session_id))
             elif parsed.path == "/api/resume":
                 self._json(resume_bootstrap(
+                    str(query.get("workspace_id", [""])[0]).strip(),
+                    str(query.get("session_id", [""])[0]).strip(),
+                ))
+            elif parsed.path == "/api/animation":
+                self._json(animation_bootstrap(
                     str(query.get("workspace_id", [""])[0]).strip(),
                     str(query.get("session_id", [""])[0]).strip(),
                 ))
@@ -3640,6 +4518,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(ANTIQUES.bootstrap(workspace_id, session_id, str(session.get("active_room") or "")))
             elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(MUSEUM_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
+            elif re.fullmatch(r"/api/antiques/item-selection/jobs/[A-Za-z0-9_-]+", parsed.path):
+                self._json(ITEM_SELECTION_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif re.fullmatch(r"/api/antiques/price-search/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(PRICE_SEARCH_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
@@ -3779,6 +4659,55 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 ACCOUNTS.assign_instagram(workspace_id, username)
                 result = login_instagram(env=ACCOUNTS.instagram_env(workspace_id, username=username, password=password))
                 self._json({"instagram": {"assigned": True, "username": username, **result}})
+            elif parsed.path == "/api/integrations/facebook/connect":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                result = login_facebook()
+                self._json({"facebook": {"connected": bool(result.get("signed_in")), **result}})
+            elif parsed.path == "/api/integrations/facebook/verify":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                result = facebook_profile_status()
+                self._json({"facebook": {"connected": bool(result.get("signed_in")), **result}})
+            elif parsed.path == "/api/facebook/marketplace/groups/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                group = FACEBOOK_MARKETPLACE.save_group(workspace_id, payload)
+                self._json({"group": group, **facebook_marketplace_bootstrap(workspace_id, session_id)})
+            elif parsed.path == "/api/facebook/marketplace/groups/delete":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                deleted = FACEBOOK_MARKETPLACE.delete_group(workspace_id, str(payload.get("group_id") or ""))
+                self._json({"deleted": deleted, **facebook_marketplace_bootstrap(workspace_id, session_id)})
+            elif parsed.path == "/api/facebook/marketplace/drafts/save":
+                draft = save_facebook_marketplace_draft(payload)
+                self._json({"draft": draft, **facebook_marketplace_bootstrap(str(payload.get("workspace_id") or ""), str(payload.get("session_id") or ""))})
+            elif parsed.path == "/api/facebook/marketplace/prepare":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                result = prepare_facebook_marketplace_draft(workspace_id, str(payload.get("draft_id") or ""))
+                self._json({**result, **facebook_marketplace_bootstrap(workspace_id, session_id)})
+            elif parsed.path == "/api/facebook/marketplace/resume":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                result = resume_facebook_marketplace_draft(workspace_id, str(payload.get("draft_id") or ""))
+                self._json({**result, **facebook_marketplace_bootstrap(workspace_id, session_id)})
+            elif parsed.path == "/api/facebook/marketplace/groups/prepare":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                result = prepare_facebook_marketplace_group(
+                    workspace_id,
+                    str(payload.get("draft_id") or ""),
+                    str(payload.get("group_id") or ""),
+                )
+                self._json({**result, **facebook_marketplace_bootstrap(workspace_id, session_id)})
             elif parsed.path == "/api/integrations/instagram/verify":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
@@ -3867,11 +4796,48 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     ACCOUNTS.ebay(workspace_id).disconnect()
                 ACCOUNTS.unassign_ebay(workspace_id)
                 self._json({"ok": True, "ebay": {"assigned": False, "connected": False, "username": ""}})
+            elif parsed.path == "/api/integrations/ebay/notifications/check":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                result = workspace_ebay_notifications(workspace_id).sync(
+                    max_events=int(payload.get("max_events") or 100)
+                )
+                self._json({"ok": result.get("status") == "complete", "notifications": result})
+            elif parsed.path == "/api/integrations/ebay/notifications/automatic":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                workspace_context(workspace_id, str(payload.get("session_id") or ""))
+                if not isinstance(payload.get("enabled"), bool):
+                    raise ValueError("enabled must be true or false.")
+                enabled = bool(payload["enabled"])
+                ACCOUNTS.set_ebay_automatic_notifications(workspace_id, enabled)
+                if enabled:
+                    EBAY_NOTIFICATION_POLLER.wake()
+                self._json({
+                    "ok": True,
+                    "automatic": ebay_automatic_notification_status(workspace_id),
+                })
             elif parsed.path == "/api/contacts/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
                 gmail = workspace_gmail(workspace_id)
                 self._json({"contact": gmail.save_contact(payload), "contacts": gmail.list_contacts()})
+            elif parsed.path == "/api/animation/project/save":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                animation_context(workspace_id, session_id)
+                if not payload.get("confirm"):
+                    self._json({"status": "confirmation_required", "message": "Confirm Save Animation Project to persist this production plan."})
+                else:
+                    project = ANIMATION.save_project(workspace_id, payload.get("project") if isinstance(payload.get("project"), dict) else {})
+                    self._json({"status": "saved", "project": project, "projects": ANIMATION.list_projects(workspace_id)})
+            elif parsed.path == "/api/animation/shot/export":
+                self._json(export_animation_shot(payload), HTTPStatus.CREATED)
+            elif parsed.path == "/api/animation/render/import":
+                self._json(import_animation_render(payload), HTTPStatus.CREATED)
+            elif parsed.path == "/api/animation/lipsync":
+                self._json(generate_animation_lipsync(payload), HTTPStatus.CREATED)
+            elif parsed.path == "/api/animation/tool/open":
+                self._json(launch_animation_editor(payload))
             elif parsed.path == "/api/resume/profile/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -3920,6 +4886,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(submit_art_job(payload), HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/antiques/analysis":
                 self._json(submit_museum_analysis(payload), HTTPStatus.ACCEPTED)
+            elif parsed.path == "/api/antiques/item-selection/jobs":
+                result = submit_item_selection_job(payload)
+                self._json(result, HTTPStatus.ACCEPTED if result.get("job_id") else HTTPStatus.OK)
             elif parsed.path == "/api/antiques/research":
                 self._json(antiques_research(payload))
             elif parsed.path == "/api/antiques/price-search":
@@ -3943,6 +4912,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json(ART_JOBS.cancel(parsed.path.split("/")[-2]))
             elif re.fullmatch(r"/api/antiques/analysis/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
                 self._json(MUSEUM_JOBS.cancel(parsed.path.split("/")[-2]))
+            elif re.fullmatch(r"/api/antiques/item-selection/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
+                self._json(ITEM_SELECTION_JOBS.cancel(parsed.path.split("/")[-2]))
             elif re.fullmatch(r"/api/antiques/price-search/jobs/[A-Za-z0-9_-]+/cancel", parsed.path):
                 self._json(PRICE_SEARCH_JOBS.cancel(parsed.path.split("/")[-2]))
             elif parsed.path == "/api/art/projects/save":
@@ -4232,9 +5203,27 @@ class VeridexHandler(BaseHTTPRequestHandler):
             else:
                 workspace_from_args(args)
                 value = send_facebook_message(target, message, confirmed=True)
+        elif tool == "office.facebook_marketplace_draft_create":
+            value = {"draft": save_facebook_marketplace_draft(args)}
+        elif tool == "office.facebook_marketplace_prepare":
+            workspace_id, _ = workspace_from_args(args)
+            value = prepare_facebook_marketplace_draft(workspace_id, str(args.get("draft_id") or ""))
+        elif tool == "office.facebook_marketplace_resume":
+            workspace_id, _ = workspace_from_args(args)
+            value = resume_facebook_marketplace_draft(workspace_id, str(args.get("draft_id") or ""))
+        elif tool == "office.facebook_group_share_prepare":
+            workspace_id, _ = workspace_from_args(args)
+            value = prepare_facebook_marketplace_group(
+                workspace_id,
+                str(args.get("draft_id") or ""),
+                str(args.get("group_id") or ""),
+            )
         elif tool == "ebay.status":
             workspace_id, _ = workspace_from_args(args)
             value = workspace_ebay(workspace_id, require_assignment=False).connection_status()
+            if ACCOUNTS.ebay_config(workspace_id):
+                value["notifications"] = workspace_ebay_notifications(workspace_id).status()
+                value["notifications"]["automatic"] = ebay_automatic_notification_status(workspace_id)
         elif tool == "ebay.inventory_list":
             workspace_id, _ = workspace_from_args(args)
             value = workspace_ebay(workspace_id).inventory_items(
@@ -4258,6 +5247,20 @@ class VeridexHandler(BaseHTTPRequestHandler):
         elif tool == "ebay.policy_list":
             workspace_id, _ = workspace_from_args(args)
             value = workspace_ebay(workspace_id).policies()
+        elif tool == "ebay.notification_check":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay_notifications(workspace_id).sync(
+                max_events=int(args.get("max_events") or 100)
+            )
+        elif tool == "ebay.notification_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = {
+                "workspace_id": workspace_id,
+                "notifications": workspace_ebay_notifications(workspace_id).recent(
+                    limit=int(args.get("limit") or 25),
+                    include_compliance=args.get("include_compliance") is True,
+                ),
+            }
         elif tool == "ebay.listing_preview":
             workspace_id, _ = workspace_from_args(args)
             listing = args.get("listing") if isinstance(args.get("listing"), dict) else args
@@ -4421,15 +5424,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run standalone Codex + Veridex")
     parser.add_argument("--host", default=os.environ.get("VERIDEX_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("VERIDEX_PORT", "8765")))
+    parser.add_argument(
+        "--allow-insecure-remote-cookie",
+        action="store_true",
+        help="Allow the remote pairing cookie over a private LAN HTTP connection.",
+    )
     args = parser.parse_args()
     STORE.ensure_default()
+    remote_access_state()
     server = ThreadingHTTPServer((args.host, args.port), VeridexHandler)
+    server.allow_insecure_remote_cookie = bool(getattr(args, "allow_insecure_remote_cookie", False))
+    EBAY_NOTIFICATION_POLLER.start()
     print(f"Codex + Veridex running at http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        EBAY_NOTIFICATION_POLLER.stop()
         server.server_close()
     return 0
 

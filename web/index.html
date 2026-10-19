@@ -56,6 +56,8 @@
               <span class="connection-indicator" aria-hidden="true"></span>
               Connected accounts
             </button>
+            <button id="open-marketplace-sell" class="marketplace-sell-trigger" type="button">Sell on Facebook</button>
+            <a class="marketplace-sell-trigger" href="/item-intake">Item intake</a>
             <div class="room-control">
               <label for="room-selector">Room</label>
               <select id="room-selector" aria-label="Active room">
@@ -104,9 +106,14 @@
               <button id="antiques-camera" type="button">Take photos</button>
               <button id="antiques-quick" type="button">Quick visual check</button>
               <button id="antiques-deep" type="button">Detailed visual analysis</button>
+              <button id="antiques-select-items" type="button">Select items</button>
               <button id="antiques-cases" type="button">Saved items</button>
               <button id="antiques-shopping-toggle" type="button">Start shopping mode</button>
             </div>
+          </div>
+          <div id="animation-actions" class="art-actions animation-actions" hidden>
+            <span><strong>Animation Studio</strong><small>Build Eternia, generate mouth cues, and prepare verified shots</small></span>
+            <button id="open-animation-studio" type="button">Open studio</button>
           </div>
           <div id="room-file-actions" class="art-actions room-file-actions" hidden>
             <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
@@ -295,6 +302,164 @@
         </div>
       </section>
     </dialog>
+    <dialog id="animation-studio-dialog" class="animation-studio-dialog" aria-labelledby="animation-studio-title">
+      <section class="animation-studio-shell">
+        <header>
+          <div><div class="eyebrow">Animation Studio · Beta</div><h2 id="animation-studio-title">Eternia Late Night</h2><p>Reusable 2.5D sets, character performance, recorded voice-over, and verified production handoff.</p></div>
+          <button id="animation-studio-close" class="dialog-close" type="button" aria-label="Close Animation Studio">&times;</button>
+        </header>
+        <div class="animation-studio-layout">
+          <aside class="animation-project-column">
+            <div class="animation-section-heading"><span class="eyebrow">PROJECT</span><h3>Show foundation</h3></div>
+            <label>Saved project<select id="animation-project-select"><option value="">Eternia starter</option></select></label>
+            <label>Project title<input id="animation-project-title" type="text" value="Eternia Late Night" /></label>
+            <div class="animation-format-grid">
+              <label>Width<input id="animation-width" type="number" min="640" max="7680" value="1920" /></label>
+              <label>Height<input id="animation-height" type="number" min="360" max="4320" value="1080" /></label>
+              <label>FPS<select id="animation-fps"><option value="12">12</option><option value="24" selected>24</option><option value="25">25</option><option value="30">30</option><option value="60">60</option></select></label>
+            </div>
+            <label>Static sets<textarea id="animation-sets" rows="4">Main desk set&#10;Band stage</textarea></label>
+            <label>Cast templates<textarea id="animation-characters" rows="5">Host&#10;Co-host&#10;Guest template&#10;Band member template</textarea></label>
+            <label>Reusable movement<textarea id="animation-actions-list" rows="6">Idle breathing&#10;Blink&#10;Head turn&#10;Desk gesture&#10;Applause&#10;Instrument loop</textarea></label>
+            <label>Production notes<textarea id="animation-notes" rows="5" placeholder="Episode concept, set requirements, recurring bits, or character direction"></textarea></label>
+            <button id="animation-project-save" class="primary-action" type="button">Save project</button>
+          </aside>
+          <main class="animation-workflow-column">
+            <section class="animation-assets-section">
+              <div class="animation-section-heading animation-heading-actions">
+                <div><span class="eyebrow">SCENE ASSETS</span><h3>Place images in the show frame</h3><p>Load source images, choose their production role, then adjust scale and position without changing the original.</p></div>
+                <div><input id="animation-image-upload" type="file" accept="image/*" multiple hidden /><button id="animation-image-add" type="button">Load images</button></div>
+              </div>
+              <div class="animation-asset-workspace">
+                <nav id="animation-asset-list" class="animation-asset-list" aria-label="Project images"></nav>
+                <div class="animation-asset-editor">
+                  <div id="animation-stage" class="animation-stage" aria-label="Show frame preview"><img id="animation-stage-image" alt="Selected production asset" draggable="false" hidden /><span id="animation-stage-empty">Load an image to start placing the set, character, or prop.</span></div>
+                  <div id="animation-asset-controls" class="animation-asset-controls" hidden>
+                    <label>Role<select id="animation-asset-role"><option value="background">Background</option><option value="set">Set</option><option value="character">Character</option><option value="prop">Prop</option><option value="overlay">Overlay</option></select></label>
+                    <label>Size <output id="animation-asset-width-value">35%</output><input id="animation-asset-width" type="range" min="2" max="250" step="1" value="35" /></label>
+                    <label>Horizontal <output id="animation-asset-x-value">50%</output><input id="animation-asset-x" type="range" min="-100" max="200" step="1" value="50" /></label>
+                    <label>Vertical <output id="animation-asset-y-value">60%</output><input id="animation-asset-y" type="range" min="-100" max="200" step="1" value="60" /></label>
+                    <label>Opacity <output id="animation-asset-opacity-value">100%</output><input id="animation-asset-opacity" type="range" min="0" max="100" step="1" value="100" /></label>
+                    <div class="animation-asset-presets"><button data-animation-preset="background" type="button">Fit background</button><button data-animation-preset="character" type="button">Character</button><button data-animation-preset="prop" type="button">Prop</button></div>
+                    <div class="animation-editor-actions"><button id="animation-open-gimp" type="button">Open original in GIMP</button><button id="animation-open-synfig" type="button">Open asset in Synfig</button><button id="animation-asset-remove" class="danger-action" type="button">Remove from project</button></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section class="animation-storyboard-section">
+              <div class="animation-section-heading animation-heading-actions"><div><span class="eyebrow">STORYBOARD</span><h3>Plan every shot</h3><p>Each panel keeps its frame, scene description, and production notes together. Export one shot to Synfig, then import its render here.</p></div><button id="animation-storyboard-add" type="button">Add shot</button></div>
+              <div id="animation-storyboard-list" class="animation-storyboard-list"></div>
+              <p id="animation-storyboard-empty" class="animation-empty-note">No shots yet. Add the opening shot, then build the episode in sequence.</p>
+            </section>
+            <section class="animation-audio-section">
+              <div class="animation-section-heading animation-heading-actions"><div><span class="eyebrow">AUDIO SUITE</span><h3>Time the episode</h3><p>Preview trim, gain, and mute here; pan, fades, and timing stay with the project for production. Use Audacity for recording, cleanup, effects, or detailed mixing.</p></div><div><input id="animation-audio-upload" type="file" accept="audio/*,.aac,.flac,.m4a,.mp3,.ogg,.wav" multiple hidden /><button id="animation-audio-add" type="button">Load audio</button></div></div>
+              <div class="animation-audio-workspace">
+                <nav id="animation-audio-track-list" class="animation-audio-track-list" aria-label="Project audio tracks"></nav>
+                <div id="animation-audio-editor" class="animation-audio-editor" hidden>
+                  <audio id="animation-audio-preview" controls preload="metadata"></audio>
+                  <p id="animation-audio-preview-note" class="animation-audio-preview-note">Track preview</p>
+                  <div class="animation-audio-fields">
+                    <label>Track type<select id="animation-track-type"><option value="dialogue">Dialogue</option><option value="music">Music</option><option value="sound_effect">Sound effect</option></select></label>
+                    <label>Character<input id="animation-track-character" type="text" placeholder="Host, guest, announcer…" /></label>
+                    <label>Storyboard shot<select id="animation-track-shot"><option value="">Whole episode / unassigned</option></select></label>
+                    <label>Start seconds<input id="animation-track-start" type="number" min="0" step="0.1" value="0" /></label>
+                    <label>Trim in<input id="animation-track-trim-in" type="number" min="0" step="0.1" value="0" /></label>
+                    <label>Trim out <span class="optional-label">0 keeps the end</span><input id="animation-track-trim-out" type="number" min="0" step="0.1" value="0" /></label>
+                    <label>Volume dB<input id="animation-track-volume" type="number" min="-60" max="12" step="0.5" value="0" /></label>
+                    <label>Pan<input id="animation-track-pan" type="range" min="-100" max="100" step="1" value="0" /></label>
+                    <label>Fade in<input id="animation-track-fade-in" type="number" min="0" step="0.1" value="0" /></label>
+                    <label>Fade out<input id="animation-track-fade-out" type="number" min="0" step="0.1" value="0" /></label>
+                  </div>
+                  <div class="animation-track-switches"><label><input id="animation-track-mute" type="checkbox" /> Mute</label><label><input id="animation-track-solo" type="checkbox" /> Solo</label></div>
+                  <div class="animation-editor-actions"><button id="animation-open-audacity" type="button">Open source in Audacity</button><button id="animation-track-remove" class="danger-action" type="button">Remove track</button></div>
+                </div>
+                <p id="animation-audio-empty" class="animation-empty-note">No tracks yet. Load dialogue, music, or sound effects.</p>
+              </div>
+            </section>
+            <section class="animation-tool-section">
+              <div class="animation-section-heading"><span class="eyebrow">LOCAL TOOLS</span><h3>Production readiness</h3><p>Availability is detected from this computer. Missing tools are never reported as working.</p></div>
+              <div id="animation-tool-list" class="animation-tool-list" aria-live="polite"></div>
+            </section>
+            <section class="animation-lipsync-section">
+              <div class="animation-section-heading"><span class="eyebrow">VOICE PERFORMANCE</span><h3>Build a lip-sync take</h3><p>Map the character’s mouth drawings once, generate Rhubarb cues, then preview the voice and mouth animation together.</p></div>
+              <div class="animation-lipsync-workspace">
+                <div class="animation-rig-editor">
+                  <div class="animation-rig-heading"><label>Character rig<select id="animation-rig-select"><option value="">New rig</option></select></label><button id="animation-rig-new" type="button">New</button><button id="animation-rig-remove" class="danger-action" type="button">Remove</button></div>
+                  <label>Character name<input id="animation-rig-character" type="text" placeholder="Host, co-host, guest…" /></label>
+                  <label>Character/base image<select id="animation-rig-base"><option value="">No base image</option></select></label>
+                  <label>Animation style<select id="animation-mouth-mode"><option value="jaw_flap">Simple jaw flap</option><option value="mouth_shapes">Advanced mouth drawings</option></select></label>
+                  <label id="animation-simple-jaw-field">Closed jaw image<select id="animation-simple-jaw"><option value="">Choose the closed jaw</option></select></label>
+                  <div id="animation-mouth-shape-fields"><span class="animation-field-label">Mouth drawings</span><div id="animation-mouth-shape-grid" class="animation-mouth-shape-grid"></div><p class="animation-field-help">A–F are required. G, H, and X improve F/V, L, and idle pauses.</p></div>
+                  <div><span class="animation-field-label">Jaw placement</span><p class="animation-field-help">Place the X/closed jaw first. Confirming the fit aligns every other pose to the closed jaw’s upper hinge span.</p></div>
+                  <button id="animation-mouth-placement-edit" type="button">Adjust jaw placement</button>
+                  <label>Jaw opening <output id="animation-mouth-strength-value">100%</output><input id="animation-mouth-strength" type="range" min="25" max="400" step="5" value="100" /><span class="animation-field-help">Controls how far the lower jaw opens without changing its position or timing.</span></label>
+                  <details class="animation-mouth-fine-tune"><summary>Fine adjustments</summary><div class="animation-mouth-placement">
+                    <label>Position X <output id="animation-mouth-x-value">50%</output><input id="animation-mouth-x" type="range" min="-100" max="200" value="50" /></label>
+                    <label>Position Y <output id="animation-mouth-y-value">58%</output><input id="animation-mouth-y" type="range" min="-100" max="200" value="58" /></label>
+                    <label>Jaw width <output id="animation-mouth-width-value">16%</output><input id="animation-mouth-width" type="range" min="1" max="100" value="16" /></label>
+                    <label>Jaw height <output id="animation-mouth-height-value">100%</output><input id="animation-mouth-height" type="range" min="25" max="200" value="100" /></label>
+                    <label>Anchor X <output id="animation-mouth-anchor-x-value">50%</output><input id="animation-mouth-anchor-x" type="range" min="0" max="100" value="50" /></label>
+                    <label>Anchor Y <output id="animation-mouth-anchor-y-value">50%</output><input id="animation-mouth-anchor-y" type="range" min="0" max="100" value="50" /></label>
+                  </div></details>
+                  <div class="animation-mouth-calibration">
+                    <button id="animation-mouth-calibrate" type="button">Align all jaws + confirm fit</button>
+                    <span id="animation-mouth-calibration-status">Calibration required</span>
+                  </div>
+                  <label>Voice-over file<select id="animation-audio-file"><option value="">Choose attached audio</option></select></label>
+                  <label>Recognition<select id="animation-lipsync-recognizer"><option value="pocketSphinx">English · word recognition</option><option value="phonetic">Other language · phonetic</option></select></label>
+                  <label>Spoken script <span class="optional-label">recommended for English</span><textarea id="animation-transcript" rows="6" placeholder="Paste the exact dialogue here"></textarea></label>
+                  <button id="animation-lipsync-generate" class="primary-action" type="button">Generate and bind mouth cues</button>
+                </div>
+                <div id="animation-lipsync-preview" class="animation-lipsync-preview">
+                  <div class="animation-mouth-identity"><span id="animation-mouth-identity-mode">Editing jaw</span><strong id="animation-mouth-identity-value">No jaw selected</strong></div>
+                  <div id="animation-lipsync-stage" class="animation-lipsync-stage"><img id="animation-lipsync-character" alt="Character preview" hidden /><div id="animation-mouth-transform-box" class="animation-mouth-transform-box" title="Drag to place the jaw" hidden><img id="animation-lipsync-mouth" alt="Animated mouth preview" draggable="false" /><i id="animation-mouth-resize-handle" class="animation-mouth-resize-handle" title="Drag to resize the jaw"></i></div><i id="animation-mouth-anchor-marker" class="animation-mouth-anchor-marker" title="Jaw anchor" hidden></i><span id="animation-lipsync-stage-empty">Choose a base image and map A–F mouth drawings.</span><b id="animation-current-cue">—</b></div>
+                  <label>Saved/generated take<select id="animation-lipsync-take"><option value="">No generated take</option></select></label>
+                  <label class="animation-lipsync-player-label">Voice Performance playback<audio id="animation-lipsync-audio" controls preload="metadata"></audio></label>
+                  <div class="animation-waveform-panel" hidden aria-label="Voice waveform">
+                    <div class="animation-waveform-heading"><span>Voice waveform</span><span id="animation-waveform-time">0:00.00 / 0:00.00</span></div>
+                    <div class="animation-waveform-canvas-wrap"><canvas id="animation-lipsync-waveform" class="animation-lipsync-waveform" height="92" aria-label="Voice waveform timeline"></canvas><i id="animation-waveform-playhead" class="animation-waveform-playhead" aria-hidden="true"></i><div id="animation-waveform-corrections" class="animation-waveform-corrections" aria-label="Saved jaw corrections"></div></div>
+                    <div class="animation-waveform-legend"><span id="animation-waveform-selection-legend" hidden><i class="selection"></i>Selected section</span><span><i class="playhead"></i>Moving playhead</span><span id="animation-waveform-status">Click to seek</span></div>
+                  </div>
+                  <div id="animation-lipsync-timeline" class="animation-lipsync-timeline" aria-label="Mouth cue timeline"></div>
+                  <div class="animation-quick-fix" hidden aria-label="Quick jaw correction">
+                    <div class="animation-quick-fix-heading"><div><span class="animation-field-label">Quick Fix</span><p>Pause on the part that looks wrong, then adjust only that moment.</p></div><button id="animation-quick-fix-start" class="primary-action" type="button">Correct here</button></div>
+                    <div id="animation-quick-fix-editor" class="animation-quick-fix-editor" hidden>
+                      <label>Jaw opening at <output id="animation-quick-fix-time">0:00.00</output><input id="animation-quick-fix-opening" type="range" min="0" max="100" step="1" value="0" /><output id="animation-quick-fix-opening-value">0%</output></label>
+                      <div class="animation-quick-fix-actions"><button id="animation-quick-fix-save" class="primary-action" type="button">Save correction</button><button id="animation-quick-fix-cancel" type="button">Cancel</button><button id="animation-quick-fix-delete" type="button" hidden>Delete correction</button></div>
+                    </div>
+                    <div class="animation-quick-fix-footer"><span id="animation-quick-fix-status">Automatic lip-sync remains active everywhere else.</span><button id="animation-quick-fix-undo" type="button" disabled>Undo last fix</button></div>
+                  </div>
+                  <details id="animation-manual-advanced" class="animation-manual-advanced" hidden><summary>Advanced manual performance</summary><div class="animation-manual-jaw" aria-label="Manual jaw editing">
+                    <div class="animation-manual-jaw-heading"><span class="animation-field-label">Manual performance</span><span id="animation-manual-jaw-status">Select a time range, then edit by holding the jaw.</span></div>
+                    <label>Section start <output id="animation-manual-start-value">0.00s</output><input id="animation-manual-start" type="range" min="0" max="0" step="0.01" value="0" /></label>
+                    <label>Section end <output id="animation-manual-end-value">0.00s</output><input id="animation-manual-end" type="range" min="0" max="0" step="0.01" value="0" /></label>
+                    <label>Playback speed<select id="animation-manual-playback-rate"><option value="1">Normal</option><option value="0.5">Half speed</option><option value="0.25">Quarter speed</option></select></label>
+                    <div class="animation-manual-jaw-actions"><button id="animation-manual-jaw-edit" type="button">Open advanced editor</button><button id="animation-manual-jaw-clear" type="button">Clear manual edits</button></div>
+                  </div></details>
+                  <div id="animation-lipsync-result" class="animation-result" aria-live="polite">No lip-sync take generated yet.</div>
+                </div>
+              </div>
+            </section>
+            <section class="animation-workflow-section">
+              <div class="animation-section-heading"><span class="eyebrow">PIPELINE</span><h3>Episode workflow</h3></div>
+              <ol id="animation-workflow-list" class="animation-workflow-list"></ol>
+              <div class="animation-handoff"><div><strong>Final assembly stays in Video Production</strong><p>Synfig handles one shot at a time; rendered shots, voice tracks, music, titles, captions, and delivery versions remain verified room files.</p></div><button id="animation-video-handoff" type="button">Go to Video Production</button></div>
+            </section>
+          </main>
+        </div>
+        <footer><span id="animation-studio-status" aria-live="polite">Loading studio status…</span></footer>
+      </section>
+    </dialog>
+    <dialog id="animation-manual-jaw-dialog" class="animation-manual-jaw-dialog" aria-labelledby="animation-manual-jaw-title">
+      <section class="animation-manual-jaw-shell">
+        <header>
+          <div><div class="eyebrow">Animation Studio · Manual performance</div><h2 id="animation-manual-jaw-title">Edit Skeletor’s jaw motion</h2><p>Select a section, slow the voice if needed, then click-hold the jaw and move vertically. Release commits that section.</p></div>
+          <button id="animation-manual-jaw-close" class="dialog-close" type="button" aria-label="Close manual jaw editor">&times;</button>
+        </header>
+        <div class="animation-manual-jaw-toolbar"><button id="animation-manual-jaw-save" class="primary-action" type="button">Save project</button><button id="animation-manual-jaw-undo" type="button">Undo</button><button id="animation-manual-jaw-redo" type="button">Redo</button></div>
+        <div id="animation-manual-jaw-dialog-body" class="animation-manual-jaw-dialog-body"></div>
+      </section>
+    </dialog>
     <dialog id="museum-analysis-dialog" class="museum-analysis-dialog" aria-labelledby="museum-analysis-title">
       <section class="museum-analysis-shell">
         <header>
@@ -322,6 +487,42 @@
           </main>
         </div>
         <footer><span>Visual findings are not authentication or an appraisal.</span><button id="museum-analysis-start" class="primary-action" type="button">Start visual analysis</button></footer>
+      </section>
+    </dialog>
+    <dialog id="museum-item-selector-dialog" class="museum-item-selector-dialog" aria-labelledby="museum-item-selector-title">
+      <section class="museum-item-selector-shell">
+        <header>
+          <div><div class="eyebrow">Museum · Leo</div><h2 id="museum-item-selector-title">Select items in a photo</h2><p>Draw one box around each item. Every box becomes a separate saved case.</p></div>
+          <button id="museum-item-selector-close" class="dialog-close" type="button" aria-label="Close item selector">&times;</button>
+        </header>
+        <div class="museum-item-selector-layout">
+          <main class="museum-item-canvas-column">
+            <div class="museum-item-toolbar">
+              <label>Source photo<select id="museum-item-source"></select></label>
+              <label>Search<select id="museum-item-search-mode"><option value="full">Full Leo research</option><option value="visual_match">Visual match only</option></select></label>
+              <label>Depth<select id="museum-item-depth"><option value="quick">Quick</option><option value="deep">Deep</option></select></label>
+              <div class="museum-item-zoom" aria-label="Image zoom">
+                <span>Zoom</span>
+                <div><button id="museum-item-zoom-out" type="button" aria-label="Zoom out">−</button><strong id="museum-item-zoom-value">100%</strong><button id="museum-item-zoom-in" type="button" aria-label="Zoom in">+</button><button id="museum-item-zoom-reset" type="button">Fit</button></div>
+              </div>
+            </div>
+            <div id="museum-item-stage" class="museum-item-stage" aria-label="Draw boxes around items">
+              <div id="museum-item-viewport" class="museum-item-viewport">
+                <img id="museum-item-image" alt="Museum source photograph for item selection" draggable="false" />
+                <div id="museum-item-overlays" class="museum-item-overlays"></div>
+              </div>
+            </div>
+            <div class="museum-item-canvas-note"><span>Drag on the photo to add an item.</span><span id="museum-item-count">0 of 12 selected</span></div>
+            <div id="museum-item-job-progress" class="art-job-progress" hidden><div><span id="museum-item-job-message">Preparing</span><strong id="museum-item-job-percent">0%</strong></div><progress id="museum-item-job-meter" max="100" value="0"></progress><button id="museum-item-job-cancel" type="button">Cancel</button></div>
+          </main>
+          <aside class="museum-item-inspector">
+            <div class="museum-item-inspector-heading"><div><span class="eyebrow">Review</span><h3>Selected items</h3></div><div><button id="museum-item-undo" type="button">Undo</button><button id="museum-item-clear" type="button">Clear</button></div></div>
+            <p id="museum-item-empty">No boxes yet. Include the whole item and avoid neighboring objects when possible.</p>
+            <div id="museum-item-list" class="museum-item-list"></div>
+            <div id="museum-item-result" class="museum-item-result" aria-live="polite"></div>
+          </aside>
+        </div>
+        <footer><span>Only the cropped boxes are sent to Google Lens. The source photo stays local.</span><button id="museum-item-search" class="primary-action" type="button">Search selected items</button></footer>
       </section>
     </dialog>
     <dialog id="antiques-cases-dialog" class="art-gallery-dialog antiques-cases-dialog" aria-labelledby="antiques-cases-title">
@@ -404,6 +605,67 @@
         </div>
       </section>
     </dialog>
+    <dialog id="marketplace-sell-dialog" class="marketplace-sell-dialog" aria-labelledby="marketplace-sell-title">
+      <section class="marketplace-sell-shell">
+        <header>
+          <div><div class="eyebrow">Review-first seller workflow</div><h2 id="marketplace-sell-title">Facebook Marketplace</h2><p>Prepare the listing here. You make every final Publish and group Post click in Facebook.</p></div>
+          <div class="marketplace-header-actions"><span id="marketplace-status" aria-live="polite">Draft locally</span><button id="marketplace-sell-close" class="dialog-close" type="button" aria-label="Close Facebook Marketplace seller panel">&times;</button></div>
+        </header>
+        <div class="marketplace-sell-layout">
+          <aside class="marketplace-drafts-column">
+            <div class="marketplace-section-heading"><div><span class="eyebrow">Workspace</span><h3>Listing drafts</h3></div><button id="marketplace-new-draft" type="button">New</button></div>
+            <div id="marketplace-draft-list" class="marketplace-draft-list"></div>
+          </aside>
+          <main class="marketplace-editor-column">
+            <section class="marketplace-editor-section">
+              <div class="marketplace-section-heading"><div><span class="eyebrow">01 · Source</span><h3>Item and photos</h3></div><span id="marketplace-photo-count">0 of 10</span></div>
+              <label>Start from<select id="marketplace-source-case"><option value="">New one-off listing</option></select></label>
+              <div class="marketplace-photo-actions">
+                <input id="marketplace-photo-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+                <button id="marketplace-add-photos" type="button">Upload photos</button>
+                <button id="marketplace-research-help" type="button">Research with Leo</button>
+                <span>Uploaded files are ledgered before they can be used.</span>
+              </div>
+              <div id="marketplace-photo-grid" class="marketplace-photo-grid"></div>
+            </section>
+            <section class="marketplace-editor-section">
+              <div class="marketplace-section-heading"><div><span class="eyebrow">02 · Listing</span><h3>Review every field</h3></div><span id="marketplace-price-basis">Enter an asking price</span></div>
+              <div class="marketplace-form-grid">
+                <label class="wide">Title<input id="marketplace-title" type="text" maxlength="200" /></label>
+                <label>Price (USD)<input id="marketplace-price" type="number" min="0" step="0.01" /></label>
+                <label>Condition<select id="marketplace-condition"><option value="new">New</option><option value="like_new">Like new</option><option value="good" selected>Good</option><option value="fair">Fair</option><option value="poor">Poor</option></select></label>
+                <label class="wide">Facebook category<input id="marketplace-category" type="text" maxlength="120" placeholder="Antiques &amp; collectibles" /></label>
+                <label class="full">Description<textarea id="marketplace-description" rows="9" maxlength="5000"></textarea></label>
+              </div>
+              <p class="marketplace-safety-note">Local pickup only. Veridex uses the location already configured by Facebook and does not save an address.</p>
+            </section>
+          </main>
+          <aside class="marketplace-groups-column">
+            <section>
+              <div class="marketplace-section-heading"><div><span class="eyebrow">03 · More places</span><h3>Approved groups</h3></div></div>
+              <p>Select only groups where this item belongs. Veridex will prepare one group post at a time after the Marketplace listing is visibly published.</p>
+              <div id="marketplace-group-list" class="marketplace-group-list"></div>
+              <form id="marketplace-group-form" class="marketplace-group-form">
+                <label>Group name<input id="marketplace-group-name" type="text" maxlength="120" placeholder="Local buy/sell group" /></label>
+                <label>Facebook group URL<input id="marketplace-group-url" type="url" placeholder="https://www.facebook.com/groups/…" required /></label>
+                <button type="submit">Add approved group</button>
+              </form>
+            </section>
+            <section class="marketplace-handoff-card">
+              <span class="eyebrow">Facebook handoff</span>
+              <strong id="marketplace-handoff-title">Save a draft to continue</strong>
+              <p id="marketplace-handoff-copy">Preparation fills the visible form and stops before Next or Publish.</p>
+              <div class="marketplace-handoff-actions">
+                <button id="marketplace-save-draft" type="button">Save draft</button>
+                <button id="marketplace-prepare" class="primary-action" type="button">Prepare in Facebook</button>
+                <button id="marketplace-resume" type="button">Resume after publishing</button>
+                <button id="marketplace-prepare-group" type="button">Prepare next group</button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </dialog>
     <dialog id="connected-accounts-dialog" class="connected-accounts-dialog">
       <div class="connected-accounts-shell">
         <header>
@@ -432,6 +694,17 @@
             <div class="connected-account-actions"><button class="primary-action" type="submit">Connect Instagram</button><button id="instagram-verify" type="button">Refresh status</button><button id="instagram-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
           </form>
         </section>
+        <section class="connected-account-card" aria-labelledby="facebook-account-title">
+          <div class="connected-account-heading">
+            <div><span class="account-monogram facebook">f</span><div><h3 id="facebook-account-title">Facebook</h3><p>Marketplace preparation, groups, profiles, and messages</p></div></div>
+            <span id="facebook-connection-state" class="account-state">Not connected</span>
+          </div>
+          <div id="facebook-active-account" class="active-account" hidden></div>
+          <div class="connected-account-form">
+            <p class="field-note">Facebook uses Veridex's dedicated local Chrome profile. Credentials stay in local configuration; this page never displays or stores the password.</p>
+            <div class="connected-account-actions"><button id="facebook-connect" class="primary-action" type="button">Open or reconnect Facebook</button><button id="facebook-refresh" type="button">Refresh status</button></div>
+          </div>
+        </section>
         <section class="connected-account-card" aria-labelledby="gmail-account-title">
           <div class="connected-account-heading">
             <div><span class="account-monogram gmail">G</span><div><h3 id="gmail-account-title">Gmail</h3><p>Search, drafts, contacts, and confirmed sends</p></div></div>
@@ -450,12 +723,13 @@
             <span id="ebay-connection-state" class="account-state">Not connected</span>
           </div>
           <div id="ebay-active-account" class="active-account" hidden></div>
+          <div id="ebay-notification-status" class="active-account" hidden></div>
           <div class="connected-account-form">
             <label>Seller username (optional safety check)<input id="ebay-username" autocomplete="username" placeholder="seller name" /></label>
             <label>Environment<select id="ebay-environment"><option value="sandbox">Sandbox</option><option value="production">Production</option></select></label>
             <label>Marketplace<input id="ebay-marketplace" value="EBAY_US" autocomplete="off" /></label>
             <p class="field-note">Veridex uses eBay OAuth and never stores your eBay password. Start in Sandbox; live listings and other consequential actions still require explicit confirmation.</p>
-            <div class="connected-account-actions"><button id="ebay-connect" class="primary-action" type="button">Connect eBay</button><button id="ebay-refresh" type="button">Refresh status</button><button id="ebay-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
+            <div class="connected-account-actions"><button id="ebay-connect" class="primary-action" type="button">Connect eBay</button><button id="ebay-refresh" type="button">Refresh status</button><button id="ebay-notifications-auto" type="button" hidden>Turn off automatic checks</button><button id="ebay-notifications-check" type="button" hidden>Check now</button><button id="ebay-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
           </div>
         </section>
         <p id="connected-accounts-message" class="connected-accounts-message" aria-live="polite"></p>

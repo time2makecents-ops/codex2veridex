@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -10,6 +11,30 @@ import veridex_server
 
 
 class FacebookChromeBridgeTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for the Facebook bridge")
+    def test_session_classifier_accepts_authenticated_home_redirect_without_nav(self) -> None:
+        script = (
+            "const { classifyFacebookSession } = require('./facebook_chrome_bridge.js');"
+            "console.log(JSON.stringify(["
+            "classifyFacebookSession({url:'https://www.facebook.com/home.php',login_form:false,checkpoint:false,navigation_shell:false}),"
+            "classifyFacebookSession({url:'https://www.facebook.com/login/',login_form:true,checkpoint:false,navigation_shell:false}),"
+            "classifyFacebookSession({url:'https://www.facebook.com/public.profile',login_form:false,checkpoint:false,navigation_shell:false})"
+            "]));"
+        )
+
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script],
+            cwd=str(facebook_chrome_bridge.ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        home, login, public_profile = json.loads(completed.stdout)
+        self.assertTrue(home["signed_in"])
+        self.assertEqual(home["evidence"], "authenticated_route")
+        self.assertFalse(login["signed_in"])
+        self.assertFalse(public_profile["signed_in"])
+
     @patch("facebook_chrome_bridge.subprocess.run")
     @patch("facebook_chrome_bridge.shutil.which", return_value=r"C:\Program Files\nodejs\node.exe")
     def test_status_uses_dedicated_bridge(self, _which, run) -> None:
@@ -55,7 +80,32 @@ class FacebookChromeBridgeTests(unittest.TestCase):
             "office.facebook_profile_get",
             "office.facebook_message_draft",
             "office.facebook_message_send",
+            "office.facebook_marketplace_draft_create",
+            "office.facebook_marketplace_prepare",
+            "office.facebook_marketplace_resume",
+            "office.facebook_group_share_prepare",
         }.issubset(names))
+
+    @patch("facebook_chrome_bridge._run", return_value={"ok": True, "status": "facebook_prepared", "publish_clicked": False})
+    def test_marketplace_prepare_uses_structured_stdin_payload(self, run) -> None:
+        draft = {"draft_id": "fbdraft_one", "title": "Oak side table", "price": 45}
+
+        result = facebook_chrome_bridge.prepare_marketplace_listing(draft, [r"C:\verified\one.jpg"])
+
+        self.assertEqual(result["status"], "facebook_prepared")
+        run.assert_called_once_with(
+            "marketplace-prepare",
+            timeout=120,
+            payload={"draft": draft, "image_paths": [r"C:\verified\one.jpg"]},
+        )
+
+    def test_marketplace_javascript_has_no_publish_or_group_post_action(self) -> None:
+        source = facebook_chrome_bridge.BRIDGE.read_text(encoding="utf-8")
+        self.assertIn('publish_clicked: false', source)
+        self.assertIn('post_clicked: false', source)
+        self.assertNotIn('action === "marketplace-publish"', source)
+        self.assertNotIn('action === "group-share-post"', source)
+        self.assertIn("waitForLoginState", source)
 
     @patch("veridex_server.send_facebook_message")
     def test_server_send_tool_preserves_confirmation_gate(self, send) -> None:

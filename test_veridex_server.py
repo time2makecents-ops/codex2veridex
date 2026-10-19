@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PIL import Image
 
 import veridex_server
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio
+from animation_studio import AnimationStudio
 from antiques_department import AntiquesDepartment
 from museum_visual_analysis import MuseumVisualAnalyzer
 from price_search_controller import PriceSearchJobManager, SearchPhaseContext, SearchRequest
@@ -19,6 +22,56 @@ from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_remote_pairing_cookie_is_secure_unless_lan_mode_is_explicit(self) -> None:
+        class PairingHandler:
+            def __init__(self, allow_insecure_remote_cookie: bool) -> None:
+                self.server = SimpleNamespace(allow_insecure_remote_cookie=allow_insecure_remote_cookie)
+                self.status = None
+                self.headers = []
+
+            def _json(self, value, status) -> None:
+                raise AssertionError(f"unexpected pairing rejection: {value} ({status})")
+
+            def send_response(self, status) -> None:
+                self.status = status
+
+            def send_header(self, name, value) -> None:
+                self.headers.append((name, value))
+
+            def end_headers(self) -> None:
+                pass
+
+        def pair(allow_insecure_remote_cookie: bool) -> str:
+            state = {"pairing_token": "one-time-token", "sessions": []}
+            handler = PairingHandler(allow_insecure_remote_cookie)
+            with patch.object(veridex_server, "remote_access_state", return_value=state), patch.object(veridex_server, "save_remote_access_state"):
+                veridex_server.VeridexHandler._pair_remote(handler, "one-time-token")
+            self.assertEqual(handler.status, veridex_server.HTTPStatus.SEE_OTHER)
+            return next(value for name, value in handler.headers if name == "Set-Cookie")
+
+        self.assertIn("; Secure", pair(False))
+        self.assertNotIn("; Secure", pair(True))
+
+    def test_main_starts_and_stops_ebay_notification_poller(self) -> None:
+        server = Mock()
+        server.serve_forever.side_effect = KeyboardInterrupt
+        with patch.object(veridex_server.argparse.ArgumentParser, "parse_args", return_value=SimpleNamespace(host="127.0.0.1", port=0)), patch.object(
+            veridex_server.STORE, "ensure_default"
+        ), patch.object(
+            veridex_server, "remote_access_state"
+        ), patch.object(
+            veridex_server, "ThreadingHTTPServer", return_value=server
+        ), patch.object(
+            veridex_server.EBAY_NOTIFICATION_POLLER, "start"
+        ) as start, patch.object(
+            veridex_server.EBAY_NOTIFICATION_POLLER, "stop"
+        ) as stop:
+            self.assertEqual(veridex_server.main(), 0)
+
+        start.assert_called_once_with()
+        stop.assert_called_once_with()
+        server.server_close.assert_called_once_with()
+
     def test_price_search_adapter_falls_back_to_partial_exact_query_once(self) -> None:
         request = SearchRequest(
             item_id="mj-program",
@@ -604,6 +657,237 @@ class VeridexServerTests(unittest.TestCase):
             gemini.assert_not_called()
             codex.assert_called_once()
             self.assertEqual(result["provider"], "codex_cli")
+
+    def test_video_production_uses_beta_context_and_generic_room_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "video_production")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "task_type": "simple",
+                "text": "Beta is ready to plan the production.",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "gemini_enabled", return_value=False
+            ), patch.object(veridex_server, "invoke_codex", return_value=response) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "hello"}
+                )
+
+            request = codex.call_args.args[0]
+            self.assertEqual(result["message"]["speaker"], "Beta")
+            self.assertEqual(request["context"]["current_room"]["id"], "video_production")
+            self.assertEqual(request["context"]["current_room"]["active_persona"], "Beta")
+            self.assertIn("As Beta, direct video-production work", request["system_prompt"])
+            self.assertIn("Preserve source media", request["system_prompt"])
+            self.assertEqual(veridex_server.room_file_library_id("video_production"), "video_production")
+
+    def test_animation_studio_uses_beta_context_and_truthful_tool_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "animation_studio")
+            response = {
+                "ok": True,
+                "provider": "codex_cli",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "high",
+                "task_type": "simple",
+                "text": "Beta is ready to plan Eternia.",
+                "evidence": [],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "ANIMATION", AnimationStudio(root)
+            ), patch.object(veridex_server, "gemini_enabled", return_value=False), patch.object(
+                veridex_server, "invoke_codex", return_value=response
+            ) as codex:
+                result = veridex_server.chat_response(
+                    {"workspace_id": workspace_id, "session_id": session_id, "text": "plan the pilot"}
+                )
+
+            request = codex.call_args.args[0]
+            self.assertEqual(result["message"]["speaker"], "Beta")
+            self.assertEqual(request["context"]["current_room"]["id"], "animation_studio")
+            self.assertIn("animation_studio", request["context"])
+            self.assertIn("As Beta in Animation Studio", request["system_prompt"])
+            self.assertIn("Never claim a tool is installed", request["system_prompt"])
+
+    def test_animation_lipsync_output_is_room_scoped_and_ledgered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "animation_studio")
+            source = store.save_file(workspace_id, session_id, "host-voice.wav", b"voice", "audio/wav")
+            studio = AnimationStudio(root)
+            cues = {
+                "schema_version": 1,
+                "generator": "Rhubarb Lip Sync",
+                "audio_name": "host-voice.wav",
+                "recognizer": "pocketSphinx",
+                "extended_shapes": "GX",
+                "duration": 0.75,
+                "mouthCues": [{"start": 0.0, "end": 0.75, "value": "A"}],
+                "generated_at": "2026-09-27T00:00:00+00:00",
+            }
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "ANIMATION", studio
+            ), patch.object(studio, "generate_lipsync", return_value=cues) as generate:
+                result = veridex_server.generate_animation_lipsync({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "file_id": source["file_id"],
+                    "transcript": "Welcome to Eternia.",
+                    "binding": {
+                        "track_id": "host-voice",
+                        "rig_id": "host-rig",
+                        "character": "Host",
+                        "base_asset_id": "host-base",
+                        "shapes": {"A": "mouth-a", "G": "mouth-g", "X": "mouth-x"},
+                        "mouth_x_percent": 52,
+                        "mouth_y_percent": 61,
+                        "mouth_width_percent": 18,
+                    },
+                })
+
+            generate.assert_called_once_with(Path(source["path"]), "Welcome to Eternia.", "pocketSphinx", "GX")
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["cue_count"], 1)
+            self.assertEqual(result["file"]["scope"], "room")
+            self.assertEqual(result["file"]["scope_ref"], "animation_studio")
+            self.assertEqual(result["binding"]["rig_id"], "host-rig")
+            self.assertEqual(result["extended_shapes"], "GX")
+            ledger = store.list_artifact_ledger(workspace_id)
+            generated = next(row for row in ledger if row["file_id"] == result["file"]["file_id"])
+            self.assertEqual(generated["kind"], "generated_document")
+            self.assertEqual(generated["metadata"]["animation"]["source_file_id"], source["file_id"])
+            self.assertEqual(generated["metadata"]["animation"]["track_id"], "host-voice")
+            self.assertEqual(generated["metadata"]["animation"]["character"], "Host")
+            cue_file = store.resolve_files(workspace_id, session_id, [result["file"]["file_id"]])[0]
+            cue_document = json.loads(Path(cue_file["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(cue_document["binding"]["shapes"]["G"], "mouth-g")
+            self.assertEqual(cue_document["binding"]["mouth_width_percent"], 18)
+
+    def test_animation_editor_launch_requires_confirmation_and_room_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            source_session_id = initial["session"]["session_id"]
+            session_id = store.create_session(workspace_id, "Animation edit")["session_id"]
+            store.set_room(workspace_id, session_id, "animation_studio")
+            source = store.save_file(workspace_id, source_session_id, "host.png", b"image", "image/png")
+            studio = AnimationStudio(root)
+            payload = {"workspace_id": workspace_id, "session_id": session_id, "source_session_id": source_session_id, "file_id": source["file_id"], "tool": "gimp"}
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANIMATION", studio):
+                pending = veridex_server.launch_animation_editor(payload)
+                with patch.object(studio, "launch_editor", return_value={"status": "launched", "tool": "GIMP 3", "process_id": 42}) as launch:
+                    result = veridex_server.launch_animation_editor({**payload, "confirm": True})
+
+            self.assertEqual(pending["status"], "confirmation_required")
+            self.assertEqual(result["status"], "launched")
+            self.assertEqual(result["file"]["file_id"], source["file_id"])
+            launch.assert_called_once_with("gimp", Path(source["path"]))
+
+    def test_animation_synfig_launch_creates_valid_ledgered_starter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "animation_studio")
+            source = store.save_file(workspace_id, session_id, "host.png", b"image", "image/png")
+            studio = AnimationStudio(root)
+            payload = {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "file_id": source["file_id"],
+                "tool": "synfig",
+                "confirm": True,
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANIMATION", studio), patch.object(
+                studio, "launch_editor", return_value={"status": "launched", "tool": "Synfig Studio", "process_id": 42}
+            ) as launch:
+                result = veridex_server.launch_animation_editor(payload)
+
+            self.assertEqual(result["status"], "launched")
+            self.assertEqual(result["document"]["content_type"], "application/xml")
+            self.assertTrue(result["document"]["name"].endswith("-synfig-starter.sif"))
+            launch.assert_called_once_with("synfig", Path(store.resolve_files(workspace_id, session_id, [result["document"]["file_id"]])[0]["path"]))
+            document = store.resolve_files(workspace_id, session_id, [result["document"]["file_id"]])[0]
+            self.assertIn('<layer type="import"', Path(document["path"]).read_text(encoding="utf-8"))
+            ledger = store.list_artifact_ledger(workspace_id)
+            starter = next(row for row in ledger if row["file_id"] == result["document"]["file_id"])
+            self.assertEqual(starter["metadata"]["animation"]["operation"], "synfig_starter")
+
+    def test_animation_shot_package_export_and_render_import_are_ledgered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root)
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "animation_studio")
+            background = store.save_file(workspace_id, session_id, "desk.png", b"image", "image/png")
+            voice = store.save_file(workspace_id, session_id, "voice.wav", b"voice", "audio/wav")
+            project = {
+                "project_id": "pilot",
+                "title": "Pilot",
+                "storyboard": [{"shot_id": "opening", "title": "Opening", "asset_id": "desk"}],
+                "assets": [{"asset_id": "desk", "file_id": background["file_id"], "name": "desk.png", "role": "background"}],
+                "audio_tracks": [{"track_id": "voice", "file_id": voice["file_id"], "name": "voice.wav", "shot_id": "opening"}],
+            }
+            studio = AnimationStudio(root)
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANIMATION", studio):
+                pending = veridex_server.export_animation_shot({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "project": project,
+                    "shot_id": "opening",
+                })
+                exported = veridex_server.export_animation_shot({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "project": project,
+                    "shot_id": "opening",
+                    "confirm": True,
+                })
+                render = store.save_file(workspace_id, session_id, "opening.mp4", b"render", "video/mp4")
+                imported = veridex_server.import_animation_render({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "project": project,
+                    "shot_id": "opening",
+                    "file_id": render["file_id"],
+                    "confirm": True,
+                })
+
+            self.assertEqual(pending["status"], "confirmation_required")
+            self.assertEqual(exported["status"], "completed")
+            self.assertEqual(exported["manifest"]["asset_count"], 1)
+            self.assertEqual(exported["manifest"]["audio_count"], 1)
+            self.assertEqual(exported["file"]["content_type"], "application/zip")
+            self.assertEqual(exported["file"]["scope_ref"], "animation_studio")
+            self.assertEqual(imported["status"], "completed")
+            self.assertEqual(imported["project"]["rendered_shots"][0]["file_id"], render["file_id"])
+            ledger = store.list_artifact_ledger(workspace_id)
+            package_ledger = next(row for row in ledger if row["file_id"] == exported["file"]["file_id"])
+            self.assertEqual(package_ledger["metadata"]["animation"]["operation"], "synfig_shot_package")
 
     def test_lobby_coding_file_search_and_media_requests_stay_on_codex(self) -> None:
         cases = [
