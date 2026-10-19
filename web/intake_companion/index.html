@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veridex Capture</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header><div><p>VERIDEX COMPANION</p><h1>Capture inbox</h1></div><a id="open-workspace">Open Veridex workspace</a></header>
+  <main>
+    <section class="batch-bar"><label>Batch<select id="batch-select"></select></label><button id="new-batch" class="quiet">New batch</button><button id="new-item">New item</button></section>
+    <nav id="item-list" aria-label="Items"></nav>
+    <section id="empty"><h2>Choose a batch, then add one item at a time.</h2><p>Photos, notes, and shared research links go to the PC. Veridex can review them there later.</p></section>
+    <form id="item-form" hidden>
+      <div class="item-heading"><div><p id="batch-name">BATCH</p><input id="title" aria-label="Item name" placeholder="Item name"></div><button id="save" type="submit">Save</button></div>
+      <label>Notes <textarea id="notes" rows="5" placeholder="What you see, condition, measurements, questions, and anything you want Veridex to extract later."></textarea></label>
+      <section class="links"><h2>Research threads</h2><label>ChatGPT shared link <input id="chatgpt-link" type="url" inputmode="url" placeholder="https://chatgpt.com/share/..."></label><a id="chatgpt-open" target="_blank" rel="noreferrer" hidden>Open saved ChatGPT thread</a><label>Gemini shared link <input id="gemini-link" type="url" inputmode="url" placeholder="https://g.co/gemini/share/..."></label><a id="gemini-open" target="_blank" rel="noreferrer" hidden>Open saved Gemini thread</a></section>
+      <section class="photos"><h2>Photos</h2><label class="photo-button"><input id="photos" type="file" accept="image/*" multiple capture="environment">Take or add photos</label><input id="native-camera-input" type="file" accept="image/*" capture="environment" hidden><div class="camera-actions"><button id="open-camera" class="quiet" type="button">Camera</button><button id="open-closeup-camera" class="quiet" type="button">Close-up</button></div><div id="photo-list"></div></section>
+      <button id="archive" class="delete" type="button">Remove from phone queue</button><p class="help">This hides the item from the phone companion but preserves it on the PC for Veridex review.</p>
+      <button id="delete-item" class="delete permanent" type="button">Delete from PC catalog</button><p class="help">Permanently removes this item, its photos, notes, and catalog record. You will be asked to type DELETE.</p>
+    </form>
+  </main>
+  <dialog id="camera-dialog" class="camera-dialog" aria-labelledby="camera-title">
+    <div class="camera-dialog-header"><div><p>REAR CAMERA</p><h2 id="camera-title">Camera</h2></div><button id="close-camera" class="quiet" type="button">Cancel</button></div>
+    <div class="camera-dialog-body"><video id="camera-preview" autoplay muted playsinline></video><p id="camera-mode-note" class="help">Point the rear camera at the item, then capture the photo.</p><div class="camera-dialog-actions"><button id="capture-camera-photo" type="button">Capture photo</button></div></div>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

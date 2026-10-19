@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
+import math
 import mimetypes
 import os
 import re
@@ -19,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
+
+from PIL import Image, ImageChops, ImageEnhance, ImageOps
 
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
 from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
@@ -36,6 +41,7 @@ from facebook_chrome_bridge import (
 from google_chrome_search import (
     GoogleChromeSearchError,
     continues_google_search,
+    import_shared_thread,
     search_ebay_product_research,
     search_google,
     search_google_lens,
@@ -62,6 +68,7 @@ from price_search_controller import (
     provider_spelling_suggestion,
 )
 from signature_analysis import MAX_CANDIDATES, normalize_model_candidates, query_suggestions
+from seller_intake import SellerIntakeCatalog
 from resume_studio import (
     ResumeStudio,
     export_bundle,
@@ -167,6 +174,7 @@ STORE = VeridexStore(DATA_ROOT, ADMIN.active_governance_path)
 RESUME = ResumeStudio(DATA_ROOT, ROOT / "resume_templates")
 ART = ArtStudio(DATA_ROOT)
 ANTIQUES = AntiquesDepartment(DATA_ROOT)
+SELLER_INTAKE = SellerIntakeCatalog(DATA_ROOT)
 ART_JOBS = ArtJobManager()
 MUSEUM_JOBS = ArtJobManager(workers=1, prefix="museumjob", label="Museum analysis")
 PRICE_SEARCH_JOBS = PriceSearchJobManager(workers=2)
@@ -178,6 +186,183 @@ MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACH
 ACTIVE_REQUESTS = ActiveRequestRegistry()
 REMOTE_ACCESS_PATH = DATA_ROOT / "system" / "remote_access.json"
 REMOTE_COOKIE = "veridex_remote_session"
+
+MAX_THREAD_IMPORT_IMAGES = 8
+MAX_THREAD_IMPORT_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _thread_import_payload(item_id: str, provider: str) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    item = SELLER_INTAKE.get_item(item_id)
+    key = f"{provider}_thread_url"
+    thread_url = str(item.get(key) or "").strip()
+    if provider not in {"chatgpt", "gemini"} or not thread_url:
+        raise ValueError(f"This item has no saved {provider.title()} shared link")
+    extracted = import_shared_thread(thread_url)
+    if str(extracted.get("thread_provider") or "") != provider:
+        raise ValueError("The saved shared link did not match the requested provider")
+    return item, thread_url, extracted
+
+
+def preview_shared_thread_import(item_id: str, provider: str) -> Dict[str, Any]:
+    _, thread_url, extracted = _thread_import_payload(item_id, provider)
+    text = str(extracted.get("text") or "")
+    return {
+        "provider": provider,
+        "thread_url": thread_url,
+        "page_title": str(extracted.get("page_title") or ""),
+        "text_characters": len(text),
+        "text_preview": text[:3000],
+        "image_count": min(MAX_THREAD_IMPORT_IMAGES, len(extracted.get("images") or [])),
+    }
+
+
+def import_shared_thread_material(item_id: str, provider: str) -> Dict[str, Any]:
+    _, _, extracted = _thread_import_payload(item_id, provider)
+    text = str(extracted.get("text") or "").strip()
+    source_asset = None
+    if text:
+        source_asset = SELLER_INTAKE.add_source_text({
+            "item_id": item_id,
+            "title": f"{provider.title()} shared-thread import",
+            "text": text,
+        })
+    photos = []
+    for index, row in enumerate((extracted.get("images") or [])[:MAX_THREAD_IMPORT_IMAGES], start=1):
+        if not isinstance(row, dict):
+            continue
+        content_type = str(row.get("content_type") or "").lower()
+        if not content_type.startswith("image/"):
+            continue
+        try:
+            content = base64.b64decode(str(row.get("base64") or ""), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("The browser returned an invalid thread image") from exc
+        if not content or len(content) > MAX_THREAD_IMPORT_IMAGE_BYTES:
+            continue
+        extension = mimetypes.guess_extension(content_type.split(";", 1)[0]) or ".jpg"
+        photos.append(SELLER_INTAKE.add_asset(item_id, f"{provider}-thread-image-{index}{extension}", content, content_type, "photo"))
+    return {"source_asset": source_asset, "photos": photos, "item": SELLER_INTAKE.get_item(item_id)}
+
+
+def _intake_photo_source(item_id: str, asset_id: str) -> tuple[Dict[str, Any], bytes, Dict[str, Any]]:
+    asset, path = SELLER_INTAKE.asset_path(asset_id)
+    if str(asset["item_id"]) != str(item_id):
+        raise ValueError("That photo does not belong to this item")
+    if str(asset["role"]) != "photo":
+        raise ValueError("Only photos can be touched up")
+    content = path.read_bytes()
+    facts = validate_image_bytes(content)
+    return dict(asset), content, facts
+
+
+def _touchup_jpeg(content: bytes, operation: str, options: Dict[str, Any]) -> tuple[bytes, Dict[str, Any]]:
+    with Image.open(io.BytesIO(content)) as opened:
+        image = ImageOps.exif_transpose(opened)
+        image.load()
+    image = image.convert("RGB")
+    width, height = image.size
+    metadata: Dict[str, Any] = {"operation": operation, "engine": "local_pillow"}
+    if operation == "crop":
+        try:
+            left_percent = float(options.get("left_percent") or 0)
+            top_percent = float(options.get("top_percent") or 0)
+            right_percent = float(options.get("right_percent") or 100)
+            bottom_percent = float(options.get("bottom_percent") or 100)
+        except (TypeError, ValueError):
+            raise ValueError("Crop controls are invalid") from None
+        if not all(math.isfinite(value) and 0 <= value <= 100 for value in (left_percent, top_percent, right_percent, bottom_percent)):
+            raise ValueError("Crop controls must be percentages from 0 to 100")
+        left, top = round(width * left_percent / 100), round(height * top_percent / 100)
+        right, bottom = round(width * right_percent / 100), round(height * bottom_percent / 100)
+        if right - left < 32 or bottom - top < 32:
+            raise ValueError("Keep a crop area at least 32 pixels wide and high")
+        image = image.crop((left, top, right, bottom))
+        metadata["crop"] = {"left_percent": left_percent, "top_percent": top_percent, "right_percent": right_percent, "bottom_percent": bottom_percent}
+    elif operation == "auto_crop":
+        corners = [image.getpixel((x, y)) for x, y in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))]
+        background = tuple(round(sum(color[index] for color in corners) / len(corners)) for index in range(3))
+        difference = ImageOps.grayscale(ImageChops.difference(image, Image.new("RGB", image.size, background)))
+        box = difference.point(lambda value: 255 if value > 18 else 0).getbbox()
+        if box:
+            padding = max(4, round(min(width, height) * 0.02))
+            left, top, right, bottom = max(0, box[0] - padding), max(0, box[1] - padding), min(width, box[2] + padding), min(height, box[3] + padding)
+            if right - left >= 32 and bottom - top >= 32:
+                image = image.crop((left, top, right, bottom))
+                metadata["crop"] = {"left": left, "top": top, "right": right, "bottom": bottom, "method": "edge-contrast"}
+            else:
+                metadata["crop"] = {"method": "edge-contrast", "applied": False}
+        else:
+            metadata["crop"] = {"method": "edge-contrast", "applied": False}
+    elif operation == "auto_adjust":
+        image = ImageOps.autocontrast(image, cutoff=1)
+        image = ImageEnhance.Color(image).enhance(1.05)
+        image = ImageEnhance.Contrast(image).enhance(1.04)
+        image = ImageEnhance.Sharpness(image).enhance(1.08)
+        metadata["adjustments"] = {"autocontrast_cutoff": 1, "color": 1.05, "contrast": 1.04, "sharpness": 1.08}
+    else:
+        raise ValueError("Unknown touch-up operation")
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=92, optimize=True)
+    return output.getvalue(), metadata
+
+
+def touch_up_intake_photo(payload: Dict[str, Any]) -> Dict[str, Any]:
+    item_id = str(payload.get("item_id") or "").strip()
+    asset_id = str(payload.get("asset_id") or "").strip()
+    operation = str(payload.get("operation") or "").strip().lower()
+    asset, content, facts = _intake_photo_source(item_id, asset_id)
+    options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(asset["name"])).stem).strip("-")[:80] or "photo"
+    if operation in {"crop", "auto_crop", "auto_adjust"}:
+        output, transformation = _touchup_jpeg(content, operation, options)
+        filename, content_type = f"{stem}--{operation}.jpg", "image/jpeg"
+    elif operation == "ai":
+        if payload.get("confirm") is not True:
+            raise ValueError("Confirm the AI touch-up before sending this photo to the configured AI provider")
+        prompt = " ".join(str(payload.get("prompt") or "").split())[:2000]
+        if not prompt:
+            raise ValueError("Describe the AI touch-up you want")
+        provider = str(payload.get("provider") or "codex").strip().lower()
+        instruction = f"Edit this exact item photograph. Preserve the depicted item's identity, proportions, markings, and condition unless the user explicitly asks otherwise. User request: {prompt}"
+        if provider == "cloudflare":
+            if not ART.cloudflare.configured():
+                raise ValueError("Cloudflare reference edit is not configured; choose Codex image tools or use a local touch-up")
+            result = ART.generate({
+                "operation": "edit",
+                "model_id": "edit",
+                "preset_id": "photography",
+                "prompt": instruction,
+                "width": facts["width"],
+                "height": facts["height"],
+                "variants": 1,
+            }, [{"name": asset["name"], "content": content, "content_type": asset["content_type"]}])[0]
+        elif provider == "codex":
+            workspace_id = str(payload.get("workspace_id") or "").strip()
+            session_id = str(payload.get("session_id") or "").strip()
+            workspace_context(workspace_id, session_id)
+            if not codex_art_provider()["configured"]:
+                raise ValueError(str(codex_art_provider()["quota_label"]))
+            _, source_path = SELLER_INTAKE.asset_path(asset_id)
+            aspect = "landscape" if facts["width"] >= facts["height"] else "portrait"
+            result = codex_art_assets(workspace_id, session_id, f"intake_touchup_{uuid.uuid4().hex[:12]}", {
+                "operation": "edit",
+                "preset_id": "photography",
+                "prompt": instruction,
+                "aspect": aspect,
+                "variants": 1,
+            }, [{"name": asset["name"], "content": content, "content_type": asset["content_type"], "path": str(source_path)}])[0]
+        else:
+            raise ValueError("Choose Codex image tools or Cloudflare reference edit")
+        output = bytes(result["content"])
+        generated = validate_image_bytes(output)
+        filename = f"{stem}--ai-touch-up{str(result.get('extension') or '.png')}"
+        content_type = str(result.get("content_type") or generated["content_type"])
+        transformation = {"operation": "ai_touch_up", "prompt": prompt, "provider": provider, **(result.get("metadata") if isinstance(result.get("metadata"), dict) else {})}
+    else:
+        raise ValueError("Choose crop, auto crop, auto adjust, or AI touch-up")
+    saved = SELLER_INTAKE.add_asset(item_id, filename, output, content_type, "photo", source_asset_id=asset_id, transformation=transformation)
+    return {"asset": saved, "item": SELLER_INTAKE.get_item(item_id)}
+
 
 
 def workspace_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
@@ -3304,7 +3489,14 @@ class VeridexHandler(BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == f"Bearer {expected}"
 
     def _serve_asset(self, route: str) -> None:
-        relative = "index.html" if route in {"/", "/chat"} else route.lstrip("/")
+        if route in {"/", "/chat"}:
+            relative = "index.html"
+        elif route in {"/item-intake", "/item-intake/"}:
+            relative = "item_intake/index.html"
+        elif route.startswith("/item-intake/"):
+            relative = "item_intake/" + route.removeprefix("/item-intake/")
+        else:
+            relative = route.lstrip("/")
         candidate = (WEB_ROOT / relative).resolve()
         if WEB_ROOT not in candidate.parents and candidate != WEB_ROOT:
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -3333,6 +3525,40 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/health":
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
+            elif parsed.path == "/api/item-intake/bootstrap":
+                batch_id = str(query.get("batch_id", [""])[0]).strip()
+                item_id = str(query.get("item_id", [""])[0]).strip()
+                batches = SELLER_INTAKE.list_batches()
+                payload: Dict[str, Any] = {"batches": batches, "upload_limit_bytes": MAX_UPLOAD_BYTES}
+                if item_id:
+                    payload["item"] = SELLER_INTAKE.get_item(item_id)
+                    payload["batch"] = SELLER_INTAKE.get_batch(str(payload["item"]["batch_id"]))
+                elif batch_id:
+                    payload["batch"] = SELLER_INTAKE.get_batch(batch_id)
+                elif batches:
+                    payload["batch"] = SELLER_INTAKE.get_batch(str(batches[0]["batch_id"]))
+                self._json(payload)
+            elif parsed.path == "/api/item-intake/assets/content":
+                asset_id = str(query.get("asset_id", [""])[0]).strip()
+                asset, path = SELLER_INTAKE.asset_path(asset_id)
+                body = path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", str(asset["content_type"] or "application/octet-stream"))
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Disposition", f'inline; filename="{Path(str(asset["name"])).name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            elif parsed.path == "/api/item-intake/exports/content":
+                export_path = SELLER_INTAKE.export_path(str(query.get("path", [""])[0]))
+                body = export_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(export_path.name)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Disposition", f'attachment; filename="{export_path.name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             elif parsed.path == "/api/bootstrap":
                 self._json(state_response(STORE.ensure_default()))
             elif parsed.path == "/api/state":
@@ -3497,8 +3723,52 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 )
                 self._json({"file": saved, "files": STORE.list_files(workspace_id, session_id)}, HTTPStatus.CREATED)
                 return
+            if re.fullmatch(r"/api/item-intake/items/[A-Za-z0-9_-]+/assets", parsed.path):
+                query = parse_qs(parsed.query)
+                item_id = parsed.path.split("/")[4]
+                filename = str(query.get("name", [""])[0]).strip()
+                role = str(query.get("role", ["attachment"])[0]).strip()
+                content = self._raw_body(MAX_UPLOAD_BYTES)
+                asset = SELLER_INTAKE.add_asset(
+                    item_id,
+                    filename,
+                    content,
+                    str(self.headers.get("Content-Type") or "application/octet-stream"),
+                    role,
+                )
+                self._json({"asset": asset, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
+                return
             payload = self._body()
-            if parsed.path == "/api/integrations/instagram/connect":
+            if parsed.path == "/api/item-intake/batches":
+                self._json({"batch": SELLER_INTAKE.create_batch(payload)}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/items":
+                self._json({"item": SELLER_INTAKE.create_item(payload)}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/items/update":
+                self._json({"item": SELLER_INTAKE.update_item(payload)})
+            elif parsed.path == "/api/item-intake/assets/delete":
+                self._json({"deleted": SELLER_INTAKE.delete_asset(str(payload.get("item_id") or ""), str(payload.get("asset_id") or ""))})
+            elif parsed.path == "/api/item-intake/photos/touch-up":
+                self._json({"touch_up": touch_up_intake_photo(payload)}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/threads/preview":
+                self._json({"preview": preview_shared_thread_import(str(payload.get("item_id") or ""), str(payload.get("provider") or ""))})
+            elif parsed.path == "/api/item-intake/threads/import":
+                if payload.get("confirm") is not True:
+                    raise ValueError("Confirm the reviewed thread import before saving it")
+                self._json({"imported": import_shared_thread_material(str(payload.get("item_id") or ""), str(payload.get("provider") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/sources/text":
+                asset = SELLER_INTAKE.add_source_text(payload)
+                self._json({"asset": asset, "item": SELLER_INTAKE.get_item(str(payload.get("item_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/evidence":
+                evidence = SELLER_INTAKE.add_evidence(payload)
+                self._json({"evidence": evidence, "item": SELLER_INTAKE.get_item(str(payload.get("item_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/exports":
+                self._json(SELLER_INTAKE.export_batch(str(payload.get("batch_id") or "")), HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/handoff":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                self._json({"handoff": SELLER_INTAKE.handoff_to_veridex(str(payload.get("item_id") or ""), workspace_id, session_id, STORE)})
+            elif parsed.path == "/api/integrations/instagram/connect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 workspace_context(workspace_id, session_id)

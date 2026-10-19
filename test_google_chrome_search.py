@@ -65,6 +65,29 @@ class GoogleChromeSearchTests(unittest.TestCase):
         self.assertEqual(result["page"]["result_state"], "ready")
         self.assertEqual(result["calls"], [])
 
+    def test_lens_uses_trusted_cdp_click_for_search_by_image_control(self) -> None:
+        result = run_bridge_javascript(
+            """
+(async () => {
+  const calls = [];
+  const client = {send: async (method, params) => {
+    calls.push({method, params});
+    if (method === "Runtime.evaluate") return {result: {value: {found: true, x: 42, y: 24}}};
+    return {};
+  }};
+  const opened = await bridge.clickElementCenter(client, '[aria-label="Search by image"]');
+  console.log(JSON.stringify({opened, calls}));
+})().catch((error) => { console.error(error); process.exit(1); });
+"""
+        )
+        self.assertTrue(result["opened"])
+        self.assertEqual(
+            [call["method"] for call in result["calls"]],
+            ["Runtime.evaluate", "Input.dispatchMouseEvent", "Input.dispatchMouseEvent"],
+        )
+        self.assertEqual(result["calls"][1]["params"]["type"], "mousePressed")
+        self.assertEqual(result["calls"][2]["params"]["type"], "mouseReleased")
+
     def test_bridge_navigates_about_blank_target_once(self) -> None:
         result = run_bridge_javascript(
             """
@@ -299,10 +322,20 @@ console.log(JSON.stringify({
             image.write_bytes(b"photo")
             result = google_chrome_search.search_google_lens(image)
             self.assertEqual(run.call_args.args[0][-2:], ["lens", str(image.resolve())])
+            self.assertEqual(run.call_args.kwargs["timeout"], 45)
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["results"][0]["rank"], 1)
         google_chrome_search.search_ebay_product_research("studio pottery bowl")
         self.assertEqual(run.call_args.args[0][-2:], ["ebay", "studio pottery bowl"])
+
+    @patch("google_chrome_search._run", return_value={"ok": True, "status": "failed", "error": "upload control missing"})
+    def test_lens_failed_status_is_an_error_not_usable_evidence(self, run) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "item.jpg"
+            image.write_bytes(b"photo")
+            with self.assertRaisesRegex(google_chrome_search.GoogleChromeSearchError, "upload control missing"):
+                google_chrome_search.search_google_lens(image, timeout=23)
+        run.assert_called_once_with("lens", str(image.resolve()), timeout=23, cancel_event=None)
 
     @patch("google_chrome_search._run", return_value={"ok": True, "provider": "test"})
     def test_ebay_research_rejects_unverified_default_date_range(self, _run) -> None:

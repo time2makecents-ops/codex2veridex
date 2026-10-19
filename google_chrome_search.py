@@ -200,11 +200,35 @@ def search_google(
     return _run("search", resolve_google_query(text, messages), timeout=max(1, int(timeout)), cancel_event=cancel_event)
 
 
-def search_google_lens(image_path: Path, cancel_event: Any = None) -> Dict[str, Any]:
+def search_google_lens(
+    image_path: Path,
+    cancel_event: Any = None,
+    *,
+    timeout: int = 45,
+) -> Dict[str, Any]:
     candidate = Path(image_path).resolve()
     if not candidate.is_file():
         raise GoogleChromeSearchError("The selected Google Lens image is unavailable.")
-    return normalize_lens_payload(_run("lens", str(candidate), timeout=90, cancel_event=cancel_event))
+    result = normalize_lens_payload(
+        _run("lens", str(candidate), timeout=max(1, int(timeout)), cancel_event=cancel_event)
+    )
+    status = str(result.get("status") or "failed")
+    if status != "completed":
+        detail = str(result.get("error") or "").strip()
+        if not detail:
+            detail = {
+                "blocked": "Google presented an anti-automation challenge for Lens.",
+                "limited": "Google Lens returned no usable visual matches.",
+            }.get(status, "Google Lens failed without usable evidence.")
+        raise GoogleChromeSearchError(detail)
+    return result
+
+
+def import_shared_thread(thread_url: str, cancel_event: Any = None, *, timeout: int = 90) -> Dict[str, Any]:
+    value = str(thread_url or "").strip()
+    if not value:
+        raise GoogleChromeSearchError("A shared-thread URL is required.")
+    return _run("thread", value, timeout=max(1, int(timeout)), cancel_event=cancel_event)
 
 
 def search_ebay_product_research(query: str, cancel_event: Any = None, *, timeout: int = 90) -> Dict[str, Any]:

@@ -114,6 +114,7 @@ class CdpClient {
   constructor(url) {
     this.nextId = 1;
     this.pending = new Map();
+    this.events = [];
     this.socket = new WebSocket(url);
   }
 
@@ -124,7 +125,12 @@ class CdpClient {
     });
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
-      if (!message.id || !this.pending.has(message.id)) return;
+      if (!message.id) {
+        this.events.push(message);
+        if (this.events.length > 600) this.events.shift();
+        return;
+      }
+      if (!this.pending.has(message.id)) return;
       const { resolve, reject } = this.pending.get(message.id);
       this.pending.delete(message.id);
       if (message.error) reject(new Error(message.error.message || "Chrome command failed."));
@@ -523,6 +529,28 @@ async function pageEvidence(client, textLimit = 16000) {
   return evaluated.result && evaluated.result.value ? evaluated.result.value : {};
 }
 
+async function clickElementCenter(client, selector) {
+  const located = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const node = document.querySelector(${JSON.stringify(selector)});
+      if (!node) return { found: false };
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return { found: false };
+      return { found: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    })()`,
+    returnByValue: true,
+  });
+  const point = located.result && located.result.value ? located.result.value : {};
+  if (!point.found) return false;
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1,
+  });
+  await client.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1,
+  });
+  return true;
+}
+
 async function searchGoogleLens(filePath) {
   if (!fs.existsSync(filePath)) throw new Error("The selected Google Lens image does not exist.");
   const lensUrl = "https://www.google.com/imghp?hl=en";
@@ -542,15 +570,11 @@ async function searchGoogleLens(filePath) {
     const lensInputSelector = 'input[jsname="wcaWdc"], input[name="encoded_image"], form[action*="searchbyimage"] input[type="file"], input[type="file"][accept*="tiff"], input[type="file"]';
     let found = await client.send("DOM.querySelector", { nodeId: document.root.nodeId, selector: lensInputSelector });
     if (!found.nodeId) {
-      await client.send("Runtime.evaluate", {
-        expression: `(() => {
-          const button = document.querySelector('[aria-label="Search by image"], [aria-label*="Search by image"]');
-          if (!button) return false;
-          button.click();
-          return true;
-        })()`,
-        returnByValue: true,
-      });
+      const opened = await clickElementCenter(
+        client,
+        '[aria-label="Search by image"], [aria-label*="Search by image"]',
+      );
+      if (!opened) throw new Error("Google Images did not expose its Search by image control.");
       await new Promise((resolve) => setTimeout(resolve, 750));
       const modalTargets = await getJson("/json/list");
       const modalTarget = modalTargets.find((row) => (
@@ -653,6 +677,105 @@ async function searchGoogleLens(filePath) {
     client.close();
     await closeTab(evidenceTarget.id);
     if (evidenceTarget.id !== target.id) await closeTab(target.id);
+  }
+}
+
+function sharedThreadProvider(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch (_) { throw new Error("A valid shared-thread URL is required."); }
+  const host = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:") throw new Error("Shared-thread links must use HTTPS.");
+  if (host === "chatgpt.com" && parsed.pathname.startsWith("/share/")) return "chatgpt";
+  if (host === "g.co" && parsed.pathname.startsWith("/gemini/share/")) return "gemini";
+  throw new Error("Only ChatGPT and Gemini shared-thread links can be imported.");
+}
+
+async function sharedThreadSnapshot(client) {
+  const evaluated = await client.send("Runtime.evaluate", {
+    expression: `(() => {
+      const clean = (value) => String(value || "").replace(/\\r/g, "").replace(/\\n{3,}/g, "\\n\\n").trim();
+      const root = document.querySelector("main") || document.querySelector('[role="main"]') || document.body;
+      const images = Array.from((root || document).querySelectorAll("img"))
+        .map((node) => ({ url: node.currentSrc || node.src || "", alt: clean(node.alt || "") }))
+        .filter((row) => /^https:/i.test(row.url))
+        .filter((row) => !/avatar|favicon|logo|profile/i.test(String(row.url || "") + " " + String(row.alt || "")))
+        .filter((row, index, values) => values.findIndex((candidate) => candidate.url === row.url) === index)
+        .slice(0, 8);
+      return { title: document.title, url: location.href, text: clean(root ? root.innerText : "").slice(0, 80000), images };
+    })()`,
+    returnByValue: true,
+  });
+  if (evaluated.exceptionDetails) throw new Error("The shared-thread page could not be read.");
+  return evaluated.result && evaluated.result.value ? evaluated.result.value : {};
+}
+
+async function visibleImageBodies(client, imageRows) {
+  const wanted = new Set((Array.isArray(imageRows) ? imageRows : []).map((row) => String(row.url || "")));
+  const found = [];
+  let total = 0;
+  for (const event of client.events) {
+    if (event.method !== "Network.responseReceived") continue;
+    const response = event.params && event.params.response ? event.params.response : {};
+    const url = String(response.url || "");
+    if (!wanted.has(url) || found.some((row) => row.url === url)) continue;
+    const mimeType = String(response.mimeType || "").toLowerCase();
+    if (!mimeType.startsWith("image/")) continue;
+    try {
+      const body = await client.send("Network.getResponseBody", { requestId: event.params.requestId });
+      const raw = String(body.body || "");
+      const base64 = body.base64Encoded ? raw : Buffer.from(raw, "utf8").toString("base64");
+      const size = Buffer.byteLength(base64, "base64");
+      if (!size || size > 5 * 1024 * 1024 || total + size > 12 * 1024 * 1024) continue;
+      total += size;
+      found.push({ url, content_type: mimeType, base64 });
+    } catch (_) { /* A missing cached response simply is not importable. */ }
+  }
+  return found;
+}
+
+async function importSharedThread(url) {
+  const provider = sharedThreadProvider(url);
+  const browserStarted = await ensureChrome(url);
+  if (provider === "gemini") {
+    const status = profileStatus();
+    const siteStatus = await siteAccountStatus();
+    if (!status.signed_in && !siteStatus.site_signed_in) {
+      throw new Error(`The dedicated Veridex Chrome profile is not signed in as ${expectedEmail}. Run .\\veridex.ps1 google-profile first.`);
+    }
+  }
+  const target = await createSearchTab(url);
+  const client = new CdpClient(target.webSocketDebuggerUrl);
+  try {
+    await client.connect();
+    await client.send("Network.enable");
+    await client.send("Page.enable");
+    await client.send("Runtime.enable");
+    await client.send("Runtime.evaluate", { expression: 'window.name = "veridex-automation"' });
+    await waitForDocument(client);
+    await client.send("Page.reload", { ignoreCache: false });
+    await waitForDocument(client);
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    const page = await sharedThreadSnapshot(client);
+    const text = String(page.text || "");
+    if (/sign in|log in|access denied|not found|share link.*invalid|expired/i.test(`${page.title || ""} ${text}`) || !text) {
+      throw new Error("The shared thread is unavailable, private, expired, or requires a login.");
+    }
+    const images = await visibleImageBodies(client, page.images);
+    return {
+      ok: true,
+      provider: `${provider}_shared_thread_chrome_profile`,
+      thread_provider: provider,
+      imported_at: new Date().toISOString(),
+      page_title: String(page.title || "").slice(0, 300),
+      page_url: String(page.url || url),
+      text,
+      image_count: images.length,
+      images,
+      browser_started: browserStarted,
+    };
+  } finally {
+    client.close();
+    await closeTab(target.id);
   }
 }
 
@@ -775,6 +898,12 @@ async function main() {
     output(await searchGoogleLens(filePath));
     return;
   }
+  if (action === "thread") {
+    const threadUrl = String(process.argv.slice(3).join(" ") || "").trim();
+    if (!threadUrl) throw new Error("A shared-thread URL is required.");
+    output(await importSharedThread(threadUrl));
+    return;
+  }
   if (action === "ebay") {
     const query = String(process.argv.slice(3).join(" ") || "").trim();
     if (!query) throw new Error("An eBay Product Research query is required.");
@@ -810,6 +939,7 @@ if (require.main === module) main().catch((error) => {
 });
 
 module.exports = {
+  clickElementCenter,
   classifyGooglePage,
   compactGoogleDiagnostic,
   selectGooglePageText,

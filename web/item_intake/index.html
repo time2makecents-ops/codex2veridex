@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veridex Item Intake</title>
+  <link rel="stylesheet" href="/item-intake/styles.css">
+  <style>
+    .advanced-details{border:1px solid #d8dfd9;border-radius:6px;background:#fff}.advanced-details summary{display:grid;gap:2px;padding:12px 14px;cursor:pointer;color:#1c6a48;font-weight:800}.advanced-details summary small{color:#66736b;font-weight:500}.advanced-details-body{padding:0 14px 14px;border-top:1px solid #d8dfd9}.advanced-details[open] summary{background:#f3f8f4}
+    .photo-asset{display:grid;grid-template-columns:78px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px;border-left:2px solid #8ac09a;background:#fff}.photo-asset img{display:block;width:78px;height:78px;object-fit:cover;border-radius:4px;background:#eaf3ec}.photo-asset a{color:#1c6a48;font-weight:750;text-decoration:none}.photo-asset small{display:block;margin-top:3px;color:#66736b;font-size:11px}.photo-asset-actions{display:grid;gap:6px;justify-items:start}.photo-asset-actions button{white-space:nowrap}.asset-delete{color:#994343!important;border-color:#d2a3a3!important}@media(max-width:850px){.photo-asset{grid-template-columns:64px minmax(0,1fr)}.photo-asset img{width:64px;height:64px}.photo-asset-actions{grid-column:1/-1;grid-template-columns:auto auto}}
+    .thread-import-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.thread-import-preview{margin-top:14px;padding:12px;border-left:2px solid #8ac09a;background:#fff}.thread-import-preview p{margin:0 0 9px;font-size:12px}.thread-import-preview pre{max-height:180px;margin:0 0 10px;padding:9px;overflow:auto;white-space:pre-wrap;background:#f4f7f4;color:#435348;font:12px/1.45 ui-monospace,monospace}
+    .camera-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:11px}.camera-dialog{width:min(92vw,680px);padding:0;border:1px solid #afc2b2;border-radius:8px;color:#1b261f;background:#f7f9f6;box-shadow:0 24px 70px #10201766}.camera-dialog::backdrop{background:#102017a8}.camera-dialog-header{display:flex;justify-content:space-between;gap:12px;align-items:start;padding:16px 18px 10px}.camera-dialog-header h2{margin:2px 0 0;font:600 24px/1.1 Georgia,serif}.camera-dialog-body{padding:0 18px 18px}.camera-dialog video{display:block;width:100%;max-height:65vh;min-height:220px;object-fit:cover;border-radius:6px;background:#13241b}.camera-dialog-note{margin:10px 0;color:#66736b;font-size:12px}.camera-dialog-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:13px}
+    .touchup-dialog{width:min(94vw,860px);max-height:94vh;padding:0;border:1px solid #afc2b2;border-radius:8px;color:#1b261f;background:#f7f9f6;box-shadow:0 24px 70px #10201766}.touchup-dialog::backdrop{background:#102017a8}.touchup-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.7fr);gap:18px;padding:0 18px 18px}.touchup-preview{position:relative;display:grid;place-items:center;min-height:300px;margin:0;border:1px solid #d8dfd9;background:#13241b;overflow:hidden}.touchup-preview img{display:block;max-width:100%;max-height:62vh;object-fit:contain}.touchup-crop-guide{position:absolute;border:2px solid #f0e29a;box-shadow:0 0 0 9999px #10201766;pointer-events:none}.touchup-panel{display:grid;align-content:start;gap:10px}.touchup-panel h3{margin:0;font:600 19px/1.1 Georgia,serif}.touchup-panel label{margin:0}.touchup-panel input[type="range"]{padding:0}.touchup-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:3px}.touchup-note{margin:0;color:#66736b;font-size:12px}.touchup-status{min-height:18px;margin:0;color:#1c6a48;font-size:12px;font-weight:750}@media(max-width:700px){.touchup-layout{grid-template-columns:1fr}.touchup-preview{min-height:220px}.touchup-preview img{max-height:42vh}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">VERIDEX <span>ITEM INTAKE</span></a>
+    <div class="top-actions"><span id="connection-status">Private paired workspace</span><button id="new-batch" class="quiet">New batch</button></div>
+  </header>
+  <main class="app-shell">
+    <aside class="batch-rail">
+      <div class="rail-heading"><div><p class="eyebrow">Batches</p><h1>Capture queue</h1></div><button id="new-item" class="circle" title="New item">+</button></div>
+      <div id="batch-list" class="batch-list"></div>
+    </aside>
+    <section class="workspace">
+      <div id="empty-state" class="empty-state">
+        <p class="eyebrow">Start here</p><h2>Create a batch, then one item for each object.</h2>
+        <p>All photos, documents, and research you add while an item is active stay together in its folder.</p>
+        <button id="empty-new-batch">Create first batch</button>
+      </div>
+      <div id="item-workspace" hidden>
+        <header class="item-header">
+          <div><p id="batch-label" class="eyebrow"></p><input id="item-title" aria-label="Item title" placeholder="Untitled item"></div>
+          <div class="header-actions"><span id="save-state"></span><button id="save-item" class="quiet">Save changes</button></div>
+        </header>
+        <div class="item-layout">
+          <section class="capture-column">
+            <section class="field-section">
+              <div class="section-heading"><div><p class="eyebrow">Item record</p><h2>Catalog details</h2></div></div>
+              <details class="advanced-details">
+                <summary><span>Advanced details</span><small>Reference ID, status, description, value, tags, and research</small></summary>
+                <div class="advanced-details-body">
+                  <label>Reference ID<input id="item-reference-id" placeholder="Reuse across related captures or batches"></label>
+                  <label>Item status<select id="item-status"><option value="intake">Intake</option><option value="needs_review">Needs review</option><option value="research_ready">Research ready</option><option value="handed_off">Handed off</option><option value="listed">Listed</option><option value="archived">Archived</option></select></label>
+                  <label>Description<textarea id="item-description" rows="4" placeholder="Object, condition, maker marks, measurements, anything worth preserving."></textarea></label>
+                  <div class="two-up"><label>Estimated value<input id="item-value" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Currency<input id="item-currency" value="USD" maxlength="12"></label></div>
+                  <label>Tags<input id="item-tags" placeholder="vintage, glass, estate"></label>
+                  <label class="check"><input id="item-research" type="checkbox"> Research is needed</label>
+                  <label>Private notes<textarea id="item-notes" rows="3" placeholder="These stay in the local intake record."></textarea></label>
+                </div>
+              </details>
+            </section>
+            <section class="field-section upload-section">
+              <div class="section-heading"><div><p class="eyebrow">Evidence files</p><h2>Add to this item</h2></div><select id="asset-role" aria-label="File role"><option value="photo">Photo</option><option value="document">Document</option><option value="research_source">Research chat / source</option><option value="media">Audio or video</option><option value="attachment">Other attachment</option></select></div>
+              <label id="drop-zone" class="drop-zone"><input id="file-input" type="file" multiple capture="environment" accept="image/*,application/pdf,text/plain,text/markdown,text/html,application/json,.doc,.docx,.xls,.xlsx,audio/*,video/*"><strong>Take photos or add files</strong><span>Tap to use the camera or choose several files. Files are stored as-is; nothing is processed automatically.</span></label>
+              <input id="native-camera-input" type="file" accept="image/*" capture="environment" hidden>
+              <div class="camera-actions"><button id="open-camera" class="quiet" type="button">Camera</button><button id="open-closeup-camera" class="quiet" type="button">Close-up</button></div>
+              <div id="asset-list" class="asset-list"></div>
+            </section>
+          </section>
+          <aside class="research-column">
+            <section class="field-section">
+              <div class="section-heading"><div><p class="eyebrow">Research sources</p><h2>Save a chat thread</h2></div></div>
+              <label>ChatGPT shared thread link<input id="item-chatgpt-thread-url" type="url" inputmode="url" placeholder="https://chatgpt.com/share/..." autocomplete="off"></label>
+              <a id="item-chatgpt-thread-link" class="source-link" target="_blank" rel="noreferrer" hidden>Open saved ChatGPT thread</a>
+              <label>Gemini shared thread link<input id="item-gemini-thread-url" type="url" inputmode="url" placeholder="https://g.co/gemini/share/..." autocomplete="off"></label>
+              <a id="item-gemini-thread-link" class="source-link" target="_blank" rel="noreferrer" hidden>Open saved Gemini thread</a>
+              <p class="field-help">Preview a public shared thread, then choose whether to save its visible text and images into this item.</p>
+              <div class="thread-import-actions"><button id="preview-chatgpt-thread" class="quiet" type="button">Preview ChatGPT import</button><button id="preview-gemini-thread" class="quiet" type="button">Preview Gemini import</button></div>
+              <section id="thread-import-preview" class="thread-import-preview" hidden><p id="thread-import-summary"></p><pre id="thread-import-text"></pre><button id="save-thread-import" type="button">Save reviewed import</button></section>
+            </section>
+            <section class="field-section">
+              <div class="section-heading"><div><p class="eyebrow">Findings</p><h2>What you found</h2></div></div>
+              <label>Finding<textarea id="evidence-claim" rows="3" placeholder="Example: The signature may read J. Smith."></textarea></label>
+              <button id="save-evidence" class="quiet">Save finding</button>
+              <div id="evidence-list" class="evidence-list"></div>
+            </section>
+            <section class="field-section handoff-section">
+              <p class="eyebrow">Next step</p><h2>Move it forward</h2>
+              <p>Exports do not send data anywhere. Handoff copies verified files into your current Veridex session; research and marketplace actions stay separate.</p>
+              <div class="handoff-actions"><button id="export-batch" class="quiet">Export batch</button><button id="handoff-item">Send to Veridex</button></div>
+              <div id="export-list" class="export-list"></div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+  <dialog id="camera-dialog" class="camera-dialog" aria-labelledby="camera-title">
+    <div class="camera-dialog-header"><div><p class="eyebrow">Rear camera</p><h2 id="camera-title">Camera</h2></div><button id="close-camera" class="quiet" type="button">Cancel</button></div>
+    <div class="camera-dialog-body"><video id="camera-preview" autoplay muted playsinline></video><p id="camera-mode-note" class="camera-dialog-note">Point the rear camera at the item, then capture the photo.</p><div class="camera-dialog-actions"><button id="capture-camera-photo" type="button">Capture photo</button></div></div>
+  </dialog>
+  <dialog id="photo-touchup-dialog" class="touchup-dialog" aria-labelledby="touchup-title">
+    <div class="camera-dialog-header"><div><p class="eyebrow">Non-destructive photo edit</p><h2 id="touchup-title">Touch up photo</h2></div><button id="close-touchup" class="quiet" type="button">Close</button></div>
+    <div class="touchup-layout"><figure class="touchup-preview"><img id="touchup-image" alt="Selected photo for touch-up"><div id="touchup-crop-guide" class="touchup-crop-guide"></div></figure><section class="touchup-panel"><p id="touchup-source-name" class="touchup-note"></p><h3>Manual crop</h3><label>Left edge <input id="touchup-left" type="range" min="0" max="90" value="0"></label><label>Top edge <input id="touchup-top" type="range" min="0" max="90" value="0"></label><label>Right edge <input id="touchup-right" type="range" min="10" max="100" value="100"></label><label>Bottom edge <input id="touchup-bottom" type="range" min="10" max="100" value="100"></label><div class="touchup-actions"><button id="save-manual-crop" class="quiet" type="button">Save crop</button><button id="auto-crop" class="quiet" type="button">Auto crop</button><button id="auto-adjust" class="quiet" type="button">Auto adjust</button></div><h3>AI touch-up</h3><label>AI provider<select id="ai-touchup-provider"><option value="codex">Codex image tools</option><option value="cloudflare">Cloudflare reference edit</option></select></label><label>Describe the edit<textarea id="ai-touchup-prompt" rows="4" placeholder="Example: Remove the reflection on the glass, but preserve the maker's mark and all colors."></textarea></label><p class="touchup-note">AI touch-up sends this selected photo and your instruction only to the provider you choose. It always saves a separate result.</p><button id="apply-ai-touchup" type="button">Create AI touch-up</button><p id="touchup-status" class="touchup-status" role="status"></p></section></div>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/item-intake/app.js"></script>
+</body>
+</html>
