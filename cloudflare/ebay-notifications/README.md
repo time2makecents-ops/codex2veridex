@@ -6,6 +6,12 @@ an event in D1. Veridex reads events through a bearer-authenticated queue and
 acknowledgement deletes the Cloudflare copy. A daily cleanup removes unclaimed
 events after seven days.
 
+Local Veridex consumes this queue through `ebay_notifications.py`. It requires an
+exact workspace binding, durably stores each event before acknowledgement, and uses
+the eBay notification ID as its idempotency key. Marketplace Account Deletion events
+are reduced to non-identifying audit metadata and a payload digest before the remote
+copy is deleted; their raw payload is not copied into the local database.
+
 ## Required Worker secrets
 
 - `EBAY_VERIFICATION_TOKEN`: 32-80 alphanumeric, underscore, or hyphen characters.
@@ -71,5 +77,11 @@ privacy URL; do not replace it with the Worker route.
 - The production eBay OAuth exchange completed for the workspace and authenticated
   seller reads succeeded.
 - eBay Developer Portal topic registration and an end-to-end notification delivery
-  are not yet recorded as verified. Do not infer buyer-message or sold-item alerting
-  merely from the deployed endpoint.
+  are verified for Marketplace Account Deletion. Production user subscriptions for
+  `ORDER_CONFIRMATION`, `BUYER_QUESTION`, and `NEW_MESSAGE` are enabled, and one
+  eBay-generated test event for each completed Worker receipt, D1 queueing, local
+  mapping, and acknowledgment on 2026-09-24. Real buyer-message and sold-item delivery
+  remain to be observed before claiming real-world coverage.
+- The local Veridex service automatically drains the workspace-bound D1 queue at startup
+  and every 60 seconds by default. The manual Connected accounts check remains available
+  for an immediate retry or operator verification.

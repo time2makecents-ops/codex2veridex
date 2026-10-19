@@ -401,7 +401,12 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     workdir = Path(_env("VERIDEX_CODEX_WORKDIR", str(Path(__file__).resolve().parent))).resolve()
     if not workdir.is_dir():
         raise RuntimeError(f"Codex working directory does not exist: {workdir}")
-    timeout_seconds = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "600")))
+    configured_timeout = max(10, int(_env("VERIDEX_CODEX_TIMEOUT_SECONDS", "600")))
+    try:
+        requested_timeout = int(request.get("timeout_seconds") or configured_timeout)
+    except (TypeError, ValueError):
+        requested_timeout = configured_timeout
+    timeout_seconds = min(configured_timeout, max(10, requested_timeout))
     mode = access_mode()
     sandbox = "danger-full-access" if mode == "full" else "read-only"
     attachment_paths = [

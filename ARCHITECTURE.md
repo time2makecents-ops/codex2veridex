@@ -58,6 +58,111 @@ explicit navigation intent can change the active room; mentioning another room
 as a topic cannot move the session. The new room and its default persona are
 written to that session's `session.json`.
 
+Video Production uses the same governed room and room-file abstractions. Beta's
+room-specific prompt covers production planning and post-production while keeping
+planned edits separate from execution-backed, artifact-verified renders or exports.
+
+Animation Studio is a separate Beta-directed room so reusable animation assets and
+voice-performance work do not blur into final editing and delivery. Its workspace
+project records use atomic JSON replacement after an explicit SAVE. Local tool
+availability is detected rather than assumed. Rhubarb consumes only a ledgered
+session audio path; unsupported native inputs are copied through FFmpeg to an
+ephemeral mono analysis WAV without modifying the source. The validated cue
+artifact includes its recognizer, optional G/H/X shape set, and sanitized
+character-rig binding, then follows the existing room-scoped file and
+artifact-ledger path. Animation Studio exports one bounded Synfig shot package
+with copied source media, placement metadata, audio timing, and lip-sync cues.
+Imported Synfig renders are ledgered and linked to the storyboard shot only after
+the user selects the render; final assembly remains in Video Production.
+
+Animation project JSON stores references to ledgered source images and audio,
+not duplicate binary payloads. Explicit project saves preserve the prior JSON
+as a read-only version snapshot before atomically replacing the current project;
+the UI can inspect or restore those snapshots without changing the canonical
+project identity. Image placement, storyboard order and notes,
+non-destructive audio-track settings, mouth-rig mappings, and bound lip-sync
+takes and imported shot renders are versioned with the project. Mouth rigs persist independent jaw width,
+vertical scale, position, and anchor percentages so a sprite can be pinned to its hinge
+without changing its ledgered source image. They also carry reusable stage-placement X, Y,
+width, and preset values; individual shots may override that starting position. A persisted placement-calibrated flag is reset
+when the base, mouth mapping, or geometry changes, and cue generation is blocked until the
+operator confirms the composite visually. Browser playback drives only the preview:
+it selects the cue active at the audio element's current time and swaps the
+referenced mouth image. GIMP and Audacity launches are allowlisted, path-bound
+to a resolved session file, and require explicit confirmation; neither editor
+is treated as completing or reimporting an artifact automatically. Synfig image
+launches first create and ledger a valid `.sif` starter document that references
+the source image, then open that document rather than passing the raster file as
+an XML project.
+
+Mouth rigs support an explicit limited-animation jaw-flap mode in addition to
+phoneme-image swapping. Jaw-flap mode renders one registered closed-jaw artifact and
+maps Rhubarb cues to bounded vertical opening amounts while preserving the master
+hinge and placement. A persisted, bounded per-rig opening-strength percentage scales
+only those amounts; it does not alter cue timing or invalidate calibrated geometry.
+Existing projects may retain bounded `manual_jaw_corrections` and manual jaw-opening
+segments for schema compatibility, but browser playback does not activate the waveform or
+manual-performance layer. The operator-facing preview is deliberately limited to the native
+audio control, the automatic cue track, and the calibrated character/jaw composite. This
+keeps preview timing independent from waveform decoding and preserves the earlier Synfig
+handoff workflow. A lightweight jaw follower reads the native audio element's current time;
+it does not maintain an independent timeline or alter the audio. Both the bound dialogue
+track preview and Voice Performance player can own that follower, with mutual exclusion so
+only one audio element can drive the take at a time.
+
+The iPhone media manager is intentionally a separate loopback-only utility rather
+than a Veridex room or a bypass into workspace artifacts. Its SQLite manifest owns
+source locators, user dispositions, resumable jobs, immutable archive hashes,
+Google Drive verification evidence, transcript versions, and append-only events.
+The Windows portable-device bridge is restricted to inventoried DCIM paths. Local
+and remote copies are reverified before a short-lived deletion preview can be used;
+unsupported device deletion is recorded as guided rather than completed. Optional
+transcription consumes only already verified archive paths and cannot affect copy or
+deletion eligibility.
+
+Item Intake is a separate browser surface served by the Veridex host at
+`/item-intake`, so it inherits the same loopback default and remote-session
+authorization. The optional `lan` launcher mode binds the same host to private local
+network adapters, still requires a one-time pairing URL, and opens Windows Firewall only
+for TCP 8765 on Private networks. Its pairing cookie is intentionally allowed over
+private-LAN HTTP, so Tailscale HTTPS remains the recommended remote path. Its local
+SQLite catalog under `data/seller_intake/` is authoritative for batches, item records,
+assets, source-linked evidence notes, and handoffs. Each item also has an atomically
+written `item.json` snapshot and contained source folders inside its batch. Uploads
+are stored unchanged and are not analyzed automatically. A handoff explicitly copies
+the selected files and a source-linked brief into a Veridex session through the normal
+artifact-ledger path; it cannot imply research, marketplace preparation, or publish.
+An item may retain validated `https://chatgpt.com/share/...` and
+`https://g.co/gemini/share/...` thread links as local references. The URLs are included
+in its SQLite row, item snapshot, batch export, and controlled handoff brief. A
+user-triggered PC Inbox preview may read a public shared thread through the dedicated
+Chrome boundary; a second reviewed action saves only its visible text and available
+visible images. The backend never imports automatically or gains ChatGPT credentials.
+
+The Capture Companion is a separate lightweight LAN service on port 8775 that shares
+the same catalog but exposes only raw phone capture: title, notes, image uploads, and
+shared-thread references. Reference IDs and other catalog fields remain in the PC's
+collapsed Advanced details area. It accepts the same paired-device cookie as Veridex on the
+same host, so no ChatGPT, Gemini, or Veridex credentials leave the PC. Phone-side removal
+archives an item instead of destroying its catalog record or original files. A separate
+typed-confirmation delete route permanently removes one item, its catalog rows, and its
+contained source folder; the full
+Veridex application on port 8765 retains workspace/session management and PC review.
+Both browser surfaces request the rear camera only on an explicit Camera or Close-up
+tap. They turn the resulting frame into a JPEG in the browser and use the existing
+photo-upload route; Close-up applies a camera zoom constraint only if that capability
+is exposed by the browser and otherwise reports the limitation without claiming macro
+control. A plain private-LAN HTTP phone session can fall back to the native
+`capture="environment"` file-input flow when browser live-camera access is unavailable.
+The PC Item Intake photo editor keeps originals immutable: manual crop, local automatic
+edge-contrast crop, and local automatic adjustment each create a separate JPEG under
+the item's `derivatives` folder. The catalog records the source asset ID and a bounded
+transformation record, and refuses to delete a source while derivative photos remain.
+Its AI touch-up requires an explicit confirmation immediately before transmitting the
+chosen source photo and prompt to the user-selected Codex image-tools or configured
+Cloudflare reference-edit provider; there is no provider fallback. AI output follows
+the same derived-photo lineage path.
+
 ## Navigator governance
 
 The committed governance snapshot is the standalone runtime authority. Its
@@ -84,6 +189,10 @@ corporate Gmail token store beneath `data/integrations/` is shared across all
 workspaces and is selected only by a corporate/shared account request or as the
 fallback when the active workspace has no assigned Gmail. Gmail results and
 confirmed sends retain the selected scope and account identity in evidence.
+Gmail OAuth authorization opens in the same dedicated Veridex Google Chrome
+profile used by the browser-search boundary; it never relies on the user's
+ordinary default Chrome profile, and the callback still validates OAuth state
+and the configured account identity before storing tokens.
 This shared-services boundary is the extension point for future corporate
 services such as Google Drive; no unavailable service is inferred from a Google
 login alone.
@@ -118,6 +227,16 @@ similar comparables, and prevents asking prices or estimates from affecting expe
 resale. Case JSON stores the latest derived summary while the observation ledger remains
 append-only and deduplicated by source listing, source URL, or a stable fallback
 fingerprint.
+
+The Museum multi-item selector submits one authorized source attachment plus bounded,
+normalized rectangular regions. The server revalidates the regions against the
+EXIF-corrected source dimensions, creates each crop through the normal generated-file
+artifact path, and records source file ID, batch/selection IDs, normalized and pixel
+bounds, size, and SHA-256. Batch research runs sequentially through the shared browser
+profile and creates one case per crop. Google Lens receives only the sanitized crop;
+the original remains a local case attachment. Consent is evaluated once before the
+batch unless Museum shopping mode is active, while partial failures and cancellation
+retain truthful per-item outcomes and any cases already completed.
 
 Each case JSON also contains a versioned `research_record`: the canonical bounded view
 of item identity, provenance summaries, correspondence references, attachments, derived
@@ -176,6 +295,14 @@ profile storage; Veridex source and environment configuration contain no Google
 password. `google_chrome_search.py` detects explicit Google intent, extracts the
 query, and returns bounded visible-result text and links to the server.
 
+The Lens adapter opens Google's search-by-image panel with a trusted CDP mouse event;
+Google's current control ignores a page-script `click()`. A Lens result is admissible
+only when the bridge reports `completed`; `limited`, `blocked`, and `failed` responses
+are errors rather than source evidence. Museum quick research then either uses the Lens
+candidates and one bounded synthesis call, or stops after one bounded visual fallback
+with a limited result. It does not fan out to broader searches or valuation after a
+Lens failure.
+
 The server supplies that evidence to Codex as governed data and adds a completed
 `google_browser_search` evidence record. Navigator's provider gate requires that
 record for explicit Google requests and rejects generic `web_search` evidence as
@@ -224,7 +351,21 @@ wrapper exposes status, bounded profile inspection, visible message composition,
 and confirmation-gated sends. Facebook security and two-factor prompts remain in
 the visible Chrome window for the user to complete. Drafting never sends, and
 `office.facebook_message_send` requires `confirm=true` before invoking the bridge's
-send action.
+send action. The Connected accounts surface exposes status and login controls for
+this repository-local profile without returning its password. Session detection waits
+through Facebook redirects and accepts either authenticated navigation UI or the
+authenticated home route while continuing to reject login and checkpoint pages.
+
+`facebook_marketplace.py` stores atomic workspace-scoped listing drafts and approved
+group URLs beneath the workspace integration directory, with append-only transition
+audit records. Draft photos are artifact-ledger IDs; the server rechecks workspace
+containment, nonzero size, and SHA-256 before every browser handoff. The bridge may
+upload those verified files and fill Marketplace or group-composer fields, but it has
+no route that activates Marketplace Next/Publish or a group Post control. A draft can
+become `published_observed` only when the dedicated profile exposes a matching listing
+URL on the seller's visible listings page. Group preparation requires that evidence and
+an allowlisted group selected on the draft. Local pickup uses Facebook's existing
+location rather than persisting an address in Veridex.
 
 ### eBay seller boundary
 
@@ -250,11 +391,31 @@ verified offer or listing boundary instead of claiming completion. Buyer purchas
 and bids are outside this integration.
 
 The production notification Worker verifies eBay ECC signatures before placing events
-in a workspace-bound D1 queue. Local Veridex reads that queue with a separate bearer
-secret; acknowledgment deletes the delivered copy and scheduled cleanup expires
-unclaimed events after seven days. A deployed receiver is not evidence that an eBay
-topic subscription or an end-to-end buyer-message or sale notification has been
-validated; those require separate provider and delivery evidence.
+in a workspace-bound D1 queue. `ebay_notifications.py` consumes that queue with a
+separate bearer secret and requires the Worker's configured workspace identifier to
+match the active Veridex workspace exactly. Each notification is committed to the
+workspace-local `integrations/ebay_notifications.db` before the remote acknowledgement
+is sent; notification IDs make a crash between those steps safe to replay. The Worker
+deletes acknowledged copies and its scheduled cleanup expires unclaimed copies after
+seven days.
+
+`EbayNotificationPoller` starts and stops with the standalone server. It discovers only
+workspaces with an explicit eBay assignment, runs an immediate check at startup, then
+checks at the configured interval. A process-wide lock keyed by the workspace notification
+database serializes background and operator-triggered syncs. One workspace failure is
+recorded in poller status without stopping checks for other workspaces.
+The workspace's connected-account record stores its automatic-check preference. Disabled
+workspaces are omitted from poller discovery but retain manual queue access; enabling a
+workspace wakes the running poller without a service restart.
+
+Marketplace Account Deletion payloads are minimized at ingestion: local storage keeps
+the notification ID, topic, timestamps, payload digest, and non-identifying processing
+disposition, but not the raw deletion payload. Other verified seller events retain a
+bounded display summary and payload digest rather than the raw webhook body.
+`ORDER_CONFIRMATION` is mapped to a sold alert, while `BUYER_QUESTION` and `NEW_MESSAGE`
+are mapped to message alerts.
+A working consumer is not evidence that those seller topics are subscribed; topic
+registration and an observed delivery remain separate provider evidence.
 
 ## Active request cancellation
 

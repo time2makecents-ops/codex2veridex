@@ -1,0 +1,2 @@
+# Install only when local, opt-in audio transcription is wanted.
+faster-whisper==1.2.0

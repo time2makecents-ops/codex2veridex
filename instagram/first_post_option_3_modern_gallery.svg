@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <rect width="1080" height="1080" fill="#171916"/>
+  <rect x="0" y="0" width="34" height="1080" fill="#b88a45"/>
+  <rect x="82" y="82" width="916" height="916" fill="none" stroke="#e5dfd1" stroke-width="2"/>
+  <text x="118" y="155" fill="#b88a45" font-family="Arial, sans-serif" font-size="19" letter-spacing="7">A NEW COLLECTION BEGINS</text>
+  <text x="118" y="310" fill="#f1eadc" font-family="Georgia, serif" font-size="91">PROVENANCE</text>
+  <text x="118" y="410" fill="#f1eadc" font-family="Georgia, serif" font-size="91">PENDING</text>
+  <line x1="118" y1="466" x2="962" y2="466" stroke="#b88a45" stroke-width="3"/>
+  <g fill="none" stroke="#d1c4a8" stroke-width="5">
+    <rect x="132" y="555" width="170" height="210"/>
+    <rect x="147" y="570" width="140" height="180" stroke-width="2"/>
+    <path d="M390 748C420 705 426 658 414 615C453 630 492 630 531 615C519 658 525 705 555 748Z"/>
+    <path d="M414 615C434 590 511 590 531 615M398 646H547" stroke-width="3"/>
+    <circle cx="687" cy="660" r="92"/>
+    <path d="M650 694C661 651 676 622 706 605C724 625 731 650 725 690C699 712 672 713 650 694Z" stroke-width="3"/>
+    <circle cx="873" cy="660" r="84"/>
+    <line x1="934" y1="721" x2="976" y2="763" stroke-width="12" stroke-linecap="round"/>
+  </g>
+  <text x="118" y="850" fill="#f1eadc" font-family="Georgia, serif" font-size="35" font-style="italic">Found objects. Unfinished stories.</text>
+  <text x="118" y="918" fill="#a9a397" font-family="Arial, sans-serif" font-size="18" letter-spacing="4">ART • OBJECTS • MAKERS • HISTORY</text>
+</svg>

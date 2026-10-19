@@ -8,12 +8,13 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,6 +38,71 @@ LOCAL_KEYS = [
     "VERIDEX_INTEGRATION_ENCRYPTION_KEY",
     "VERIDEX_GMAIL_DB_PATH",
 ]
+
+
+def _chrome_path(env: Dict[str, str]) -> Path:
+    candidates = [
+        str(env.get("VERIDEX_CHROME_PATH") or os.environ.get("VERIDEX_CHROME_PATH") or ""),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        str(Path(os.environ.get("LOCALAPPDATA") or "") / "Google" / "Chrome" / "Application" / "chrome.exe"),
+    ]
+    for candidate in candidates:
+        path = Path(candidate) if candidate else Path()
+        if candidate and path.is_file():
+            return path.resolve()
+    raise GmailGatewayError("Google Chrome was not found. Set VERIDEX_CHROME_PATH.")
+
+
+def _debug_json(port: int, route: str, *, method: str = "GET") -> Dict[str, object]:
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{route}", method=method)
+    with urllib.request.urlopen(request, timeout=2.5) as response:
+        value = json.loads(response.read().decode("utf-8"))
+    if not isinstance(value, dict):
+        raise GmailGatewayError("The dedicated Google Chrome debugging endpoint returned invalid data.")
+    return value
+
+
+def _open_google_authorization(url: str, env: Dict[str, str]) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "accounts.google.com" or parsed.path != "/o/oauth2/v2/auth":
+        raise GmailGatewayError("Refused to open a non-Google OAuth URL in the dedicated profile.")
+    profile_root = Path(
+        env.get("VERIDEX_GOOGLE_PROFILE_DIR")
+        or os.environ.get("VERIDEX_GOOGLE_PROFILE_DIR")
+        or LOCAL_ENV.parent / "data" / "browser_profiles" / "veridex_google"
+    ).resolve()
+    debug_port = int(
+        env.get("VERIDEX_GOOGLE_DEBUG_PORT")
+        or os.environ.get("VERIDEX_GOOGLE_DEBUG_PORT")
+        or 9223
+    )
+    try:
+        _debug_json(debug_port, "/json/version")
+        _debug_json(debug_port, f"/json/new?{urllib.parse.quote(url, safe='')}", method="PUT")
+        return
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, GmailGatewayError):
+        pass
+    profile_root.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(
+        [
+            str(_chrome_path(env)),
+            f"--user-data-dir={profile_root}",
+            "--profile-directory=Default",
+            f"--remote-debugging-port={debug_port}",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--new-window",
+            url,
+        ],
+        cwd=str(LOCAL_ENV.parent),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def _read_env(path: Path) -> Dict[str, str]:
@@ -208,9 +274,8 @@ def connect(env_override: Optional[Dict[str, str]] = None) -> Dict[str, object]:
         }
     )
     authorization_url = f"{AUTH_URL}?{params}"
-    print(f"Opening Google authorization for {expected_account}...", flush=True)
-    if not webbrowser.open(authorization_url, new=1):
-        print(f"Open this URL in your browser:\n{authorization_url}", flush=True)
+    print(f"Opening Google authorization for {expected_account} in the dedicated Veridex Chrome profile...", flush=True)
+    _open_google_authorization(authorization_url, env)
     deadline = time.monotonic() + 1800
     while not result and time.monotonic() < deadline:
         server.handle_request()

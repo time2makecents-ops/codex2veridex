@@ -145,10 +145,10 @@ class AdminService:
                 seeded = []
                 now = utc_now()
                 for base in self.base_rooms:
-                    if base.get("id") != "antiques_department" or base.get("id") in known:
+                    if base.get("id") in known:
                         continue
                     room = dict(base)
-                    room.setdefault("purpose", "Governed antiques research workspace.")
+                    room.setdefault("purpose", f"Governed workspace for {room.get('title', room.get('id', 'this room'))}.")
                     room.setdefault("capabilities", [])
                     room.setdefault("aliases", [])
                     room.setdefault("created_at", now)
@@ -164,7 +164,7 @@ class AdminService:
                     self._write_json(self.room_catalog_path, catalog)
                     self._audit(
                         "release_room_seed_migrated",
-                        {"proposal_id": "release-antiques-department", "kind": "room", "action": "create", "status": "verified"},
+                        {"proposal_id": "release-room-seed", "kind": "room", "action": "create", "status": "verified"},
                         inserted_room_ids=seeded,
                         catalog_version=catalog["version"],
                     )

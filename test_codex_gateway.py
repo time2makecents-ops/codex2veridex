@@ -309,6 +309,29 @@ class CodexGatewayTests(unittest.TestCase):
 
     @patch("codex_gateway.subprocess.run")
     @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
+    def test_request_timeout_caps_one_invocation_without_raising_global_limit(self, _which, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Ready"}}),
+            stderr="",
+        )
+        with patch.dict(
+            os.environ,
+            {"VERIDEX_CODEX_WORKDIR": os.getcwd(), "VERIDEX_CODEX_TIMEOUT_SECONDS": "600"},
+            clear=False,
+        ):
+            codex_gateway.invoke_codex({
+                "task_type": "media",
+                "system_prompt": "system",
+                "user_prompt": "inspect this",
+                "context": {},
+                "timeout_seconds": 75,
+            })
+        self.assertEqual(run.call_args.kwargs["timeout"], 75)
+
+    @patch("codex_gateway.subprocess.run")
+    @patch("codex_gateway.shutil.which", return_value=r"C:\tools\codex.cmd")
     def test_invocation_is_ephemeral_read_only_and_ignores_user_config(self, _which, run) -> None:
         run.return_value = subprocess.CompletedProcess(
             args=[],

@@ -512,8 +512,14 @@ class AntiquesDepartmentTests(unittest.TestCase):
             with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANTIQUES", service):
                 pending = veridex_server.antiques_research(payload)
                 self.assertEqual(pending["status"], "confirmation_required")
-                with patch.object(veridex_server, "invoke_codex", side_effect=[{**route, "text": json.dumps(visual)}, {**route, "text": json.dumps(report)}]), patch.object(
-                    veridex_server, "search_google_lens", return_value={"provider": "google_lens_chrome_profile", "result_text": "similar landscape", "links": []}
+                with patch.object(veridex_server, "invoke_codex", return_value={**route, "text": json.dumps(report)}) as invoke, patch.object(
+                    veridex_server, "search_google_lens", return_value={
+                        "provider": "google_lens_chrome_profile",
+                        "status": "completed",
+                        "result_text": "similar landscape",
+                        "results": [{"title": "L Example oil landscape", "url": "https://example.com/lens-match"}],
+                        "links": [{"title": "L Example oil landscape", "url": "https://example.com/lens-match"}],
+                    }
                 ), patch.object(
                     veridex_server, "search_google", return_value={"provider": "google_chrome_profile", "result_text": "artist reference", "links": []}
                 ), patch.object(
@@ -529,8 +535,175 @@ class AntiquesDepartmentTests(unittest.TestCase):
             self.assertEqual(completed["report"]["buying"]["recommended_max_buy"], 50.0)
             self.assertEqual(completed["report"]["valuation"]["conservative_low"], 200.0)
             self.assertEqual(completed["report"]["price_evaluation"]["last_sold"]["listing_or_lot_id"], "ebay-sold-200")
+            self.assertEqual(invoke.call_count, 1)
+            self.assertEqual(invoke.call_args.args[0]["timeout_seconds"], 90)
             self.assertEqual(len(service.list_cases(workspace_id)), 1)
             self.assertEqual(service.external_uploads(workspace_id)[0]["destination"], "Google Lens")
+
+    def test_multi_item_selection_requires_one_consent_and_saves_separate_cases(self) -> None:
+        import veridex_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root / "data")
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, ROOM_ID)
+            buffer = io.BytesIO()
+            image = Image.new("RGB", (400, 200), "white")
+            image.paste(Image.new("RGB", (160, 160), "red"), (20, 20))
+            image.paste(Image.new("RGB", (160, 160), "blue"), (220, 20))
+            image.save(buffer, "JPEG")
+            source = store.save_file(workspace_id, session_id, "two-items.jpg", buffer.getvalue(), "image/jpeg")
+            service = AntiquesDepartment(root / "data")
+            payload = {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "batch_id": "batch_test",
+                "source_file_id": source["file_id"],
+                "search_mode": "visual_match",
+                "research_depth": "quick",
+                "selections": [
+                    {"selection_id": "left", "label": "Red item", "region": {"x": .05, "y": .1, "width": .4, "height": .8}},
+                    {"selection_id": "right", "label": "Blue item", "region": {"x": .55, "y": .1, "width": .4, "height": .8}},
+                ],
+            }
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANTIQUES", service):
+                pending = veridex_server.submit_item_selection_job(payload)
+                self.assertEqual(pending["status"], "confirmation_required")
+                self.assertEqual(pending["pending"]["crop_count"], 2)
+                self.assertEqual(service.list_cases(workspace_id), [])
+                with patch.object(veridex_server, "search_google_lens", return_value={
+                    "provider": "google_lens_chrome_profile",
+                    "result_text": "visual candidates",
+                    "links": [{"title": "Candidate", "url": "https://example.com/candidate"}],
+                }) as lens:
+                    submitted = veridex_server.submit_item_selection_job({**payload, "confirm_external": True})
+                    completed = veridex_server.ITEM_SELECTION_JOBS.wait(submitted["job_id"], timeout=10)
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["result"]["completed_count"], 2)
+            self.assertEqual(lens.call_count, 2)
+            cases = service.list_cases(workspace_id)
+            self.assertEqual(len(cases), 2)
+            self.assertTrue(all(source["file_id"] in case["attachment_ids"] for case in cases))
+            crop_ids = {item["crop"]["file_id"] for item in completed["result"]["items"]}
+            self.assertTrue(all(any(file_id in crop_ids for file_id in case["attachment_ids"]) for case in cases))
+            uploads = service.external_uploads(workspace_id)
+            self.assertEqual(len(uploads), 2)
+            self.assertTrue(all(source["file_id"] not in upload["file_ids"] for upload in uploads))
+            self.assertTrue(all(set(upload["file_ids"]).issubset(crop_ids) for upload in uploads))
+            crop_files = [row for row in store.list_files(workspace_id, session_id) if row["file_id"] in crop_ids]
+            self.assertEqual(len(crop_files), 2)
+            self.assertTrue(all(row["artifact_number"] and row["sha256"] and row["size"] > 0 for row in crop_files))
+            self.assertEqual({row["metadata"]["item_selection"]["source_file_id"] for row in crop_files}, {source["file_id"]})
+
+    def test_quick_research_stops_broad_search_and_second_model_when_lens_fails(self) -> None:
+        import veridex_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root / "data")
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, ROOM_ID)
+            buffer = io.BytesIO()
+            Image.new("RGB", (200, 200), "blue").save(buffer, "JPEG")
+            saved = store.save_file(workspace_id, session_id, "item.jpg", buffer.getvalue(), "image/jpeg")
+            service = AntiquesDepartment(root / "data")
+            visual = {
+                "identification": "Decorative framed object",
+                "category": "decorative arts",
+                "observed_features": ["Blue field"],
+                "confidence": "low",
+            }
+            route = {"provider": "codex_cli", "model": "gpt-5.6-sol", "reasoning_effort": "high", "task_type": "media"}
+
+            with patch.object(veridex_server, "STORE", store), patch.object(
+                veridex_server, "ANTIQUES", service
+            ), patch.object(
+                veridex_server,
+                "search_google_lens",
+                side_effect=veridex_server.GoogleChromeSearchError("Lens upload control was unavailable"),
+            ) as lens, patch.object(
+                veridex_server, "search_google"
+            ) as google, patch.object(
+                veridex_server, "search_ebay_product_research"
+            ) as ebay, patch.object(
+                veridex_server, "invoke_codex", return_value={**route, "text": json.dumps(visual)}
+            ) as invoke:
+                result = veridex_server.antiques_research({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "attachment_ids": [saved["file_id"]],
+                    "mode": "quick",
+                    "confirm_external": True,
+                })
+
+            self.assertEqual(result["status"], "limited")
+            self.assertEqual(result["source_errors"][0]["source_id"], "google_lens")
+            self.assertEqual(invoke.call_count, 1)
+            google.assert_not_called()
+            ebay.assert_not_called()
+            self.assertEqual(result["route"]["synthesis"]["provider"], "not_used")
+            self.assertEqual(lens.call_args.kwargs["timeout"], 35)
+            self.assertIn("Google Lens returned no usable", veridex_server.antiques_report_text(result["case"]))
+
+    def test_multi_item_selection_rejects_tiny_or_out_of_bounds_regions(self) -> None:
+        import veridex_server
+
+        with self.assertRaisesRegex(ValueError, "too small"):
+            veridex_server._validated_item_selections([
+                {"selection_id": "tiny", "region": {"x": 0, "y": 0, "width": .005, "height": .5}},
+            ], (1000, 1000))
+        with self.assertRaisesRegex(ValueError, "inside"):
+            veridex_server._validated_item_selections([
+                {"selection_id": "outside", "region": {"x": .8, "y": .1, "width": .3, "height": .5}},
+            ], (1000, 1000))
+
+    def test_multi_item_full_research_uses_crop_for_analysis_and_source_for_case_context(self) -> None:
+        import veridex_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = VeridexStore(root / "data")
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, ROOM_ID)
+            buffer = io.BytesIO()
+            Image.new("RGB", (300, 300), "green").save(buffer, "JPEG")
+            source = store.save_file(workspace_id, session_id, "group.jpg", buffer.getvalue(), "image/jpeg")
+            service = AntiquesDepartment(root / "data")
+            payload = {
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "source_file_id": source["file_id"],
+                "search_mode": "full",
+                "research_depth": "deep",
+                "confirm_external": True,
+                "selections": [{"selection_id": "one", "label": "Green item", "region": {"x": .1, "y": .1, "width": .8, "height": .8}}],
+            }
+            captured = []
+
+            def fake_research(value, cancel_event=None):
+                captured.append(value)
+                return {"case": {"case_id": "case_one"}, "sources": [{"source_id": "google_lens"}]}
+
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "ANTIQUES", service), patch.object(
+                veridex_server, "antiques_research", side_effect=fake_research
+            ):
+                submitted = veridex_server.submit_item_selection_job(payload)
+                completed = veridex_server.ITEM_SELECTION_JOBS.wait(submitted["job_id"], timeout=10)
+            self.assertEqual(completed["result"]["completed_count"], 1)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["mode"], "deep")
+            self.assertEqual(len(captured[0]["attachment_ids"]), 1)
+            self.assertNotEqual(captured[0]["attachment_ids"][0], source["file_id"])
+            self.assertEqual(captured[0]["case_attachment_ids"][0], source["file_id"])
+            self.assertEqual(captured[0]["case_attachment_ids"][1], captured[0]["attachment_ids"][0])
+            self.assertEqual(captured[0]["selection_provenance"]["source_file_id"], source["file_id"])
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 .\veridex.ps1 restart
 .\veridex.ps1 stop
 .\veridex.ps1 tailscale
+.\veridex.ps1 lan
 .\veridex.ps1 gmail-connect
 .\veridex.ps1 gmail-status
 .\veridex.ps1 instagram-profile
@@ -53,6 +54,62 @@ The browser opens at <http://127.0.0.1:8765>. Other commands are:
 private Tailscale HTTPS address, and prints a one-time phone pairing URL. The phone
 stores an HTTP-only pairing cookie; unpaired remote devices cannot use the UI or APIs.
 
+`lan` binds the same Veridex port to private local-network adapters and prints a
+one-time phone pairing URL such as `http://192.168.x.x:8765/pair?...`. It attempts to
+allow TCP 8765 only on Windows **Private** networks. Pairing remains required, but LAN
+mode is plain HTTP, so use it only on a trusted home/private Wi-Fi; Tailscale remains
+the recommended option away from that network. A normal `start` or `restart` returns
+Veridex to loopback-only access.
+
+## Item Intake
+
+The phone-facing **Capture Companion** is a separate paired local-network app at
+port 8775. Run `.\veridex.ps1 lan`, then open the printed `http://<PC-IP>:8775/`
+address on the paired phone. It captures only a title, notes, ChatGPT/Gemini shared
+links, and photos. Reference IDs and the other catalog fields are available under
+**Advanced details** in the PC Item Intake workspace. **Remove from phone queue** archives an item
+from that phone view without deleting its PC files or catalog record. **Delete from
+PC catalog** requires typing `DELETE` and permanently removes that item and its source
+folder. The normal
+Veridex app remains on port 8765, including its workspace and session controls.
+
+Open <http://127.0.0.1:8765/item-intake> on the PC, or use the paired private URL
+from `veridex.ps1 tailscale` or `veridex.ps1 lan` on a phone. Create a batch, then create or select one
+active item before adding photos, PDFs, chat exports, text, documents, audio, video,
+or other files. Every file added while that item is active stays in its own folder
+inside the batch and is also cataloged in the local SQLite database.
+
+Both Item Intake and the phone Capture Companion offer **Camera** for a normal
+rear-camera photo and **Close-up** for details such as signatures or marks. Camera
+access begins only after tapping one of those controls. Close-up uses browser-exposed
+camera zoom when the device supports it; otherwise the app says so and leaves you to
+move closer or use the device's macro camera. Captured photos use the same local upload
+route and item folder as photos chosen from the library. On a private-LAN `http://`
+address where a phone browser disallows live camera access, the same buttons fall back
+to the phone's native rear-camera capture flow.
+
+On the PC, each catalog photo has a **Touch up** editor. **Save crop**, **Auto crop**,
+and **Auto adjust** run locally and save a new derived photo, never overwriting the
+source. The editor also accepts a plain-language **AI touch-up** request. Before that
+option lets you explicitly select **Codex image tools** or a configured **Cloudflare
+reference-edit** provider, then asks for confirmation before it sends the selected
+photo and instruction. The AI result is also stored as a separate derived photo and is
+labeled with its source lineage.
+
+Item Intake does not automatically run OCR, AI analysis, GPS extraction, external
+research, or marketplace actions. Shared-thread links remain local references, and the
+PC inbox keeps short findings with the item record. **Export
+batch** creates CSV and XLSX inventory files. **Send to Veridex** copies selected item
+material plus a source-linked research brief into the current Veridex session and
+ledgers those copied files. It does not begin research or create a listing.
+
+Each item also has optional **ChatGPT** and **Gemini shared thread links**. Paste only
+that item's `https://chatgpt.com/share/...` or `https://g.co/gemini/share/...` link,
+then save the item. Each link is stored in the item's local record, item-folder
+`item.json`, exports, and any controlled Veridex handoff brief. The PC Inbox can
+explicitly preview a public shared thread and, only after review, save its visible text
+and available visible images into the item; it never imports a thread automatically.
+
 ## Museum
 
 Enter **Museum** to work with Leo. Take or attach item photos, select
@@ -60,12 +117,25 @@ them, then choose **Quick research** for in-store triage or **Deep research** fo
 broader evidence pass. Useful views include the complete front, signature or maker's
 mark, back and labels, frame joints, surface texture, and any damage.
 
+When one photograph contains several objects, choose **Select items**, pick one source
+photo, and draw a rectangle around each object. Review, rename, move, or resize up to
+12 boxes before starting the batch. Choose **Visual match only** for Google Lens leads
+or **Full Leo research** for the normal Google Lens, Google, and eBay evidence flow.
+Each box creates a separate Antiques case. Only the ledgered crop is sent to Google
+Lens; the full source photograph remains local and is linked as case provenance.
+
 Google Lens image uploads require confirmation for each research run unless you say
 `Leo, start shopping mode`. Shopping mode is session- and room-scoped, remains visibly
 active, and ends when you say `Leo, end shopping mode`, leave the room, or stop using
 it for four hours. Veridex keeps the original locally and sends a resized copy with
 EXIF metadata removed. Every completed item is automatically saved as a revisioned
 Antiques case.
+
+Quick research uses Lens candidates to seed the Google and eBay searches and performs
+one bounded synthesis pass. If Lens does not return completed, usable evidence, the
+quick run stops before broad searches and valuation, saves a limited visual record, and
+reports the Lens error instead of presenting the run as completed. Deep research keeps
+the separate visual-analysis pass and broader source set.
 
 Each case includes a canonical `research_record` that preserves identity fields such as
 artist or maker, title, date or period, medium, dimensions, product code, signature or
@@ -177,6 +247,74 @@ accepted frame orientation and saves a new revision without overwriting the orig
 All decisions and crop revisions append audit events in SQLite. This records review
 feedback for later heuristic improvements; it does not claim that a model retrains
 itself automatically.
+
+### iPhone media archive and cleanup
+
+`iphone_media_manager.py` is a separate, loopback-only Windows workspace for
+reviewing accessible iPhone media before copying or deleting anything. It scans an
+unlocked, trusted iPhone's DCIM camera storage through the Windows portable-device
+surface, plus user-approved iCloud Photos, iCloud Drive, Voice Memos export, and
+other media folders. Voice Memos and app documents that Apple does not expose to
+Windows must first be exported to a configured inbox.
+
+Create a private runtime database and open the app:
+
+```powershell
+.venv\Scripts\python.exe iphone_media_manager.py init `
+  "data\iphone_media\archive.sqlite3"
+
+.venv\Scripts\python.exe iphone_media_manager.py serve `
+  "data\iphone_media\archive.sqlite3" --open
+```
+
+The browser opens at <http://127.0.0.1:8773>. Add one or more sources, choose and
+verify any writable local drive/folder, scan, mark each item's plan, and download
+the selected items. Each job writes a `.partial` file, checks the expected size,
+calculates SHA-256 during transfer, rereads the completed file, and only then
+promotes it to the immutable archive. Optional total-job and single-file limits
+are configured in **Settings**.
+
+On this workstation, the PowerShell profile exposes the short launch command:
+
+```powershell
+iphone
+```
+
+It starts the loopback server in a hidden process if needed, waits for its status
+endpoint, and opens the app. Use `iphone -Port 8774` only when the default port is
+occupied.
+
+Google Drive is the independent second-copy gate for phone deletion. Install its
+optional dependencies, create a Google Desktop OAuth client, and select its private
+client JSON in Settings:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-iphone-media.txt
+```
+
+The OAuth token is stored through Windows Credential Manager rather than in the
+repository. The app uses `drive.file`, resumable upload, remote size, and remote
+checksum verification. Immediately before any phone deletion it rereads the local
+SHA-256 and requests current remote Drive metadata. Deletion requires the explicit
+`Download + delete` plan, a fresh ten-minute preview, and the displayed typed
+confirmation. Unsupported direct deletions remain truthful guided-manual tasks.
+
+Google Drive is optional when a second local drive is available. In **Settings →
+Another drive**, choose a folder on a different drive letter or network share. Each
+selected original is copied from the verified primary archive into the mirrored
+second-drive folder, reread, and required to have the same size and SHA-256. A second
+folder on the primary volume does not satisfy the two-copy deletion gate. The app
+rechecks both local files immediately before allowing deletion from the phone.
+
+Transcription is not part of download or deletion. To enable it later, install the
+separate local component and select verified archived audio in the app:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-transcription.txt
+```
+
+The local CPU model is downloaded only when a transcription job is first requested.
+Transcripts are versioned sidecars; the original audio is never changed.
 
 ## Voice controls
 
@@ -416,8 +554,10 @@ once:
 ```
 
 The browser authorization must use the account configured by
-`VERIDEX_GOOGLE_ACCOUNT`. Passwords and OAuth tokens are never written to the
-repository or returned in chat responses.
+`VERIDEX_GOOGLE_ACCOUNT`. The reconnect command opens that authorization in the
+same dedicated Veridex Google Chrome profile used for explicit Google work, not
+the Windows default browser profile. Passwords and OAuth tokens are never written
+to the repository or returned in chat responses.
 
 The dedicated Google search profile is also repository-wide. Google Drive is
 not yet implemented as a Veridex runtime gateway, so Veridex must not claim
@@ -431,6 +571,100 @@ room controls`, and `can you list available rooms?` return the authoritative
 directory. Room navigation and directory requests are handled deterministically
 by Veridex before Codex is called, and every session still has exactly one
 active room.
+
+### Video Production
+
+Video Production is directed by Beta. It provides governed chat and room-scoped
+files for scripting, footage review, edit planning, post-production, captions,
+export specifications, and delivery. This foundation does not include an embedded
+timeline or render interface; Beta must distinguish proposed work from completed,
+artifact-verified edits and exports.
+
+### Animation Studio
+
+Animation Studio is also directed by Beta and is specialized for reusable sets,
+character rigs, recorded voice-over, mouth-cue generation, shot blocking, and
+render handoff. Its starter project is **Eternia Late Night**, configured as a
+commercial-safe 1920x1080, 24 fps, 2.5D cut-out production with desk and band
+sets plus reusable host, co-host, guest, and band templates.
+
+The studio detects Synfig Studio, Rhubarb Lip Sync, FFmpeg, GIMP,
+Audacity, Kdenlive, and Glaxnimate on the local computer and reports unavailable
+tools truthfully.
+Rhubarb 1.14.0 is installed in the private `.runtime/tools/rhubarb/` tree with
+its archive hash and install manifest. Project plans can be saved explicitly
+before the other applications are installed.
+
+To build a functional lip-sync take, load the character/base image and the
+separate mouth drawings, create a character rig, map required Rhubarb shapes
+A-F, and optionally map G, H, and X. Choose a voice-over, choose English word
+recognition or phonetic recognition for another language, optionally provide
+the exact script, then generate the cues. MP3, M4A, FLAC, and AAC inputs are
+converted to a temporary analysis WAV with FFmpeg; the original audio is never
+changed. The preview swaps the mapped mouth images in time with the voice-over,
+and its cue timeline can seek to an individual cue. Jaw placement has independent
+position, width, vertical scale, and internal anchor controls; the preview crosshair shows
+the hinge point that remains pinned while the jaw is resized. New or changed rigs remain
+uncalibrated until the operator confirms the visible jaw fit; lip-sync generation is blocked
+until that registration step is complete. The closed jaw is directly draggable in a visible
+selection box, and its corner resize handle updates the shared placement inherited by every
+mapped mouth pose. Confirming the closed X pose scans each mapped image's transparency and
+registers its visible upper span to the closed jaw, so differently padded source canvases do
+not shift the hinge during playback. The preview remains visible beside the controls. Save the project to retain
+the rig and generated take. The bound JSON cue sheet enters the normal
+room-scoped artifact ledger before it is reported as complete. Final edit and
+delivery remain in Video Production.
+
+Skeletor rigs default to the measured `desk_host` stage placement from the
+project's `host.png` reference: 80.97% horizontal, 43.12% vertical, and 22%
+canvas width. These values are a reusable starting position rather than a lock;
+shot-level placement may override them without changing the character rig.
+
+Each explicit project save creates a read-only saved-version snapshot before the
+current project is updated. Choose an older `saved version` from the project
+selector to inspect or restore its jaw placement and other settings; saving that
+restored state creates a new current version.
+
+For a limited-animation character such as Skeletor, choose **Simple jaw flap**.
+That mode uses one closed lower-jaw image and keeps its hinge fixed while the cue
+track drives three opening amounts. The saved **Jaw opening** control scales those
+amounts without changing cue timing or placement; Skeletor defaults to 200% while
+other new rigs default to 100%. Place the jaw directly in the preview,
+confirm it once, and keep the phoneme map and fine-adjustment sliders collapsed unless
+an advanced character rig actually needs them.
+
+The browser preview intentionally uses the native audio control and automatic cue track
+only. The waveform, Quick Fix, and range-based manual-performance controls are disabled;
+they do not decode the voice file or run an independent timeline. The automatic jaw preview
+reads the native audio element's current time directly. Jaw sizing and anchoring remain
+available separately through **Adjust jaw placement**. Save the calibrated rig and use the
+bounded Synfig handoff for rendered shot timing.
+
+When an Audio Suite dialogue track already has a bound lip-sync take, its Play control and
+the Voice Performance Play control both drive that same take. Starting either one pauses the
+other, so there is no silent second player or duplicate audio to put the jaw out of sync.
+
+Project images can be loaded directly into the studio as ledgered session
+artifacts. Full filenames remain visible in the asset list and on hover. The
+project stores non-destructive role, scale, horizontal position,
+vertical position, and opacity settings; it never overwrites the source image.
+Storyboard shots place a selected project image beside the scene description,
+with camera and editing notes beneath it. Shots can be reordered and can be
+referenced by dialogue, music, and sound-effect tracks.
+
+Each shot can be exported as a bounded Synfig package containing the selected
+source media, placement metadata, audio timing, and lip-sync cues. Synfig is used
+for movement and rendering one shot at a time; the rendered video or still can be
+imported back into that shot as a versioned, ledgered artifact. Final assembly
+stays in Video Production, so the two rooms do not maintain competing timelines.
+
+The built-in audio surface is intentionally small: preview, episode start time,
+trim points, gain, pan, fades, mute, solo, character, and storyboard-shot
+assignment. GIMP and Audacity remain the full editors. Opening either program
+requires explicit confirmation, and an edited version must be reimported so the
+original Veridex artifact remains unchanged. Opening an image in Synfig creates a
+ledgered `.sif` starter document that references the original image; Synfig is
+never given the PNG as if it were an XML project.
 
 ### Governed administration
 
@@ -552,6 +786,22 @@ the visible Chrome window. The resulting session remains under ignored
 composition leaves the text visible for review, and sending is a separate action
 that requires `confirm=true`.
 
+The same dedicated session appears in **Connected accounts**. That panel can open
+or reconnect Facebook and refresh its status, but it never displays the configured
+password. The configured login label identifies the local credentials; successful
+session evidence confirms sign-in without claiming an independently verified profile
+identity.
+
+The **Sell on Facebook** panel adds a review-first Marketplace workflow. Drafts are
+workspace-scoped and may start from an existing Museum case or newly ledgered photos.
+Veridex can suggest an editable price from saved research, manage an explicit allowlist
+of buy/sell group URLs, and fill the visible Marketplace form in the dedicated Facebook
+profile. It never clicks Marketplace **Next** or **Publish**. After the operator publishes,
+**Resume after publishing** requires matching visible listing evidence before a group
+share can be prepared. Group preparation opens one approved group, composes the listing
+link, and stops before **Post**. The first version is local-pickup only and uses the
+location already configured by Facebook; Veridex does not store a pickup address.
+
 ## eBay seller tools
 
 Connect eBay from **Connected accounts**. Veridex uses eBay OAuth rather than storing
@@ -587,6 +837,30 @@ Cloudflare D1, deletes acknowledged events, and expires unclaimed events after s
 days. Keep the generated verification and queue secrets only in ignored `.env.local`
 and Cloudflare Worker secrets. The eBay destination URL is the deployed Worker's
 `/ebay/notifications` route.
+
+The local consumer starts with Veridex and automatically checks every explicitly
+assigned eBay workspace once per minute. **Connected accounts → Check notifications**
+and the `ebay.notification_check` tool remain available for an immediate manual check.
+Automatic and manual checks are serialized against the workspace database so they
+cannot drain the same queue concurrently. The consumer rejects a relay response whose workspace
+does not exactly match `VERIDEX_EBAY_WORKER_WORKSPACE_ID`, commits each verified event
+to the active workspace's `integrations/ebay_notifications.db`, and only then
+acknowledges the remote queue copy. Notification IDs make retries idempotent. Raw
+Marketplace Account Deletion payloads are not retained locally: Veridex records only
+a SHA-256 digest, a non-identifying disposition, and whether the event matched the
+workspace's assigned seller. Other webhook bodies are also reduced to bounded alert
+summaries plus a digest rather than copied wholesale. `ORDER_CONFIRMATION`,
+`BUYER_QUESTION`, and `NEW_MESSAGE` events become governed seller alerts. The Production
+seller has enabled user subscriptions for all three topics using the
+`commerce.notification.subscription` OAuth scope. eBay-generated test events completed
+the Worker, D1, local persistence, mapping, and acknowledgement path on 2026-09-24;
+that test evidence is not a claim that a real buyer message or sale has occurred.
+Set `VERIDEX_EBAY_NOTIFICATION_AUTO_POLL=false` to disable the background loop,
+`VERIDEX_EBAY_NOTIFICATION_POLL_SECONDS` to change its 15–3600 second interval, or
+`VERIDEX_EBAY_NOTIFICATION_POLL_MAX_EVENTS` to change the 1–500 event limit per check.
+Each assigned workspace also has a persisted **Turn on/off automatic checks** control in
+Connected accounts. Turning a workspace back on wakes the poller for an immediate check;
+turning it off does not disable the manual **Check now** action.
 
 The production RuName uses the Worker's `/ebay/oauth/accepted` and
 `/ebay/oauth/declined` routes. Its privacy URL is the independently hosted public page

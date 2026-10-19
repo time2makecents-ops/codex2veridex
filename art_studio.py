@@ -606,7 +606,7 @@ class ArtJobManager:
                 result = runner(job_id, progress, cancelled)
                 with self._lock:
                     if cancelled():
-                        self._jobs[job_id].update({"status": "canceled", "progress": 100, "message": "Canceled", "updated_at": utc_now()})
+                        self._jobs[job_id].update({"status": "canceled", "progress": 100, "message": "Canceled", "result": result, "updated_at": utc_now()})
                     else:
                         self._jobs[job_id].update({"status": "completed", "progress": 100, "message": "Complete", "result": result, "updated_at": utc_now()})
             except Exception as exc:

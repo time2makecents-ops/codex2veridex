@@ -355,6 +355,9 @@ class VeridexCoreTests(unittest.TestCase):
             self.assertEqual(transition["active_persona"], "Creative Director")
             self.assertEqual(store.find_session(first_session_id)["active_room"], "art_department")
             self.assertEqual(store.find_session(second["session_id"])["active_room"], "lobby")
+            transition = store.set_room(workspace_id, first_session_id, "video_production")
+            self.assertEqual(transition["active_persona"], "Beta")
+            self.assertEqual(store.find_session(first_session_id)["active_room"], "video_production")
             with self.assertRaises(ValueError):
                 store.set_room(workspace_id, first_session_id, "imaginary_room")
 

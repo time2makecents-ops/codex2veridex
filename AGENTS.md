@@ -41,6 +41,7 @@ These instructions apply to the entire repository.
 - Keep the Python backend and dependency-light, vanilla HTML/CSS/JavaScript frontend consistent with the existing architecture.
 - Preserve public API shapes, append-only audit semantics, atomic JSON replacement, and path-bound authorization unless the requested change explicitly migrates them.
 - Prefer extending the existing governed request, room, artifact, and provider abstractions over creating parallel state or bypass paths.
+- Never pass attachment bytes or base64 data through Gmail/app tool arguments. Use session attachment IDs with the governed Veridex Gmail path; if a requested Gmail operation lacks a file-reference-aware route, report that limitation instead of inlining binary data.
 - For price evaluation, reuse cached evidence and search the exact identity on the core source set first. Escalate to broader or thorough searches only after exact-match failure or an explicit user request, and batch independent item searches when practical.
 - Do not add paid-provider routing, silent fallbacks, or dependencies on `C:\Office-App`.
 

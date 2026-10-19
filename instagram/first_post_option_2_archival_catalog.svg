@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <rect width="1080" height="1080" fill="#e8dfc8"/>
+  <rect x="52" y="52" width="976" height="976" fill="#f4eedf" stroke="#282a25" stroke-width="3"/>
+  <rect x="78" y="78" width="924" height="924" fill="none" stroke="#8b866f" stroke-width="1"/>
+  <text x="110" y="145" fill="#303229" font-family="Arial, sans-serif" font-size="18" letter-spacing="5">COLLECTION RECORD • NO. 0001</text>
+  <line x1="110" y1="172" x2="970" y2="172" stroke="#303229" stroke-width="2"/>
+  <text x="110" y="306" fill="#1f2e27" font-family="Georgia, serif" font-size="93">PROVENANCE</text>
+  <text x="110" y="402" fill="#1f2e27" font-family="Georgia, serif" font-size="93">PENDING</text>
+  <line x1="110" y1="448" x2="970" y2="448" stroke="#303229" stroke-width="1"/>
+  <text x="110" y="510" fill="#47493f" font-family="Arial, sans-serif" font-size="20" letter-spacing="3">OBJECT</text>
+  <text x="355" y="510" fill="#20231f" font-family="Georgia, serif" font-size="28">Original art &amp; vintage discoveries</text>
+  <line x1="110" y1="540" x2="970" y2="540" stroke="#aaa38d"/>
+  <text x="110" y="602" fill="#47493f" font-family="Arial, sans-serif" font-size="20" letter-spacing="3">MAKER</text>
+  <text x="355" y="602" fill="#20231f" font-family="Georgia, serif" font-size="28">Under investigation</text>
+  <line x1="110" y1="632" x2="970" y2="632" stroke="#aaa38d"/>
+  <text x="110" y="694" fill="#47493f" font-family="Arial, sans-serif" font-size="20" letter-spacing="3">STATUS</text>
+  <text x="355" y="694" fill="#20231f" font-family="Georgia, serif" font-size="28">Story still unfolding</text>
+  <line x1="110" y1="724" x2="970" y2="724" stroke="#aaa38d"/>
+  <g transform="translate(724 770) rotate(-7)">
+    <rect width="250" height="112" rx="6" fill="none" stroke="#8a382f" stroke-width="5"/>
+    <rect x="10" y="10" width="230" height="92" rx="3" fill="none" stroke="#8a382f" stroke-width="2"/>
+    <text x="125" y="50" fill="#8a382f" font-family="Arial, sans-serif" font-size="21" font-weight="bold" text-anchor="middle" letter-spacing="3">ATTRIBUTION</text>
+    <text x="125" y="82" fill="#8a382f" font-family="Arial, sans-serif" font-size="25" font-weight="bold" text-anchor="middle" letter-spacing="5">PENDING</text>
+  </g>
+  <text x="110" y="845" fill="#1f2e27" font-family="Georgia, serif" font-size="35" font-style="italic">Found objects. Unfinished stories.</text>
+  <text x="110" y="930" fill="#47493f" font-family="Arial, sans-serif" font-size="18" letter-spacing="4">DOCUMENT • RESEARCH • PRESERVE • SHARE</text>
+</svg>

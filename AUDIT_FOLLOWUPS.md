@@ -7,10 +7,10 @@ These are implementation follow-ups, not claims that the work is complete.
 ## Current checkpoint (2026-09-23)
 
 - The app is running locally at `http://127.0.0.1:8765` with full computer access.
-- Branch `codex/home-veridex-bridge-checkpoint` matches its upstream branch (`0` ahead, `0` behind).
-- Google search readiness changes in `google_chrome_search.js` and their tests are modified but uncommitted.
+- Branch `codex/home-veridex-bridge-checkpoint` is one commit ahead of its upstream branch.
+- Google search readiness changes and canonical research records are included in local commit `1bc07ec`; that commit has not been pushed.
 - Artist, gallery, Instagram, tools, and imported research files are visible to Git but remain untracked. Do not clean, reset, or switch branches over them without preserving them.
-- Antiques cases now derive a canonical, revision-snapshotted `research_record` from the existing case and evidence abstractions.
+- Antiques cases derive a canonical, revision-snapshotted `research_record` from the existing case and evidence abstractions.
 
 ## Priority gaps
 
@@ -19,11 +19,22 @@ These are implementation follow-ups, not claims that the work is complete.
 - [ ] Make `ebay.offers` SKU-aware. The current production request calls eBay's
   `getOffers` operation with pagination only, and eBay rejects it because a SKU is
   required.
-- [ ] Confirm the production notification topic/destination in eBay's Developer
-  Portal and capture end-to-end evidence for Worker verification, D1 queueing, local
-  retrieval, acknowledgment, and deletion.
+- [x] Confirm the Production Marketplace Account Deletion destination and capture
+  end-to-end evidence for Worker signature verification, D1 queueing, workspace-bound
+  local retrieval, payload minimization, acknowledgment, and remote deletion. A
+  five-event live canary completed without processing errors on 2026-09-24.
+- [x] Register and verify the user subscriptions for `ORDER_CONFIRMATION`,
+  `BUYER_QUESTION`, and `NEW_MESSAGE`. All three are enabled and their eBay-generated
+  test events traversed the Worker, D1 queue, local consumer, topic mapping, and remote
+  acknowledgment on 2026-09-24.
+- [x] Start automatic workspace-scoped notification polling with Veridex. The poller
+  checks immediately at startup and every 60 seconds by default, preserves the existing
+  persist-before-ack boundary, serializes manual and background checks, and stops cleanly
+  with the service. Connected accounts provides a persisted per-workspace on/off control;
+  re-enabling requests an immediate check and manual checks remain available while off.
 - [ ] Implement or verify buyer-message retrieval and sold-item alerting. Granted
-  OAuth scope, a deployed receiver, and expected eBay emails are not delivery proof.
+  OAuth scope and test events prove the notification pipeline, but a real buyer message
+  and completed order still need observed delivery evidence.
 - [ ] Run a real listing preview using the configured policies and warehouse location;
   publish only after a separate explicit confirmation.
 
@@ -53,4 +64,4 @@ These are implementation follow-ups, not claims that the work is complete.
 
 ## Audit caveat
 
-The branch currently matches its remote, but the working tree contains important modified and untracked work. `.gitignore` excludes environment, runtime, workspace data, temporary, and output directories. Repeat the Git/GitHub visibility check before any commit, cleanup, branch switch, or release checkpoint.
+The branch is one commit ahead of its remote, and the working tree contains important untracked research and media. `.gitignore` excludes environment, runtime, workspace data, temporary, and output directories. Repeat the Git/GitHub visibility check before any commit, cleanup, branch switch, push, or release checkpoint.

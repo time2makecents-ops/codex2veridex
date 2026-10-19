@@ -58,6 +58,31 @@ class VeridexAdminTests(unittest.TestCase):
             third = self.service(root)
             self.assertEqual(third.versions()["room_catalog"], version)
 
+    def test_existing_catalog_receives_video_production_seed_without_overwriting_admin_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            first = AdminService(
+                data_root,
+                root,
+                [row for row in ROOMS if row["id"] != "video_production"],
+                Path("governance/navigator_governance_v1.0.0.json"),
+            )
+            archive = first.create_proposal("room", "archive", {"target_id": "break_room"})
+            first.approve_and_apply(archive["proposal_id"], expected_version=archive["base_version"], confirm=True)
+
+            second = self.service(root)
+            video = next(row for row in second.rooms() if row["id"] == "video_production")
+            archived = next(row for row in second.rooms(include_archived=True) if row["id"] == "break_room")
+            self.assertEqual(video["default_persona"], "Beta")
+            self.assertIn("video studio", video["aliases"])
+            self.assertFalse(archived["is_active"])
+            version = second.versions()["room_catalog"]
+
+            third = self.service(root)
+            self.assertEqual(third.versions()["room_catalog"], version)
+            self.assertEqual([row["id"] for row in third.rooms()].count("video_production"), 1)
+
     def test_stale_room_proposal_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = self.service(Path(temporary))

@@ -35,6 +35,22 @@ explicitly places that runtime state in scope.
   seven-day cleanup. The public privacy policy is
   `https://time2makecents-ops.github.io/veridex-privacy/` because eBay rejected the
   Worker's `/privacy` URL in the RuName form.
+- Marketplace Account Deletion is registered in the Production Developer Portal and
+  the live endpoint is receiving signed events. The local workspace-scoped consumer
+  persists each event before acknowledgment, rejects cross-workspace responses, and
+  does not retain raw account-deletion payloads. Connected accounts and governed tools
+  expose explicit queue checks. A five-event live canary completed with five local
+  commits, five remote acknowledgments, and no errors. Automatic polling now starts with
+  Veridex, checks assigned eBay workspaces once per minute by default, exposes its last
+  per-workspace result in Connected accounts, and stops cleanly with the service. A
+  persisted Connected accounts control can disable or re-enable automatic checks for an
+  individual workspace without disabling manual checks or requiring a restart.
+- The Production OAuth grant now includes
+  `commerce.notification.subscription`. User subscriptions for `ORDER_CONFIRMATION`
+  schema 1.1, `BUYER_QUESTION` schema 1.0, and `NEW_MESSAGE` schema 1.0 are enabled on
+  the verified Worker destination. eBay test events for all three topics were received,
+  locally mapped to sold/message alerts, and acknowledged without errors. This proves
+  the configured pipeline, not delivery of a real buyer interaction.
 - No live listing was published during setup. The Developer Portal's manual token
   generator and noninteractive consent preview are not required after the real
   Veridex authorization flow succeeds.
@@ -53,8 +69,9 @@ Product Research, sign-in, consent, security checks, and rate-limit dialogs:
 - Record truthful provider availability, coverage limits, errors, and evidence.
 - Repair `ebay.offers`: eBay's production `getOffers` endpoint requires a SKU,
   but the current route sends only pagination parameters and returns HTTP 400.
-- Complete and record eBay Developer Portal notification-topic registration, then
-  validate a signed event through Worker receipt, local retrieval, and acknowledgment.
+- Capture one real `ORDER_CONFIRMATION` and one real `BUYER_QUESTION` or `NEW_MESSAGE`
+  delivery. Compare the resulting alerts with the corresponding order/conversation API
+  reads before claiming real-world coverage.
 - Implement or verify the governed buyer-message read path and the sold-item alert
   path. OAuth scope and ordinary eBay email do not by themselves prove either path.
 - Exercise a complete listing preview with real item data. Keep publication behind

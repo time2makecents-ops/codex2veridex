@@ -84,12 +84,36 @@ class ConnectedAccountsTests(unittest.TestCase):
         first = self.accounts.ebay_env("ws_one")
         second = self.accounts.ebay_env("ws_two")
         self.assertNotEqual(first["VERIDEX_EBAY_DB_PATH"], second["VERIDEX_EBAY_DB_PATH"])
+        self.assertNotEqual(
+            first["VERIDEX_EBAY_NOTIFICATIONS_DB_PATH"],
+            second["VERIDEX_EBAY_NOTIFICATIONS_DB_PATH"],
+        )
         self.assertIn("ws_one", first["VERIDEX_EBAY_DB_PATH"])
+        self.assertIn("ws_one", first["VERIDEX_EBAY_NOTIFICATIONS_DB_PATH"])
 
     def test_same_ebay_account_cannot_be_assigned_twice(self):
         self.accounts.assign_ebay("ws_one", "seller-one", environment="production")
         with self.assertRaisesRegex(ConnectedAccountError, "already assigned"):
             self.accounts.assign_ebay("ws_two", "Seller-One", environment="production")
+
+    def test_assigned_ebay_workspace_ids_include_only_valid_explicit_assignments(self):
+        self.accounts.assign_ebay("ws_two", "seller-two", environment="production")
+        invalid = self.data / "workspaces" / "not-a-workspace"
+        (invalid / "integrations").mkdir(parents=True)
+        (invalid / "integrations" / "connected_accounts.json").write_text(
+            json.dumps({"ebay": {"assigned": True, "username": "ignored"}}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.accounts.assigned_ebay_workspace_ids(), ["ws_two"])
+        self.assertEqual(self.accounts.automatic_ebay_workspace_ids(), ["ws_two"])
+        self.assertTrue(self.accounts.ebay_automatic_notifications_enabled("ws_two"))
+        self.accounts.set_ebay_automatic_notifications("ws_two", False)
+        self.assertFalse(self.accounts.ebay_automatic_notifications_enabled("ws_two"))
+        self.assertEqual(self.accounts.assigned_ebay_workspace_ids(), ["ws_two"])
+        self.assertEqual(self.accounts.automatic_ebay_workspace_ids(), [])
+        self.accounts.set_ebay_automatic_notifications("ws_two", True)
+        self.assertEqual(self.accounts.automatic_ebay_workspace_ids(), ["ws_two"])
 
     def test_unknown_workspace_is_rejected(self):
         with self.assertRaisesRegex(ConnectedAccountError, "Unknown workspace"):

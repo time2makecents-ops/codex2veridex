@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <defs>
+    <clipPath id="logoCircle">
+      <circle cx="540" cy="222" r="140"/>
+    </clipPath>
+  </defs>
+  <rect width="1080" height="1080" fill="#102a22"/>
+  <rect x="42" y="42" width="996" height="996" rx="8" fill="none" stroke="#c9a45c" stroke-width="3"/>
+  <rect x="58" y="58" width="964" height="964" rx="5" fill="none" stroke="#c9a45c" stroke-width="1" opacity=".55"/>
+  <path d="M90 155H310M770 155H990M90 925H310M770 925H990" stroke="#c9a45c" stroke-width="2"/>
+  <image href="logo.png" xlink:href="logo.png" x="400" y="82" width="280" height="280" preserveAspectRatio="xMidYMid meet" clip-path="url(#logoCircle)"/>
+  <text x="540" y="440" fill="#e7dcc1" font-family="Georgia, serif" font-size="30" text-anchor="middle" letter-spacing="10">WELCOME TO</text>
+  <text x="540" y="555" fill="#e5c985" font-family="Georgia, serif" font-size="83" text-anchor="middle" letter-spacing="5">PROVENANCE</text>
+  <text x="540" y="650" fill="#e5c985" font-family="Georgia, serif" font-size="83" text-anchor="middle" letter-spacing="7">PENDING</text>
+  <line x1="350" y1="718" x2="730" y2="718" stroke="#c9a45c" stroke-width="2"/>
+  <text x="540" y="793" fill="#e7dcc1" font-family="Georgia, serif" font-size="30" font-style="italic" text-anchor="middle">Found objects. Unfinished stories.</text>
+  <text x="540" y="858" fill="#bdb49e" font-family="Arial, sans-serif" font-size="19" text-anchor="middle" letter-spacing="5">ART • ANTIQUES • RESEARCH • DISCOVERY</text>
+</svg>

@@ -63,6 +63,7 @@ class EbayGatewayTests(unittest.TestCase):
     def test_default_scopes_include_notifications_and_messages(self) -> None:
         self.assertIn("https://api.ebay.com/oauth/api_scope", self.gateway.scopes())
         self.assertIn("https://api.ebay.com/oauth/api_scope/commerce.message", self.gateway.scopes())
+        self.assertIn("https://api.ebay.com/oauth/api_scope/commerce.notification.subscription", self.gateway.scopes())
         self.assertIn("https://api.ebay.com/oauth/api_scope/sell.fulfillment", self.gateway.scopes())
 
     @patch("ebay_oauth.subprocess.Popen")
@@ -143,6 +144,8 @@ class EbayGatewayTests(unittest.TestCase):
             "ebay.inventory_list",
             "ebay.order_list",
             "ebay.transaction_list",
+            "ebay.notification_check",
+            "ebay.notification_list",
             "ebay.listing_preview",
             "ebay.listing_publish",
             "ebay.offer_update",
@@ -167,6 +170,23 @@ class EbayGatewayTests(unittest.TestCase):
         })
         self.assertEqual(result["structuredContent"]["status"], "confirmation_required")
         workspace_ebay.return_value.publish_listing.assert_called_once_with(self.listing(), confirmed=False)
+
+    @patch("veridex_server.workspace_from_args", return_value=("ws_test", "sess_test"))
+    @patch("veridex_server.workspace_ebay_notifications")
+    def test_server_notification_check_is_workspace_scoped(self, workspace_notifications, _workspace) -> None:
+        workspace_notifications.return_value.sync.return_value = {
+            "status": "complete",
+            "workspace_id": "ws_test",
+            "acknowledged": 2,
+        }
+        handler = object.__new__(veridex_server.VeridexHandler)
+        result = handler._call_tool({
+            "tool": "ebay.notification_check",
+            "arguments": {"workspace_id": "ws_test", "session_id": "sess_test", "max_events": 50},
+        })
+        self.assertEqual(result["structuredContent"]["acknowledged"], 2)
+        workspace_notifications.assert_called_once_with("ws_test")
+        workspace_notifications.return_value.sync.assert_called_once_with(max_events=50)
 
     @patch("veridex_server.workspace_from_args", return_value=("ws_test", "sess_test"))
     @patch("veridex_server.workspace_ebay")

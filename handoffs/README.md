@@ -15,8 +15,12 @@ context it needs. Do not read every handoff automatically.
    review, duplicate handling, and the 50-item review queue.
 5. [Browser and marketplace integrations](browser-marketplaces.md) — continue
    Google, eBay, Facebook, Instagram, connected-account, and popup handling.
-6. [Workspace development checkpoint](workspace-checkpoint.md) — resume general
-   Veridex development from the current branch and validation checkpoint.
+6. [All-encompassing workspace checkpoint](workspace-checkpoint.md) — resume
+   repository-wide Veridex development and operator work, including current
+   branch state, validation, safety boundaries, tooling, and cross-area notes.
+
+7. [Current build and research checkpoint](current-build-research-checkpoint.md) - resume
+   from the canonical research-record, Google bridge, artist research, and safe-commit checkpoint.
 
 Start a new PowerShell terminal, run `veridex`, and say:
 
