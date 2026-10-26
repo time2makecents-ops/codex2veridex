@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 from seller_intake import SellerIntakeCatalog
@@ -16,6 +18,22 @@ class FakeStore:
 
 
 class SellerIntakeTests(unittest.TestCase):
+    def test_zip_extract_keeps_archive_and_adds_item_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = SellerIntakeCatalog(Path(temporary))
+            batch = catalog.create_batch({"title": "ZIP intake"})
+            item = catalog.create_item({"batch_id": batch["batch_id"], "title": "Camera"})
+            stream = BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("photos/front.jpg", b"jpeg")
+                archive.writestr("notes/provenance.txt", b"notes")
+            result = catalog.extract_zip(item["item_id"], "camera-files.zip", stream.getvalue())
+            self.assertEqual(result["file_count"], 2)
+            self.assertTrue(result["verified"])
+            current = catalog.get_item(item["item_id"])
+            self.assertEqual({asset["name"] for asset in current["assets"]}, {"camera-files.zip", "front.jpg", "provenance.txt"})
+            self.assertEqual(next(asset["role"] for asset in current["assets"] if asset["name"] == "front.jpg"), "photo")
+
     def test_item_folder_keeps_assets_evidence_and_snapshot_together(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             catalog = SellerIntakeCatalog(Path(temporary))

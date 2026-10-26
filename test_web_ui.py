@@ -8,6 +8,43 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    def test_ebay_room_has_board_table_review_and_cross_channel_controls(self) -> None:
+        html = (ROOT / "web" / "ebay_room" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "ebay_room" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "ebay_room" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="board"', html)
+        self.assertIn('id="inventory-table"', html)
+        self.assertIn('id="unmatched-list"', html)
+        self.assertIn('id="new-list"', html)
+        self.assertIn('id="list-list"', html)
+        self.assertIn('id="new-item"', html)
+        self.assertIn('/api/ebay-room/sync', script)
+        self.assertIn('/api/ebay-room/import', script)
+        self.assertIn('/api/ebay-room/link', script)
+        self.assertIn('/api/ebay-room/facebook/prepare', script)
+        self.assertIn('/api/ebay-room/research/attach', script)
+        self.assertIn('/api/item-intake/batches', script)
+        self.assertIn('/api/item-intake/items/update', script)
+        self.assertIn('/api/item-intake/items/${id}/assets', script)
+        self.assertIn('/api/item-intake/items/${id}/extract-zip', script)
+        self.assertIn('id="item-zip-upload"', script)
+        self.assertIn('id="item-zip-extract"', script)
+        self.assertIn('id="item-zip-remove"', script)
+        self.assertIn('Select photos', script)
+        self.assertIn('Delete selected', script)
+        self.assertIn('data-photo-select', script)
+        self.assertIn('/api/item-intake/assets/delete', script)
+        self.assertIn('Delete ${selected.length} selected photo', script)
+        self.assertIn('file.arrayBuffer()', script)
+        self.assertIn('zip_upload_limit_bytes', script)
+        self.assertIn('Delete the original ZIP', script)
+        self.assertNotIn('card-photo', script)
+        self.assertIn('confirm("Create a new Item Intake record', script)
+        self.assertIn('.board{', styles)
+        self.assertIn('.photo-check{', html)
+        self.assertIn('.photo-grid.selecting', html)
+
     def test_phone_capture_companion_is_limited_to_raw_capture_controls(self) -> None:
         html = (ROOT / "web" / "intake_companion" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "intake_companion" / "app.js").read_text(encoding="utf-8")
@@ -104,6 +141,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="facebook-refresh"', html)
         self.assertIn('api("/api/integrations/facebook/connect"', script)
         self.assertIn('integrationAction("/api/integrations/facebook/verify"', script)
+        self.assertIn("does not need Chrome Sync", html)
         self.assertIn(".account-monogram.facebook", styles)
 
     def test_facebook_marketplace_review_first_sell_panel_is_present(self) -> None:

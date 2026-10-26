@@ -8,7 +8,7 @@ from veridex_rooms import resolve_room, room_directory_text, route_room_request,
 class VeridexRoomTests(unittest.TestCase):
     def test_registry_matches_expected_governed_rooms(self) -> None:
         rooms = rooms_payload()
-        self.assertEqual(len(rooms), 20)
+        self.assertEqual(len(rooms), 21)
         self.assertEqual(rooms[0]["id"], "lobby")
         self.assertEqual(resolve_room("art room")["id"], "art_department")
         self.assertEqual(resolve_room("Visual Design")["title"], "Visual Design")
@@ -26,6 +26,10 @@ class VeridexRoomTests(unittest.TestCase):
         self.assertEqual(antiques["id"], "antiques_department")
         self.assertEqual(antiques["default_persona"], "Leo")
         self.assertIn("inventory and provenance tracking", antiques["capabilities"])
+        ebay = resolve_room("eBay room")
+        self.assertEqual(ebay["id"], "ebay")
+        self.assertEqual(ebay["default_persona"], "Bob")
+        self.assertIn("connected eBay seller listing synchronization", ebay["capabilities"])
 
     def test_only_explicit_navigation_routes_to_room_change(self) -> None:
         routed = route_room_request("take me to art room")
@@ -33,6 +37,7 @@ class VeridexRoomTests(unittest.TestCase):
         self.assertEqual(routed["room"]["id"], "art_department")
         self.assertEqual(route_room_request("take me to the video room")["room"]["id"], "video_production")
         self.assertEqual(route_room_request("take me to animation studio")["room"]["id"], "animation_studio")
+        self.assertEqual(route_room_request("take me to the eBay room")["room"]["id"], "ebay")
         self.assertIsNone(route_room_request("Should my design use an art department?"))
         self.assertIsNone(route_room_request("move past the gate and give me the results"))
 
@@ -45,6 +50,8 @@ class VeridexRoomTests(unittest.TestCase):
         self.assertIn("Video Production", directory)
         self.assertIn("Animation Studio", directory)
         self.assertIn("Beta", directory)
+        self.assertIn("eBay", directory)
+        self.assertIn("Bob", directory)
 
 
 if __name__ == "__main__":

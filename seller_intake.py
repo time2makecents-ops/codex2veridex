@@ -17,8 +17,10 @@ import shutil
 import sqlite3
 import threading
 import uuid
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
@@ -437,6 +439,52 @@ class SellerIntakeCatalog:
             self._write_snapshot(connection, item_id)
             row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (asset_id,)).fetchone()
             return self._public_asset(row)
+
+    def extract_zip(self, item_id: str, filename: str, content: bytes) -> Dict[str, Any]:
+        """Keep an uploaded ZIP and safely add its contained files to one item."""
+        item_id = self._safe_id(item_id, "item_id")
+        archive_name = self._safe_filename(filename)
+        if not archive_name.lower().endswith(".zip"):
+            raise SellerIntakeError("Upload a .zip folder to extract it")
+        if not content:
+            raise SellerIntakeError("ZIP folder is empty")
+        maximum_files, maximum_uncompressed = 500, 200 * 1024 * 1024
+        try:
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                members = [member for member in archive.infolist() if not member.is_dir()]
+                if not members:
+                    raise SellerIntakeError("ZIP folder has no files")
+                if len(members) > maximum_files:
+                    raise SellerIntakeError("ZIP folder has too many files (maximum 500)")
+                total = 0
+                extracted: list[tuple[str, bytes, str]] = []
+                for member in members:
+                    raw_name = member.filename.replace("\\", "/")
+                    pure_name = Path(raw_name)
+                    mode = (member.external_attr >> 16) & 0o170000
+                    if raw_name.startswith("/") or ".." in pure_name.parts or mode == 0o120000:
+                        raise SellerIntakeError("ZIP folder contains an unsafe file path")
+                    total += int(member.file_size)
+                    if total > maximum_uncompressed:
+                        raise SellerIntakeError("ZIP folder expands beyond the 200 MB safety limit")
+                    member_name = self._safe_filename(pure_name.name)
+                    member_content = archive.read(member)
+                    if len(member_content) != member.file_size:
+                        raise SellerIntakeError("ZIP folder could not be read safely")
+                    extracted.append((member_name, member_content, mimetypes.guess_type(member_name)[0] or "application/octet-stream"))
+        except zipfile.BadZipFile as exc:
+            raise SellerIntakeError("That file is not a valid ZIP folder") from exc
+        archive_asset = self.add_asset(item_id, archive_name, content, "application/zip", "attachment")
+        assets = []
+        for member_name, member_content, content_type in extracted:
+            role = "photo" if content_type.startswith("image/") else "attachment"
+            assets.append(self.add_asset(item_id, member_name, member_content, content_type, role))
+        for asset in [archive_asset, *assets]:
+            _, stored_path = self.asset_path(str(asset["asset_id"]))
+            stored_content = stored_path.read_bytes()
+            if len(stored_content) != int(asset["size"]) or hashlib.sha256(stored_content).hexdigest() != asset["sha256"]:
+                raise SellerIntakeError("ZIP extraction could not be verified")
+        return {"archive": archive_asset, "assets": assets, "file_count": len(assets), "verified": True}
 
     def delete_asset(self, item_id: str, asset_id: str) -> Dict[str, str]:
         """Permanently remove one asset owned by an intake item."""

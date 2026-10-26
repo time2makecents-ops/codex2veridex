@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,6 +86,18 @@ class EbayGatewayTests(unittest.TestCase):
         self.assertEqual(preview["listing"]["price"], "125.00")
         self.assertEqual(preview["listing"]["aspects"]["Type"], ["Painting"])
 
+    def test_seller_listing_list_includes_seller_hub_items(self) -> None:
+        response = ET.fromstring('''<GetMyeBaySellingResponse xmlns="urn:ebay:apis:eBLBaseComponents"><Ack>Success</Ack><ActiveList><PaginationResult><TotalNumberOfEntries>1</TotalNumberOfEntries></PaginationResult><ItemArray><Item><ItemID>137876850352</ItemID><Title>Signed lava photograph</Title><Quantity>1</Quantity><SellingStatus><CurrentPrice currencyID="USD">425.00</CurrentPrice><QuantitySold>0</QuantitySold></SellingStatus><ListingDetails><ViewItemURL>https://www.ebay.com/itm/137876850352</ViewItemURL></ListingDetails><PictureDetails><PictureURL>https://i.ebayimg.com/example.jpg</PictureURL></PictureDetails></Item></ItemArray></ActiveList></GetMyeBaySellingResponse>''')
+        with patch.object(self.gateway, "_trading_request", return_value=response):
+            result = self.gateway.seller_listings()
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["listings"][0]["listing_id"], "137876850352")
+        self.assertEqual(result["listings"][0]["status"], "active")
+
+    def test_offer_list_requires_sku(self) -> None:
+        with self.assertRaisesRegex(EbayGatewayError, "sku is required"):
+            self.gateway.offers()
+
     def test_listing_preview_rejects_non_https_images(self) -> None:
         values = self.listing()
         values["image_urls"] = ["http://example.test/art.jpg"]
@@ -142,6 +155,11 @@ class EbayGatewayTests(unittest.TestCase):
         self.assertTrue({
             "ebay.status",
             "ebay.inventory_list",
+            "ebay.seller_listing_list",
+            "ebay.room_inventory",
+            "ebay.room_sync",
+            "ebay.room_link",
+            "ebay.room_import",
             "ebay.order_list",
             "ebay.transaction_list",
             "ebay.notification_check",

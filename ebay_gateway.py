@@ -9,6 +9,7 @@ import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -104,6 +105,10 @@ class EbayGateway:
     @property
     def authorization_root(self) -> str:
         return "https://auth.sandbox.ebay.com" if self.environment == "sandbox" else "https://auth.ebay.com"
+
+    @property
+    def trading_root(self) -> str:
+        return "https://api.sandbox.ebay.com/ws/api.dll" if self.environment == "sandbox" else "https://api.ebay.com/ws/api.dll"
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -386,15 +391,134 @@ class EbayGateway:
         except json.JSONDecodeError as exc:
             raise EbayGatewayError("eBay API returned invalid JSON.") from exc
 
+    def _trading_request(self, call_name: str, body: str, *, retry: bool = True) -> ET.Element:
+        """Call the legacy Trading API with the same workspace OAuth identity."""
+        request = urllib.request.Request(
+            self.trading_root,
+            data=body.encode("utf-8"),
+            headers={
+                "Content-Type": "text/xml; charset=utf-8",
+                "X-EBAY-API-CALL-NAME": call_name,
+                "X-EBAY-API-COMPATIBILITY-LEVEL": "1423",
+                "X-EBAY-API-SITEID": "0",
+                "X-EBAY-API-IAF-TOKEN": self._access_token(),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                root = ET.fromstring(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and retry:
+                self._access_token(force_refresh=True)
+                return self._trading_request(call_name, body, retry=False)
+            raise EbayGatewayError(f"eBay Trading API failed (HTTP {exc.code}).") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise EbayGatewayError(f"eBay Trading API is unavailable: {getattr(exc, 'reason', exc)}") from exc
+        except ET.ParseError as exc:
+            raise EbayGatewayError("eBay Trading API returned invalid XML.") from exc
+        namespace = {"e": "urn:ebay:apis:eBLBaseComponents"}
+        acknowledgement = root.findtext("e:Ack", default="", namespaces=namespace)
+        if acknowledgement not in {"Success", "Warning"}:
+            messages = [
+                " ".join((node.text or "").split())
+                for node in root.findall(".//e:Errors/e:LongMessage", namespace)
+                if (node.text or "").strip()
+            ]
+            raise EbayGatewayError("; ".join(messages[:5])[:1000] or "eBay Trading API rejected the request.")
+        return root
+
+    @staticmethod
+    def _trading_text(node: Optional[ET.Element], path: str) -> str:
+        if node is None:
+            return ""
+        return str(node.findtext(path, default="", namespaces={"e": "urn:ebay:apis:eBLBaseComponents"}) or "").strip()
+
+    def seller_listings(self, *, page: int = 1, per_page: int = 100) -> Dict[str, Any]:
+        """Return Seller Hub and API-created listings owned by the connected seller."""
+        page_number = _bounded_int(page, default=1, minimum=1, maximum=1000, name="page")
+        count = _bounded_int(per_page, default=100, minimum=1, maximum=200, name="per_page")
+        sections = ("ActiveList", "ScheduledList", "SoldList", "UnsoldList")
+        selectors = "".join(
+            f"<{section}><Include>true</Include><Pagination><EntriesPerPage>{count}</EntriesPerPage><PageNumber>{page_number}</PageNumber></Pagination></{section}>"
+            for section in sections
+        )
+        root = self._trading_request(
+            "GetMyeBaySelling",
+            f'<?xml version="1.0" encoding="utf-8"?><GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">{selectors}<DetailLevel>ReturnAll</DetailLevel></GetMyeBaySellingRequest>',
+        )
+        namespace = {"e": "urn:ebay:apis:eBLBaseComponents"}
+        listings: list[Dict[str, Any]] = []
+        total = 0
+        for section in sections:
+            status = section.removesuffix("List").lower()
+            total += int(self._trading_text(root.find(f"e:{section}/e:PaginationResult", namespace), "e:TotalNumberOfEntries") or 0)
+            for item in root.findall(f"e:{section}/e:ItemArray/e:Item", namespace):
+                listing_id = self._trading_text(item, "e:ItemID")
+                if not listing_id:
+                    continue
+                price_node = item.find("e:SellingStatus/e:CurrentPrice", namespace)
+                price = (price_node.text or "").strip() if price_node is not None else ""
+                currency = str(price_node.attrib.get("currencyID") or "USD") if price_node is not None else "USD"
+                listings.append({
+                    "listing_id": listing_id,
+                    "title": self._trading_text(item, "e:Title"),
+                    "sku": self._trading_text(item, "e:SKU"),
+                    "status": status,
+                    "price": price,
+                    "currency": currency,
+                    "quantity": int(self._trading_text(item, "e:Quantity") or 0),
+                    "quantity_sold": int(self._trading_text(item, "e:SellingStatus/e:QuantitySold") or 0),
+                    "listing_url": self._trading_text(item, "e:ListingDetails/e:ViewItemURL"),
+                    "picture_urls": [str(node.text or "").strip() for node in item.findall("e:PictureDetails/e:PictureURL", namespace) if str(node.text or "").strip()],
+                    "start_time": self._trading_text(item, "e:ListingDetails/e:StartTime"),
+                    "end_time": self._trading_text(item, "e:ListingDetails/e:EndTime"),
+                })
+        return {"listings": listings, "total": total, "page": page_number, "per_page": count}
+
+    def get_item(self, listing_id: str) -> Dict[str, Any]:
+        item_id = str(listing_id or "").strip()
+        if not item_id.isdigit():
+            raise EbayGatewayError("A numeric eBay listing ID is required.")
+        root = self._trading_request(
+            "GetItem",
+            f'<?xml version="1.0" encoding="utf-8"?><GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>{item_id}</ItemID><DetailLevel>ReturnAll</DetailLevel><IncludeItemSpecifics>true</IncludeItemSpecifics></GetItemRequest>',
+        )
+        namespace = {"e": "urn:ebay:apis:eBLBaseComponents"}
+        item = root.find("e:Item", namespace)
+        if item is None:
+            raise EbayGatewayError("eBay did not return that listing.")
+        seller = self._trading_text(item, "e:Seller/e:UserID")
+        if self.expected_username and seller.casefold() != self.expected_username.casefold():
+            raise EbayGatewayError("That listing does not belong to the eBay seller assigned to this workspace.")
+        price_node = item.find("e:SellingStatus/e:CurrentPrice", namespace)
+        return {
+            "listing_id": self._trading_text(item, "e:ItemID"),
+            "seller_username": seller,
+            "title": self._trading_text(item, "e:Title"),
+            "description": self._trading_text(item, "e:Description"),
+            "sku": self._trading_text(item, "e:SKU"),
+            "price": (price_node.text or "").strip() if price_node is not None else "",
+            "currency": str(price_node.attrib.get("currencyID") or "USD") if price_node is not None else "USD",
+            "quantity": int(self._trading_text(item, "e:Quantity") or 0),
+            "quantity_sold": int(self._trading_text(item, "e:SellingStatus/e:QuantitySold") or 0),
+            "listing_url": self._trading_text(item, "e:ListingDetails/e:ViewItemURL"),
+            "picture_urls": [str(node.text or "").strip() for node in item.findall("e:PictureDetails/e:PictureURL", namespace) if str(node.text or "").strip()],
+        }
+
     def inventory_items(self, *, limit: int = 25, offset: int = 0) -> Dict[str, Any]:
         count = _bounded_int(limit, default=25, minimum=1, maximum=200, name="limit")
         start = _bounded_int(offset, default=0, minimum=0, maximum=1000000, name="offset")
         return self._request("GET", f"/sell/inventory/v1/inventory_item?limit={count}&offset={start}")
 
-    def offers(self, *, limit: int = 25, offset: int = 0) -> Dict[str, Any]:
+    def offers(self, *, sku: str = "", limit: int = 25, offset: int = 0) -> Dict[str, Any]:
         count = _bounded_int(limit, default=25, minimum=1, maximum=200, name="limit")
         start = _bounded_int(offset, default=0, minimum=0, maximum=1000000, name="offset")
-        return self._request("GET", f"/sell/inventory/v1/offer?limit={count}&offset={start}")
+        item_sku = str(sku or "").strip()
+        if not item_sku:
+            raise EbayGatewayError("sku is required when listing Inventory API offers. Use seller_listings for the complete seller account.")
+        query = urllib.parse.urlencode({"sku": item_sku, "limit": count, "offset": start})
+        return self._request("GET", f"/sell/inventory/v1/offer?{query}")
 
     def orders(self, *, limit: int = 25, offset: int = 0) -> Dict[str, Any]:
         count = _bounded_int(limit, default=25, minimum=1, maximum=200, name="limit")

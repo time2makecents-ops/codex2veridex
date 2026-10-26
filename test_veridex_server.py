@@ -22,6 +22,29 @@ from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_zip_upload_limit_accepts_archives_larger_than_general_uploads(self) -> None:
+        self.assertGreaterEqual(veridex_server.MAX_ZIP_UPLOAD_BYTES, 70_427_383)
+        self.assertGreater(veridex_server.MAX_ZIP_UPLOAD_BYTES, veridex_server.MAX_UPLOAD_BYTES)
+
+    def test_workspace_activate_returns_selected_workspaces_recent_session(self) -> None:
+        selected = {
+            "session": {
+                "session_id": "sess_target",
+                "workspace_id": "ws_target",
+                "title": "Most recent",
+                "active_room": "lobby",
+            }
+        }
+        with patch.object(veridex_server.STORE, "bootstrap", return_value=selected) as bootstrap:
+            result = veridex_server.VeridexHandler._call_tool(
+                None,
+                {"tool": "office.workspace_activate", "arguments": {"workspace_id": "ws_target"}},
+            )
+
+        bootstrap.assert_called_once_with("ws_target")
+        self.assertEqual(result["structuredContent"]["session_id"], "sess_target")
+        self.assertEqual(result["structuredContent"]["workspace_id"], "ws_target")
+
     def test_remote_pairing_cookie_is_secure_unless_lan_mode_is_explicit(self) -> None:
         class PairingHandler:
             def __init__(self, allow_insecure_remote_cookie: bool) -> None:

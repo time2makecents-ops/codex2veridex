@@ -33,6 +33,7 @@ from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
 from connected_accounts import ConnectedAccountError, ConnectedAccounts
 from ebay_gateway import EbayGateway, EbayGatewayError
+from ebay_room import EbayRoom
 from ebay_notifications import EbayNotificationConsumer, EbayNotificationError, EbayNotificationPoller
 from facebook_chrome_bridge import (
     draft_facebook_message,
@@ -193,6 +194,7 @@ MUSEUM_VISUAL = MuseumVisualAnalyzer(DATA_ROOT)
 GMAIL = GmailGateway()
 ACCOUNTS = ConnectedAccounts(DATA_ROOT, ROOT)
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
+MAX_ZIP_UPLOAD_BYTES = max(MAX_UPLOAD_BYTES, max(1, int(os.environ.get("VERIDEX_MAX_ZIP_UPLOAD_MB", "250"))) * 1024 * 1024)
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
 ACTIVE_REQUESTS = ActiveRequestRegistry()
 REMOTE_ACCESS_PATH = DATA_ROOT / "system" / "remote_access.json"
@@ -657,6 +659,33 @@ def workspace_ebay(workspace_id: str, *, require_assignment: bool = True) -> Eba
 
 def workspace_ebay_notifications(workspace_id: str) -> EbayNotificationConsumer:
     return ACCOUNTS.ebay_notifications(workspace_id)
+
+
+def workspace_ebay_room(workspace_id: str) -> EbayRoom:
+    return EbayRoom(STORE.workspace_dir(workspace_id), SELLER_INTAKE)
+
+
+def ebay_room_context(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace_context(workspace_id, session_id)
+    session = STORE.find_session(session_id)
+    if str(session.get("active_room") or "") != "ebay":
+        raise ValueError("Navigate to the eBay room before using Bob's inventory workspace.")
+    return session
+
+
+def ebay_room_bootstrap(workspace_id: str, session_id: str, batch_id: str = "") -> Dict[str, Any]:
+    session = ebay_room_context(workspace_id, session_id)
+    gateway = workspace_ebay(workspace_id, require_assignment=False)
+    return {
+        "workspace_id": workspace_id,
+        "session_id": session_id,
+        "room": {"id": "ebay", "title": "eBay", "active_persona": "Bob"},
+        "connection": gateway.connection_status(),
+        "zip_upload_limit_bytes": MAX_ZIP_UPLOAD_BYTES,
+        "batches": SELLER_INTAKE.list_batches(),
+        "board": workspace_ebay_room(workspace_id).board(batch_id),
+        "facebook": {"drafts": FACEBOOK_MARKETPLACE.bootstrap(workspace_id).get("drafts", [])},
+    }
 
 
 def ebay_automatic_notification_status(workspace_id: str) -> Dict[str, Any]:
@@ -3888,6 +3917,14 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "latest_saved_project": animation_projects[0] if animation_projects else None,
             "default_pipeline": "Synfig Studio + Rhubarb Lip Sync + Video Production",
         }
+    if active_room == "ebay":
+        ebay_board = workspace_ebay_room(workspace_id).board()
+        context["ebay_room"] = {
+            "inventory": ebay_board.get("items", []),
+            "unmatched_listings": ebay_board.get("unmatched", []),
+            "latest_sync": ebay_board.get("latest_sync"),
+            "inventory_url": "/ebay-room",
+        }
     context["current_local_date"] = datetime.now().astimezone().date().isoformat()
     context["event_time_scope"] = (
         "upcoming_only"
@@ -3963,6 +4000,13 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "for the current Eternia Late Night workflow, and hand verified renders to Video Production. "
                 "Never claim a tool is installed or a cue file, animation, or render exists without matching execution and verified artifact evidence."
                 if active_room == ANIMATION_STUDIO_ROOM_ID else ""
+            )
+            + (
+                " As Bob in the eBay room, use the governed eBay-room inventory as the master selling context. Help identify what is listed, ready, or incomplete; "
+                "prepare factual listing copy and evidence-linked market research; and keep eBay and Facebook channel work attached to the Item Intake record. "
+                "Never create an inventory item from an unmatched seller listing without explicit approval. eBay API publication is fixed-price and confirmation-gated. "
+                "Seller Hub and Facebook Marketplace handoffs must stop for the user's final Publish click. Never claim a listing was published, revised, sold, or ended without matching provider evidence."
+                if active_room == "ebay" else ""
             )
         ),
         "user_prompt": governed_prompt,
@@ -4172,6 +4216,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
 TOOLS = [
     {"name": "office.session_info", "description": "Read the active standalone session."},
     {"name": "office.workspace_list", "description": "List local workspaces."},
+    {"name": "office.workspace_activate", "description": "Select the most recent session in one explicitly chosen workspace."},
     {"name": "office.session_create", "description": "Create a session in a workspace."},
     {"name": "office.transcript_get", "description": "Read a session transcript."},
     {"name": "office.room_list", "description": "List available governed rooms and personas."},
@@ -4202,7 +4247,12 @@ TOOLS = [
     {"name": "office.facebook_group_share_prepare", "description": "Prepare a reviewed Marketplace listing link in one approved Facebook group and stop before Post."},
     {"name": "ebay.status", "description": "Read the workspace-scoped eBay seller connection status without changing the account."},
     {"name": "ebay.inventory_list", "description": "List eBay inventory items for the seller account assigned to this workspace."},
-    {"name": "ebay.offer_list", "description": "List eBay offers and listings for the seller account assigned to this workspace."},
+    {"name": "ebay.offer_list", "description": "List Inventory API offers for one SKU in the seller account assigned to this workspace."},
+    {"name": "ebay.seller_listing_list", "description": "List all Seller Hub and API-created listings owned by the connected seller account."},
+    {"name": "ebay.room_inventory", "description": "Read Bob's eBay room board, Item Intake inventory, links, drafts, and unmatched listings."},
+    {"name": "ebay.room_sync", "description": "Refresh Bob's read-only listing snapshot from the connected seller account."},
+    {"name": "ebay.room_link", "description": "Link one verified seller listing to an existing Item Intake item."},
+    {"name": "ebay.room_import", "description": "Create an Item Intake item and local photo copies from one verified seller listing only when confirm=true."},
     {"name": "ebay.order_list", "description": "List completed-checkout eBay orders for the assigned seller account."},
     {"name": "ebay.transaction_list", "description": "List eBay seller financial transactions for the assigned account."},
     {"name": "ebay.policy_list", "description": "List the eBay payment, fulfillment, and return policies required for listings."},
@@ -4340,6 +4390,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
             relative = "item_intake/index.html"
         elif route.startswith("/item-intake/"):
             relative = "item_intake/" + route.removeprefix("/item-intake/")
+        elif route in {"/ebay-room", "/ebay-room/"}:
+            relative = "ebay_room/index.html"
+        elif route.startswith("/ebay-room/"):
+            relative = "ebay_room/" + route.removeprefix("/ebay-room/")
         else:
             relative = route.lstrip("/")
         candidate = (WEB_ROOT / relative).resolve()
@@ -4370,11 +4424,21 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/health":
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
+            elif parsed.path == "/api/ebay-room/bootstrap":
+                self._json(ebay_room_bootstrap(
+                    str(query.get("workspace_id", [""])[0]).strip(),
+                    str(query.get("session_id", [""])[0]).strip(),
+                    str(query.get("batch_id", [""])[0]).strip(),
+                ))
             elif parsed.path == "/api/item-intake/bootstrap":
                 batch_id = str(query.get("batch_id", [""])[0]).strip()
                 item_id = str(query.get("item_id", [""])[0]).strip()
                 batches = SELLER_INTAKE.list_batches()
-                payload: Dict[str, Any] = {"batches": batches, "upload_limit_bytes": MAX_UPLOAD_BYTES}
+                payload: Dict[str, Any] = {
+                    "batches": batches,
+                    "upload_limit_bytes": MAX_UPLOAD_BYTES,
+                    "zip_upload_limit_bytes": MAX_ZIP_UPLOAD_BYTES,
+                }
                 if item_id:
                     payload["item"] = SELLER_INTAKE.get_item(item_id)
                     payload["batch"] = SELLER_INTAKE.get_batch(str(payload["item"]["batch_id"]))
@@ -4618,8 +4682,90 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 )
                 self._json({"asset": asset, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
                 return
+            if re.fullmatch(r"/api/item-intake/items/[A-Za-z0-9_-]+/extract-zip", parsed.path):
+                query = parse_qs(parsed.query)
+                item_id = parsed.path.split("/")[4]
+                filename = str(query.get("name", [""])[0]).strip()
+                content = self._raw_body(MAX_ZIP_UPLOAD_BYTES)
+                extracted = SELLER_INTAKE.extract_zip(item_id, filename, content)
+                self._json({"extracted": extracted, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
+                return
             payload = self._body()
-            if parsed.path == "/api/item-intake/batches":
+            if parsed.path == "/api/ebay-room/sync":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                sync = workspace_ebay_room(workspace_id).sync(workspace_ebay(workspace_id))
+                self._json({"sync": sync, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))})
+            elif parsed.path == "/api/ebay-room/link":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                gateway = workspace_ebay(workspace_id)
+                listing = gateway.get_item(EbayRoom.listing_id(payload.get("listing")))
+                remaining = int(listing.get("quantity") or 0) - int(listing.get("quantity_sold") or 0)
+                link = workspace_ebay_room(workspace_id).link(
+                    {**listing, "status": "active" if remaining > 0 else "ended"},
+                    str(payload.get("item_id") or ""),
+                )
+                self._json({"link": link, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))})
+            elif parsed.path == "/api/ebay-room/import":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                if payload.get("confirm") is not True:
+                    raise ValueError("Review and confirm the eBay listing import before creating an inventory item.")
+                imported = workspace_ebay_room(workspace_id).import_listing(
+                    workspace_ebay(workspace_id), str(payload.get("listing") or "")
+                )
+                self._json({"imported": imported, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/ebay-room/drafts":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                draft = workspace_ebay_room(workspace_id).save_draft(
+                    str(payload.get("item_id") or ""),
+                    str(payload.get("channel") or "ebay"),
+                    payload.get("listing") if isinstance(payload.get("listing"), dict) else {},
+                )
+                self._json({"draft": draft, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/ebay-room/research/attach":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                evidence = SELLER_INTAKE.add_evidence({
+                    "item_id": payload.get("item_id"),
+                    "kind": "market_research",
+                    "claim": payload.get("claim"),
+                    "source_excerpt": payload.get("source_excerpt"),
+                    "observed_date": payload.get("observed_date"),
+                    "location_text": payload.get("source_url"),
+                    "confidence": payload.get("confidence") or "reviewed",
+                    "status": "accepted" if payload.get("confirm") is True else "needs_review",
+                })
+                self._json({"evidence": evidence, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/ebay-room/facebook/prepare":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item_id = str(payload.get("item_id") or "").strip()
+                item = SELLER_INTAKE.get_item(item_id)
+                handoff = SELLER_INTAKE.handoff_to_veridex(item_id, workspace_id, session_id, STORE)
+                photo_ids = [row["file_id"] for row in handoff["files"] if str(row.get("content_type") or "").startswith("image/")]
+                draft = save_facebook_marketplace_draft({
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "photo_ids": photo_ids,
+                    "title": payload.get("title") or item.get("title"),
+                    "description": payload.get("description") or item.get("description"),
+                    "category": payload.get("category") or "Antiques & collectibles",
+                    "condition": payload.get("condition") or "good",
+                    "price": payload.get("price") if payload.get("price") not in (None, "") else item.get("estimated_value"),
+                })
+                result = prepare_facebook_marketplace_draft(workspace_id, str(draft["draft_id"]))
+                workspace_ebay_room(workspace_id).save_draft(item_id, "facebook", {"facebook_draft_id": draft["draft_id"], "title": draft["title"], "price": draft["price"]})
+                self._json({**result, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/batches":
                 self._json({"batch": SELLER_INTAKE.create_batch(payload)}, HTTPStatus.CREATED)
             elif parsed.path == "/api/item-intake/items":
                 self._json({"item": SELLER_INTAKE.create_item(payload)}, HTTPStatus.CREATED)
@@ -5047,6 +5193,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
             value = dict(session)
         elif tool == "office.workspace_list":
             value = {"workspaces": STORE.list_workspaces()}
+        elif tool == "office.workspace_activate":
+            workspace_id = str(args.get("workspace_id") or "").strip()
+            value = dict(STORE.bootstrap(workspace_id)["session"])
         elif tool == "office.session_create":
             value = STORE.create_session(str(args.get("workspace_id") or ""), str(args.get("title") or "New session"))
         elif tool == "office.transcript_get":
@@ -5232,8 +5381,36 @@ class VeridexHandler(BaseHTTPRequestHandler):
         elif tool == "ebay.offer_list":
             workspace_id, _ = workspace_from_args(args)
             value = workspace_ebay(workspace_id).offers(
-                limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
+                sku=str(args.get("sku") or ""), limit=int(args.get("limit") or 25), offset=int(args.get("offset") or 0)
             )
+        elif tool == "ebay.seller_listing_list":
+            workspace_id, _ = workspace_from_args(args)
+            value = workspace_ebay(workspace_id).seller_listings(
+                page=int(args.get("page") or 1), per_page=int(args.get("per_page") or 100)
+            )
+        elif tool == "ebay.room_inventory":
+            workspace_id, session_id = workspace_from_args(args)
+            ebay_room_context(workspace_id, session_id)
+            value = ebay_room_bootstrap(workspace_id, session_id)
+        elif tool == "ebay.room_sync":
+            workspace_id, session_id = workspace_from_args(args)
+            ebay_room_context(workspace_id, session_id)
+            value = workspace_ebay_room(workspace_id).sync(workspace_ebay(workspace_id))
+        elif tool == "ebay.room_link":
+            workspace_id, session_id = workspace_from_args(args)
+            ebay_room_context(workspace_id, session_id)
+            listing = workspace_ebay(workspace_id).get_item(EbayRoom.listing_id(args.get("listing")))
+            remaining = int(listing.get("quantity") or 0) - int(listing.get("quantity_sold") or 0)
+            value = workspace_ebay_room(workspace_id).link(
+                {**listing, "status": "active" if remaining > 0 else "ended"}, str(args.get("item_id") or "")
+            )
+        elif tool == "ebay.room_import":
+            workspace_id, session_id = workspace_from_args(args)
+            ebay_room_context(workspace_id, session_id)
+            if args.get("confirm") is not True:
+                value = {"status": "confirmation_required", "imported": False}
+            else:
+                value = workspace_ebay_room(workspace_id).import_listing(workspace_ebay(workspace_id), str(args.get("listing") or ""))
         elif tool == "ebay.order_list":
             workspace_id, _ = workspace_from_args(args)
             value = workspace_ebay(workspace_id).orders(

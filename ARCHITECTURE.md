@@ -189,6 +189,10 @@ corporate Gmail token store beneath `data/integrations/` is shared across all
 workspaces and is selected only by a corporate/shared account request or as the
 fallback when the active workspace has no assigned Gmail. Gmail results and
 confirmed sends retain the selected scope and account identity in evidence.
+The Codex MCP bridge preserves the same boundary: an explicit workspace activation
+resolves that workspace's most recently updated session, then pins later calls to
+the returned workspace/session pair rather than retaining a session from another
+workspace.
 Gmail OAuth authorization opens in the same dedicated Veridex Google Chrome
 profile used by the browser-search boundary; it never relies on the user's
 ordinary default Chrome profile, and the callback still validates OAuth state
@@ -374,6 +378,15 @@ independent encrypted token database beneath `integrations/` and a non-secret ac
 assignment in `connected_accounts.json`. Client credentials remain in ignored local
 configuration; neither tokens nor secrets enter source, transcripts, tool responses,
 or command arguments.
+
+`ebay_room.py` is the workspace-scoped coordination layer for the eBay room. Item
+Intake remains the inventory authority; the room database stores only seller-listing
+snapshots, item-to-listing links, channel drafts, and sync audit rows. It does not
+silently create items from provider data. `GetMyeBaySelling` supplies the review queue
+for Seller Hub and API-created listings, while `GetItem` revalidates seller ownership
+before a manual link or approved import. Imported remote photos become immutable local
+Item Intake originals. The room's Facebook preparation first ledgers those files and
+then reuses the existing review-first Facebook bridge, which cannot click Publish.
 
 OAuth opens in the explicitly configured Chrome profile for the assigned workspace.
 For production, the eBay RuName accepted route terminates at the Cloudflare Worker,

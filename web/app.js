@@ -4989,6 +4989,11 @@ function priceObservationText(row) {
   return `${tier} · ${amount} · ${basis} · ${date} · ${venue} · ${support}`;
 }
 
+function renderEbayTools() {
+  el("ebay-actions").hidden = state.session?.active_room !== "ebay";
+  el("open-ebay-room").disabled = state.sending || state.uploading || state.switchingRoom;
+}
+
 function appendPriceEvidenceGroup(card, headingText, rows) {
   if (!rows.length) return;
   const section = document.createElement("section");
@@ -5497,6 +5502,7 @@ function render() {
     ? (state.listening ? "Stop dictation" : "Dictate a message")
     : "Dictation requires Chrome or Edge";
   renderRoomControl();
+  renderEbayTools();
   renderEmailTools();
   renderArtTools();
   renderMuseumTools();
@@ -6374,6 +6380,10 @@ el("room-file-dialog").addEventListener("cancel", (event) => {
   closeRoomFileLibrary();
 });
 el("open-animation-studio").addEventListener("click", openAnimationStudio);
+el("open-ebay-room").addEventListener("click", () => {
+  const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
+  window.location.href = `/ebay-room?${query}`;
+});
 el("animation-studio-close").addEventListener("click", closeAnimationStudio);
 el("animation-studio-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
