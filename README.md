@@ -572,6 +572,36 @@ directory. Room navigation and directory requests are handled deterministically
 by Veridex before Codex is called, and every session still has exactly one
 active room.
 
+### eBay
+
+The eBay room is hosted by Bob. Open **eBay · Bob → Open inventory** after navigating
+there to make a named List, then add individual items to that List. The room shows the
+selected List as a board or table without rendering its photos; photos remain inside the
+individual item's workspace. Each item holds its photos, listing copy, price, research,
+questions and working notes, ChatGPT/Gemini shared-thread links, and listing preparation.
+Opening the inventory
+automatically refreshes the connected seller's active, scheduled, sold, and unsold
+listings through eBay's Trading API; **Refresh eBay** repeats that read manually.
+Unmatched listings stay in a review queue. The operator can link one to an existing
+item or explicitly approve an import that creates an Item Intake record and stores
+local copies of up to twelve listing photos. The public listing URL or item number can
+also be used for manual linking.
+
+Item detail keeps photos, listing copy, price, and reviewed research beside its channel
+links. Photo touch-ups continue through Item Intake and preserve the source photo. Bob
+can save eBay and Facebook drafts. Inventory API publication is fixed-price and still
+requires an explicit confirmation; Seller Hub handoff and Facebook Marketplace
+preparation stop for the operator's final Publish click. Facebook preparation copies
+verified Item Intake photos into the session artifact ledger before filling the form.
+
+Each item's photo workspace supports individual uploads, multi-file uploads, and ZIP
+intake. Bob keeps the original ZIP with the item, safely extracts up to 500 contained
+files within a 200 MiB expanded-content limit, and verifies stored sizes and SHA-256
+checksums before reporting success. After a successful extract, the operator may choose
+to delete the stored ZIP while keeping the extracted files. Use **Select photos** above
+the gallery to reveal per-photo corner checkboxes, then select one or more photos and
+use **Delete selected**; deletion requires a confirmation and affects only that item.
+
 ### Video Production
 
 Video Production is directed by Beta. It provides governed chat and room-scoped
@@ -814,9 +844,10 @@ integration-encryption key to ignored `.env.local` using `.env.local.example`.
 Set `VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY` to the Chrome profile directory for
 the assigned seller account so OAuth cannot open in another workspace's browser.
 
-Read-only tools expose connection status, inventory, orders, policies, and financial
-transactions. Offer retrieval is not yet production-ready: eBay's `getOffers`
-operation requires a SKU, while the current `ebay.offers` route does not accept one.
+Read-only tools expose connection status, Inventory API records, SKU-scoped offers,
+Seller Hub and API-created seller listings, orders, policies, and financial transactions.
+`ebay.offer_list` requires a SKU because eBay's `getOffers` operation requires one;
+`ebay.seller_listing_list` uses `GetMyeBaySelling` for the complete seller view.
 Listing preview is local. Publishing and withdrawing fixed-price listings, recording
 fulfillment, issuing refunds, and sending seller offers require an explicit confirmed
 tool call. Buyer purchases and bidding are not supported. Inventory API listings remain

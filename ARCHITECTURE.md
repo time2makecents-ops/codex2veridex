@@ -388,6 +388,14 @@ before a manual link or approved import. Imported remote photos become immutable
 Item Intake originals. The room's Facebook preparation first ledgers those files and
 then reuses the existing review-first Facebook bridge, which cannot click Publish.
 
+The individual item workspace owns its source photos rather than placing them on the
+room board. It accepts normal multi-file photo uploads and a ZIP archive route with a
+separate bounded upload ceiling. ZIP extraction rejects unsafe paths and symbolic links,
+limits entries and total expanded bytes, retains the archive as an Item Intake attachment,
+and verifies each stored archive/member against its recorded size and SHA-256. The UI
+offers explicit selection mode for one or more photos; the delete action invokes the
+existing item-bound asset deletion route only after confirmation.
+
 OAuth opens in the explicitly configured Chrome profile for the assigned workspace.
 For production, the eBay RuName accepted route terminates at the Cloudflare Worker,
 which preserves the one-time authorization response and forwards it to the local
