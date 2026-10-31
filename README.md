@@ -40,6 +40,9 @@ separate account windows. Configure it with `VERIDEX_BROWSER_PROFILE_DIR`,
 stays beneath ignored runtime storage and is never pushed to GitHub. Other
 commands are:
 
+To open the app in the Windows default browser instead, explicitly use
+`veridex -SystemBrowser` or `./veridex.ps1 start -SystemBrowser`.
+
 ```powershell
 .\veridex.ps1 status
 .\veridex.ps1 restart
@@ -610,12 +613,31 @@ Drive access merely because the corporate Google identity is connected.
 
 ## Rooms
 
-Choose a room from the selector beneath the session title, or type an explicit
+Choose a room from the sidebar selector, or type an explicit
 command such as `go to Art Department`. Commands such as `list rooms`, `list
 room controls`, and `can you list available rooms?` return the authoritative
 directory. Room navigation and directory requests are handled deterministically
 by Veridex before Codex is called, and every session still has exactly one
 active room.
+
+### Betting · Slick
+
+When the Betting room has been created through Infrastructure administration,
+Slick provides a live scores window and a workspace-scoped manual trade journal.
+The scoreboard requests unofficial ESPN scores for NFL, NBA, MLB, NHL, ATP and
+WTA; coverage and latency vary. Paste a Flashscore USA or TennisLive tennis match
+link to read its rendered page through the dedicated Veridex browser. Tracking
+refreshes while the scores window is visible and labels stale or failed reads.
+Manual Robinhood and Google observations record when the user entered them,
+not when those providers updated their feeds.
+
+The journal records manual buys and sells, fees, and trade times. It calculates
+average-cost positions and realized results from recorded transactions; it does
+not include settlement or live market prices, and flags incomplete buy history.
+It does not place orders. Robinhood's MCP connection was authorized separately
+in Codex with a read-tool allowlist; Slick does not yet use that connection.
+Prediction-market coverage and safe isolation of the connector in Slick remain
+to be verified. Never store account credentials in this repository.
 
 ### eBay
 

@@ -1,5 +1,6 @@
 /* Shared, non-destructive command menu for every Veridex browser surface. */
 (() => {
+  let mainMenu = "";
   const query = new URLSearchParams(location.search);
   const rootUrl = (menu = "") => {
     const next = new URLSearchParams();
@@ -14,6 +15,7 @@
     if (!panel || !trigger) return;
     panel.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
+    if (mainMenu) panel.querySelector(".veridex-action-menu-body").innerHTML = mainMenu;
   };
   const rooms = (panel) => {
     const selector = document.getElementById("room-selector");
@@ -76,7 +78,7 @@
     trigger.dataset.veridexActionsReady = "true";
     trigger.addEventListener("click", () => { const open = panel.hidden; panel.hidden = !open; trigger.setAttribute("aria-expanded", String(open)); });
     shell.querySelector("[data-veridex-close]").addEventListener("click", close);
-    shell.querySelectorAll("[data-veridex-action]").forEach((button) => button.addEventListener("click", () => act(button.dataset.veridexAction, panel)));
+    panel.addEventListener("click", (event) => { const button = event.target.closest("[data-veridex-action]"); if (button) act(button.dataset.veridexAction, panel); });
     document.addEventListener("click", (event) => { if (!shell.contains(event.target)) close(); });
     document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
     const railCollapse = document.getElementById("rail-collapse");

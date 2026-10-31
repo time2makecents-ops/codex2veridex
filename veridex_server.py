@@ -29,6 +29,8 @@ from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_imag
 from animation_studio import AnimationStudio, ROOM_ID as ANIMATION_STUDIO_ROOM_ID
 from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
 from background_monitor import BackgroundMonitor
+from betting_scores import scores as betting_scores
+from betting_trades import add_trade as add_betting_trade, list_trades as list_betting_trades, positions as betting_positions
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
@@ -54,6 +56,7 @@ from google_chrome_search import (
     import_shared_thread,
     search_ebay_product_research,
     search_google,
+    read_betting_match,
     search_google_lens,
     wants_google_search,
 )
@@ -4775,6 +4778,27 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
             elif parsed.path == "/api/market/bootstrap":
                 self._json(market_bootstrap_response())
+            elif parsed.path == "/api/betting/scores":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room to view scores.")
+                self._json(betting_scores(str(query.get("league", ["nfl"])[0]).lower()))
+            elif parsed.path == "/api/betting/match-source":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room to read match sources.")
+                self._json(read_betting_match(str(query.get("source", [""])[0]), str(query.get("url", [""])[0])))
+            elif parsed.path == "/api/betting/trades":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room to view trades.")
+                self._json({"trades": list_betting_trades(STORE.workspace_dir(workspace_id)), "positions": betting_positions(STORE.workspace_dir(workspace_id))})
             elif parsed.path == "/api/ebay-room/bootstrap":
                 self._json(ebay_room_bootstrap(
                     str(query.get("workspace_id", [""])[0]).strip(),
@@ -5072,7 +5096,14 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"extracted": extracted, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
                 return
             payload = self._body()
-            if parsed.path == "/api/item-intake/threads/listing-plan":
+            if parsed.path == "/api/betting/trades":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room to record trades.")
+                self._json({"trade": add_betting_trade(STORE.workspace_dir(workspace_id), payload)}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/threads/listing-plan":
                 self._json({"listing_plan": build_shared_thread_marketplace_plan(str(payload.get("item_id") or ""), str(payload.get("provider") or ""))})
                 return
             if parsed.path == "/api/ebay-room/markets":

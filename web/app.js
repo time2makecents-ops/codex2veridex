@@ -5712,6 +5712,15 @@ function renderRoute() {
   el("route-notice").textContent = state.route.notice;
 }
 
+function renderRoomFileTools() {
+  const room = currentRoom();
+  const hasFileLibrary = Boolean(room && !["lobby", "art_department"].includes(room.id));
+  el("room-file-actions").hidden = !hasFileLibrary;
+  el("room-file-action-title").textContent = room ? `${room.title} files` : "Room files";
+  el("open-room-files").disabled = state.sending || state.uploading || state.switchingRoom;
+  if (!hasFileLibrary && el("room-file-dialog").open) closeRoomFileLibrary();
+}
+
 function render() {
   el("session-title").textContent = state.session?.title || "New session";
   const activeRoom = state.rooms.find((room) => room.id === state.session?.active_room);
@@ -5757,6 +5766,10 @@ function render() {
     ? (state.listening ? "Stop dictation" : "Dictate a message")
     : "Dictation requires Chrome or Edge";
   renderRoomControl();
+  renderRoomFileTools();
+  el("betting-actions").hidden = state.session?.active_room !== "betting";
+  if (state.session?.active_room !== "betting" && el("betting-scores-dialog").open) el("betting-scores-dialog").close();
+  if (state.session?.active_room !== "betting" && el("betting-trades-dialog").open) el("betting-trades-dialog").close();
   renderEbayTools();
   renderEmailTools();
   renderArtTools();
@@ -7362,6 +7375,148 @@ async function handleAdministrationAction(event) {
     }
   } catch (error) { showError(error.message || String(error)); }
 }
+
+let bettingScoreRequest = 0;
+async function refreshBettingTrades() {
+  const session = state.session.session_id;
+  const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: session });
+  const result = await api(`/api/betting/trades?${query}`);
+  if (!el("betting-trades-dialog").open || state.session?.session_id !== session) return;
+  const positions = el("betting-positions-list"); positions.replaceChildren();
+  if (!result.positions.length) positions.textContent = "No recorded positions yet.";
+  result.positions.forEach((position) => {
+    const row = document.createElement("div"); row.className = "betting-score-row";
+    const title = document.createElement("strong"); title.textContent = `${position.market} · ${position.side.toUpperCase()} · ${position.quantity} contracts`;
+    const detail = document.createElement("span"); detail.textContent = position.incomplete ? "Incomplete trade history: cost and profit unavailable." : `Remaining cost $${position.cost} · realized profit/loss $${position.realized}`;
+    row.append(title, detail); positions.append(row);
+  });
+  const list = el("betting-trade-list"); list.replaceChildren();
+  if (!result.trades.length) { list.textContent = "No trades recorded yet."; return; }
+  result.trades.forEach((trade) => {
+    const row = document.createElement("div"); row.className = "betting-score-row";
+    const title = document.createElement("strong"); title.textContent = `${trade.action.toUpperCase()} ${trade.quantity} ${trade.side.toUpperCase()} · ${trade.market}`;
+    const detail = document.createElement("span"); detail.textContent = `$${trade.price} per contract · $${trade.fees} fees · ${new Date(trade.traded_at).toLocaleString()}`;
+    row.append(title, detail); list.append(row);
+  });
+}
+el("betting-open-trades").addEventListener("click", () => {
+  el("betting-trades-dialog").showModal();
+  const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  el("betting-trade-form").elements.traded_at.value = now.toISOString().slice(0, 16);
+  refreshBettingTrades().catch((error) => { el("betting-trade-status").textContent = error.message; });
+});
+el("betting-close-trades").addEventListener("click", () => el("betting-trades-dialog").close());
+el("betting-trade-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form));
+  data.traded_at = new Date(data.traded_at).toISOString(); data.workspace_id = state.workspace.workspace_id; data.session_id = state.session.session_id;
+  const button = form.querySelector('[type="submit"]'); button.disabled = true;
+  try { await api("/api/betting/trades", { method: "POST", body: JSON.stringify(data) }); el("betting-trade-status").textContent = "Trade recorded."; await refreshBettingTrades(); }
+  catch (error) { el("betting-trade-status").textContent = error.message || String(error); }
+  finally { button.disabled = false; }
+});
+async function refreshBettingScores() {
+  if (!el("betting-scores-dialog").open || state.session?.active_room !== "betting") return;
+  const request = ++bettingScoreRequest;
+  const league = el("betting-league").value;
+  const workspace = state.workspace.workspace_id;
+  const session = state.session.session_id;
+  el("betting-score-status").textContent = "Updating scores…";
+  try {
+    const query = new URLSearchParams({ workspace_id: workspace, session_id: session, league });
+    const result = await api(`/api/betting/scores?${query}`);
+    if (request !== bettingScoreRequest || !el("betting-scores-dialog").open || state.session?.session_id !== session) return;
+    const list = el("betting-score-list");
+    list.replaceChildren();
+    if (!result.events.length) list.textContent = "No games returned for this league today.";
+    result.events.forEach((event) => {
+      const row = document.createElement("div");
+      row.className = "betting-score-row";
+      const title = document.createElement("strong");
+      title.textContent = event.competitors.length ? event.competitors.map((team) => `${team.name}${team.score ? ` ${team.score}` : ""}`).join("  —  ") : event.name;
+      const detail = document.createElement("span");
+      detail.textContent = `${event.status}${event.date ? ` · ${new Date(event.date).toLocaleString()}` : ""}`;
+      row.append(title, detail);
+      list.append(row);
+    });
+    el("betting-score-status").textContent = `${result.source} · retrieved ${new Date(result.retrieved_at).toLocaleTimeString()} · provider may delay scores`;
+  } catch (error) {
+    if (request !== bettingScoreRequest) return;
+    el("betting-score-status").textContent = `Scores unavailable: ${error.message || String(error)}. Displayed scores may be stale.`;
+  }
+}
+el("open-room-files").addEventListener("click", openRoomFileLibrary);
+el("betting-open-scores").addEventListener("click", () => { el("betting-scores-dialog").showModal(); refreshBettingScores(); el("betting-match-status").textContent = "Paste a match link and choose a source to start tracking."; });
+el("betting-close-scores").addEventListener("click", () => { bettingScoreRequest++; el("betting-scores-dialog").close(); });
+el("betting-league").addEventListener("change", refreshBettingScores);
+el("betting-refresh-scores").addEventListener("click", refreshBettingScores);
+let bettingMatchRequest = 0;
+let bettingMatchTimer = null;
+let bettingMatchSource = "flashscore";
+let bettingMatchObserved = null;
+let bettingMatchError = "";
+let bettingMatchUrl = "";
+function stopBettingMatch() {
+  bettingMatchRequest++;
+  clearTimeout(bettingMatchTimer);
+  bettingMatchTimer = null;
+}
+function bettingMatchStatus() {
+  if (!bettingMatchObserved) return;
+  const age = Math.floor((Date.now() - bettingMatchObserved) / 1000);
+  el("betting-match-status").textContent = `${bettingMatchSource} · observed ${new Date(bettingMatchObserved).toLocaleTimeString()} (${age}s ago)${age > 25 || bettingMatchError ? " · stale" : ""}${bettingMatchError ? ` · ${bettingMatchError}` : ""} · source may be delayed`;
+}
+async function pollBettingMatch(request, session, workspace, source, url) {
+  if (request !== bettingMatchRequest || !el("betting-scores-dialog").open || document.hidden) return;
+  if (!bettingMatchObserved) el("betting-match-status").textContent = `Reading ${source}…`;
+  try {
+    const query = new URLSearchParams({ workspace_id: workspace, session_id: session, source, url });
+    const result = await api(`/api/betting/match-source?${query}`);
+    if (request !== bettingMatchRequest || state.session?.session_id !== session || !el("betting-scores-dialog").open || document.hidden) return;
+    bettingMatchObserved = Date.parse(result.observed_at);
+    if (!Number.isFinite(bettingMatchObserved)) throw new Error("Source did not provide a valid observation time.");
+    bettingMatchError = "";
+    el("betting-match-text").textContent = result.text;
+    bettingMatchStatus();
+  } catch (error) {
+    if (request !== bettingMatchRequest) return;
+    bettingMatchError = `Update failed: ${error.message || String(error)}`;
+    if (bettingMatchObserved) bettingMatchStatus();
+    else el("betting-match-status").textContent = bettingMatchError;
+  }
+  if (request === bettingMatchRequest && el("betting-scores-dialog").open && !document.hidden) {
+    bettingMatchTimer = setTimeout(() => pollBettingMatch(request, session, workspace, source, url), 10000);
+  }
+}
+function startBettingMatch(source) {
+  stopBettingMatch();
+  bettingMatchSource = source;
+  bettingMatchUrl = el("betting-match-url").value.trim();
+  bettingMatchObserved = null;
+  bettingMatchError = "";
+  el("betting-match-text").textContent = "";
+  if (!bettingMatchUrl) { el("betting-match-status").textContent = "Paste a match link first."; return; }
+  if (el("betting-scores-dialog").open && !document.hidden && state.session?.active_room === "betting") {
+    pollBettingMatch(bettingMatchRequest, state.session.session_id, state.workspace.workspace_id, source, bettingMatchUrl);
+  }
+}
+["tennislive", "flashscore"].forEach((source) => {
+  el(`betting-read-${source}`).addEventListener("click", () => startBettingMatch(source));
+});
+el("betting-scores-dialog").addEventListener("close", () => { stopBettingMatch(); bettingMatchUrl = ""; bettingMatchObserved = null; el("betting-match-url").value = ""; el("betting-match-text").textContent = ""; });
+["robinhood", "google"].forEach((source) => {
+  el(`betting-${source}-observation`).addEventListener("submit", (event) => {
+    event.preventDefault();
+    const score = event.currentTarget.elements.score.value.trim();
+    if (!score) return;
+    el(`betting-${source}-result`).textContent = `${score} · observed ${new Date().toLocaleTimeString()}`;
+  });
+});
+window.setInterval(() => { if (!document.hidden) refreshBettingScores(); }, 10000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { stopBettingMatch(); bettingMatchError = "Tracking paused while this tab is hidden"; bettingMatchStatus(); }
+  else if (el("betting-scores-dialog").open) { refreshBettingScores(); if (bettingMatchUrl) startBettingMatch(bettingMatchSource); }
+});
+window.setInterval(bettingMatchStatus, 1000);
 
 el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
 el("toolbar-add-files").addEventListener("click", () => el("file-input").click());

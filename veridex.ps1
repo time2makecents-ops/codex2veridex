@@ -2,6 +2,7 @@ param(
   [ValidateSet("start", "stop", "restart", "status", "tailscale", "lan", "intake", "google-profile", "google-status", "instagram-profile", "instagram-login", "instagram-status", "facebook-profile", "facebook-login", "facebook-status", "gmail-connect", "gmail-status")]
   [string]$Action = "start",
   [switch]$NoBrowser,
+  [switch]$SystemBrowser,
   [switch]$FullAccess,
   [switch]$ReadOnly
 )
@@ -142,6 +143,15 @@ function Open-VeridexBrowser {
   if ($LASTEXITCODE -ne 0) { throw "The Veridex browser could not be opened." }
 }
 
+function Open-VeridexApp {
+  param([string]$Url)
+  if ($SystemBrowser) {
+    Start-Process $Url
+    return
+  }
+  Open-VeridexBrowser $Url
+}
+
 function Start-Veridex {
   param(
     [string]$ListenHost = "127.0.0.1",
@@ -159,7 +169,7 @@ function Start-Veridex {
     } else {
       $CurrentLabel = if ($CurrentStatus) { $CurrentStatus.access_label } else { "access mode unavailable" }
       Write-Host "Standalone Veridex is already running at http://$ListenHost`:$Port ($CurrentLabel)."
-      if (-not $NoBrowser) { Open-VeridexBrowser "http://127.0.0.1:$Port" }
+      if (-not $NoBrowser) { Open-VeridexApp "http://127.0.0.1:$Port" }
       return
     }
   }
@@ -200,7 +210,7 @@ function Start-Veridex {
   Save-VeridexLaunch -ListenHost $ListenHost -AllowInsecureRemoteCookie ([bool]$AllowInsecureRemoteCookie)
   $AccessLabel = if ($RequestedAccessMode -eq "full") { "FULL COMPUTER ACCESS" } else { "read-only computer access" }
   Write-Host "Standalone Veridex is running at http://$ListenHost`:$Port (PID $($Process.Id), $AccessLabel)."
-  if (-not $NoBrowser) { Open-VeridexBrowser "http://127.0.0.1:$Port" }
+  if (-not $NoBrowser) { Open-VeridexApp "http://127.0.0.1:$Port" }
 }
 
 function Enable-TailscaleAccess {

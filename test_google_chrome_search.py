@@ -32,6 +32,15 @@ def run_bridge_javascript(source: str) -> dict:
 
 
 class GoogleChromeSearchTests(unittest.TestCase):
+    def test_betting_match_reads_only_known_sources(self) -> None:
+        url = "https://www.tennislive.net/atp/match/player-a-VS-player-b/event-2026/#progress"
+        with patch.object(google_chrome_search, "_run", return_value={"ok": True}) as run:
+            google_chrome_search.read_betting_match("tennislive", url)
+            run.assert_called_once_with("betting-match", "tennislive", url, timeout=30)
+        for source, bad_url in [("other", url), ("tennislive", "https://www.tennislive.net.evil.test/atp/match/a/b/"), ("flashscore", "http://www.flashscoreusa.com/game/tennis/a/b/"), ("flashscore", "https://www.flashscoreusa.com/")]:
+            with self.assertRaises(ValueError):
+                google_chrome_search.read_betting_match(source, bad_url)
+
     def test_bridge_uses_configured_chrome_profile_for_preferences(self) -> None:
         result = run_bridge_javascript(
             'console.log(JSON.stringify({path: bridge.profilePreferencesPath("C:/profiles", "Profile 14")}));'

@@ -11,6 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlsplit
 
 from request_control import RequestCancelled
 from visual_evidence import normalize_lens_payload
@@ -188,6 +189,19 @@ def _run(action: str, *arguments: str, timeout: int = 60, cancel_event: Any = No
 
 def google_profile_status() -> Dict[str, Any]:
     return _run("status", timeout=10)
+
+
+def read_betting_match(source: str, url: str) -> Dict[str, Any]:
+    if source not in {"tennislive", "flashscore"}:
+        raise ValueError("Unknown match source")
+    parsed = urlsplit(url)
+    hosts = {"tennislive": "www.tennislive.net", "flashscore": "www.flashscoreusa.com"}
+    if parsed.scheme != "https" or parsed.netloc != hosts[source] or parsed.username or parsed.password:
+        raise ValueError("Use an HTTPS match link from the selected source.")
+    paths = {"tennislive": r"/(?:atp|wta)/match/[^/]+/[^/]+/?", "flashscore": r"/game/tennis/[^/]+/[^/]+/?"}
+    if not re.fullmatch(paths[source], parsed.path, re.IGNORECASE):
+        raise ValueError("Use a tennis match page, not a general website link.")
+    return _run("betting-match", source, url, timeout=30)
 
 
 def search_google(

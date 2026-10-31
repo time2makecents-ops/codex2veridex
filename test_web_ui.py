@@ -8,6 +8,22 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    def test_veridex_action_menu_uses_workspace_sidebar(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "veridex_actions.js").read_text(encoding="utf-8")
+        self.assertIn('id="veridex-action-trigger" class="brand-mark"', html)
+        self.assertIn('existingTrigger.closest(".brand-block")', script)
+        self.assertIn('document.body.append(shell)', script)
+        self.assertIn('panel.addEventListener("click"', script)
+
+    def test_betting_scores_are_available_from_betting_room(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="betting-scores-dialog"', html)
+        self.assertIn('id="betting-league"', html)
+        self.assertIn('state.session?.active_room !== "betting"', script)
+        self.assertIn('/api/betting/scores?', script)
+
     def test_startup_health_and_nancy_mail_alert_ui_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -109,7 +125,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="session-files-grid-view"', html)
         self.assertNotIn('id="file-tray"', html)
         self.assertNotIn('id="attach-button"', html)
-        self.assertNotIn('id="room-file-actions"', html)
+        self.assertIn('id="room-file-actions"', html)
         self.assertNotIn(".file-tray", styles)
         self.assertIn('function openContainedChat', script)
         self.assertIn('function sendContainedChat', script)

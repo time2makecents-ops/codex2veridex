@@ -938,6 +938,25 @@ async function main() {
     output(await searchGoogle(query));
     return;
   }
+  if (action === "betting-match") {
+    const source = String(process.argv[3] || "");
+    const hosts = { tennislive: "www.tennislive.net", flashscore: "www.flashscoreusa.com" };
+    if (!Object.hasOwn(hosts, source)) throw new Error("Unknown match source.");
+    const url = String(process.argv[4] || "");
+    const requested = new URL(url);
+    const pathPattern = source === "tennislive" ? /^\/(?:atp|wta)\/match\/[^/]+\/[^/]+\/?$/i : /^\/game\/tennis\/[^/]+\/[^/]+\/?$/i;
+    if (requested.protocol !== "https:" || requested.host !== hosts[source] || requested.username || requested.password || !pathPattern.test(requested.pathname)) throw new Error("Invalid match source URL.");
+    await ensureChrome(url);
+    const page = await evaluatePage(url, `(() => ({ url: location.href, title: document.title, text: String((document.querySelector(${JSON.stringify(source === "tennislive" ? "#progress" : "main")}) || document.body)?.innerText || "").slice(0, 6000) }))()`, 1800);
+    const actual = new URL(String(page.url || ""));
+    if (actual.protocol !== "https:" || actual.hostname !== new URL(url).hostname) throw new Error("Match source redirected to a different site.");
+    const content = String(page.text || "").trim();
+    if (content.length < 30 || /verify you are human|access denied|captcha/i.test(content)) throw new Error("Match page is unavailable or requires interaction.");
+    if (source === "flashscore" && !/\b(?:set|finished|score)\b/i.test(content)) throw new Error("Match score has not rendered yet. Try again.");
+    if (source === "tennislive" && !/current game|point by point|sets, games and points/i.test(content)) throw new Error("Match progress has not rendered yet. Try again.");
+    output({ ok: true, source, url: page.url, title: page.title, text: content, observed_at: new Date().toISOString() });
+    return;
+  }
   if (action === "lens") {
     const filePath = String(process.argv.slice(3).join(" ") || "").trim();
     if (!filePath) throw new Error("A Google Lens image path is required.");

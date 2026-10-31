@@ -117,6 +117,15 @@
         </section>
 
         <footer class="composer-wrap">
+          <div id="room-file-actions" class="art-actions room-file-actions" hidden>
+            <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
+            <button id="open-room-files" type="button">Files</button>
+          </div>
+          <div id="betting-actions" class="art-actions" hidden>
+            <span><strong>Betting · Slick</strong><small>Follow live games and match scores</small></span>
+            <button id="betting-open-scores" type="button">Live scores</button>
+            <button id="betting-open-trades" type="button">Trade journal</button>
+          </div>
           <section id="nancy-important-mail" class="nancy-important-mail" aria-label="Nancy important mail" aria-live="polite" hidden>
             <div class="nancy-mail-heading"><div><div class="eyebrow">Nancy Mail</div><h2>Important messages</h2></div><span id="nancy-mail-checked"></span></div>
             <div id="nancy-mail-list" class="nancy-mail-list"></div>
@@ -867,6 +876,25 @@
           <button id="startup-health-no" type="button">No</button>
           <button id="startup-health-yes" class="primary-action" type="button">Yes</button>
         </div>
+      </div>
+    </dialog>
+    <dialog id="betting-trades-dialog" class="betting-scores-dialog" aria-labelledby="betting-trades-title"><div class="betting-scores-shell">
+      <header><div><div class="eyebrow">Betting · Slick</div><h2 id="betting-trades-title">Trade journal</h2></div><button id="betting-close-trades" type="button" aria-label="Close trade journal">×</button></header>
+      <p>Record Kalshi trades manually. Prices are dollars per contract; this journal does not place orders.</p>
+      <form id="betting-trade-form" class="betting-trade-form"><label>Market or ticker<input name="market" required maxlength="200"></label><label>Side<select name="side"><option value="yes">Yes</option><option value="no">No</option></select></label><label>Action<select name="action"><option value="buy">Buy</option><option value="sell">Sell</option></select></label><label>Contracts<input name="quantity" type="number" min="0.01" step="0.01" required></label><label>Price per contract ($)<input name="price" type="number" min="0" max="1" step="0.0001" required></label><label>Fees ($)<input name="fees" type="number" min="0" step="0.01" value="0" required></label><label>Trade time<input name="traded_at" type="datetime-local" required></label><button type="submit">Record trade</button></form>
+      <p id="betting-trade-status" role="status"></p><h3>Recorded positions</h3><p>Average cost includes recorded fees. Results exclude settlement and current market prices.</p><div id="betting-positions-list" class="betting-score-list"></div><h3>Recent trades</h3><div id="betting-trade-list" class="betting-score-list"></div>
+    </div></dialog>
+    <dialog id="betting-scores-dialog" class="betting-scores-dialog" aria-labelledby="betting-scores-title">
+      <div class="betting-scores-shell">
+        <header><div><div class="eyebrow">Betting · Slick</div><h2 id="betting-scores-title">Live scores</h2></div><button id="betting-close-scores" type="button" aria-label="Close live scores">×</button></header>
+        <div class="betting-score-controls"><label>League <select id="betting-league"><option value="nfl">NFL</option><option value="nba">NBA</option><option value="mlb">MLB</option><option value="nhl">NHL</option><option value="atp">Tennis · ATP</option><option value="wta">Tennis · WTA</option></select></label><button id="betting-refresh-scores" type="button">Refresh</button></div>
+        <p>Refreshes every 10 seconds while open. Scores may lag behind the game.</p>
+        <p id="betting-score-status" role="status"></p><div id="betting-score-list" class="betting-score-list"></div>
+        <section class="betting-comparison" aria-labelledby="betting-match-title"><h3 id="betting-match-title">Track a tennis match</h3><p>Paste a match page link, then choose its source. The selected page refreshes while this window is open. Scores can lag.</p><label for="betting-match-url">Match page link</label><input id="betting-match-url" type="url" placeholder="https://www.flashscoreusa.com/game/tennis/…" autocomplete="off"><div class="betting-score-controls"><button id="betting-read-flashscore" type="button">Track Flashscore</button><button id="betting-read-tennislive" type="button">Track TennisLive</button></div><p id="betting-match-status" role="status"></p><pre id="betting-match-text" class="betting-match-text"></pre></section>
+        <section class="betting-comparison" aria-labelledby="betting-comparison-title"><h3 id="betting-comparison-title">Compare your screens</h3><p>Enter the same match score from each screen. Times record when you clicked, not when the source updated. Observations stay on this page until it is refreshed.</p><div class="betting-comparison-grid">
+          <form id="betting-robinhood-observation"><label>Robinhood score<input name="score" required maxlength="100" placeholder="e.g. Aboian 1–0 Dellien"></label><button type="submit">Record Robinhood</button><output id="betting-robinhood-result">No observation recorded</output></form>
+          <form id="betting-google-observation"><label>Google score<input name="score" required maxlength="100" placeholder="Same match and score format"></label><button type="submit">Record Google</button><output id="betting-google-result">No observation recorded</output></form>
+        </div></section>
       </div>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
