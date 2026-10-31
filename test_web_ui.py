@@ -26,6 +26,23 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('navigateToRoom("my_office")', script)
         self.assertIn("animation: important-mail-flash .65s ease-in-out 3", styles)
 
+    def test_shared_veridex_action_menu_is_loaded_on_each_browser_surface(self) -> None:
+        root = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        ebay = (ROOT / "web" / "ebay_room" / "index.html").read_text(encoding="utf-8")
+        intake = (ROOT / "web" / "item_intake" / "index.html").read_text(encoding="utf-8")
+        menu = (ROOT / "web" / "veridex_actions.js").read_text(encoding="utf-8")
+
+        for page in (root, ebay, intake):
+            self.assertIn('/veridex_actions.js', page)
+        self.assertIn('data-veridex-action="rooms"', menu)
+        self.assertIn('data-veridex-action="email"', menu)
+        self.assertIn('data-veridex-action="calendar"', menu)
+        self.assertIn('data-veridex-action="navigator"', menu)
+        self.assertIn('data-veridex-action="file"', menu)
+        self.assertIn('navigateToRoom', menu)
+        self.assertIn('file-input', menu)
+        self.assertIn('.veridex-command', menu)
+
     def test_ebay_room_has_board_table_review_and_cross_channel_controls(self) -> None:
         html = (ROOT / "web" / "ebay_room" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "ebay_room" / "app.js").read_text(encoding="utf-8")
@@ -35,6 +52,8 @@ class WebUiTests(unittest.TestCase):
 
         self.assertIn('id="board"', html)
         self.assertIn('id="inventory-table"', html)
+        self.assertIn('data-summary-target="all"', html)
+        self.assertIn('data-summary-target="unmatched"', html)
         self.assertIn('id="unmatched-list"', html)
         self.assertIn('id="new-list"', html)
         self.assertIn('id="list-list"', html)
@@ -86,6 +105,10 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('confirm("Create a new Item Intake record', script)
         self.assertIn('.board{', styles)
         self.assertIn('id="item-page"', html)
+        self.assertIn('function jumpToSummary(target)', script)
+        self.assertIn('data-summary-target', script)
+        self.assertIn('board-lane-${key}', script)
+        self.assertIn('summary-navigation-styles', html)
         self.assertIn('Item', workspace)
         self.assertIn('workspaceRenderItem', workspace)
         self.assertIn('Gallery', workspace)
@@ -154,6 +177,11 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('.group-filter-row', workspace_styles)
         self.assertIn('/api/ebay-room/questions', workspace)
         self.assertIn('.gallery-layout{', workspace_styles)
+        self.assertIn('workspaceShowSourceGallery', workspace)
+        self.assertIn('Show all source photos', workspace)
+        self.assertIn('listing-photo-grid', workspace)
+        self.assertIn('data-workspace-preview', workspace)
+        self.assertIn('.listing-photo-grid{', workspace_styles)
         self.assertIn('.market-tabs{', workspace_styles)
 
     def test_phone_capture_companion_is_limited_to_raw_capture_controls(self) -> None:
