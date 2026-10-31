@@ -9,6 +9,17 @@ whether the user must switch. Repeat this only when the required route changes
 or a mismatch appears. Codex pauses when the route does not match and must
 never claim that it changed the host model itself.
 
+Resolve the configured terminal route before declaring a mismatch. Prefer the
+exact launcher evidence in `VERIDEX_CODEX_CONFIGURED_MODEL` and
+`VERIDEX_CODEX_CONFIGURED_REASONING`; otherwise inspect explicit model/reasoning
+arguments on the current Codex process, then the top-level `model` and
+`model_reasoning_effort` in the active Codex `config.toml`. A generic product or
+model-family label such as `Codex` or `GPT-5` is not evidence that contradicts a
+more precise configured route. If exact runtime metadata is unavailable and the
+user confirms the active route, treat that confirmation as the configured route
+for the current task. Pause only for a precise conflicting route; missing generic
+identity metadata alone is not a mismatch.
+
 | Development phase | Required terminal model | Reasoning |
 | --- | --- | --- |
 | Planning and architecture | `gpt-5.6-sol` | high |

@@ -91,16 +91,13 @@ class ConnectedAccounts:
         # detected by Chrome if they occur.
         return 9300 + (sum(ord(ch) for ch in workspace_id) % 500)
 
-    def instagram_env(self, workspace_id: str, *, username: str = "", password: str = "") -> Dict[str, str]:
+    def instagram_env(self, workspace_id: str, *, username: str = "") -> Dict[str, str]:
         config = self.instagram_config(workspace_id, required=True)
-        env = {
+        return {
             "VERIDEX_INSTAGRAM_PROFILE_DIR": str(config["profile_dir"]),
             "VERIDEX_INSTAGRAM_DEBUG_PORT": str(config["debug_port"]),
             "INSTAGRAM_USERNAME": str(username or config.get("username") or ""),
         }
-        if password:
-            env["INSTAGRAM_PASSWORD"] = password
-        return env
 
     def gmail_env(self, workspace_id: str, *, account_email: str = "") -> Dict[str, str]:
         workspace_dir = self._workspace_dir(workspace_id)

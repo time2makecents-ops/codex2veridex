@@ -32,7 +32,13 @@ application. The first launch creates a fresh local account and workspace.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\codex2veridex\veridex.ps1 start
 ```
 
-The browser opens at <http://127.0.0.1:8765>. Other commands are:
+The browser opens at <http://127.0.0.1:8765> in the repository-local Veridex
+Chrome profile. The app launcher and the Google, Gmail, Facebook, and Instagram
+bridges reuse that one browser and loopback debugging port instead of opening
+separate account windows. Configure it with `VERIDEX_BROWSER_PROFILE_DIR`,
+`VERIDEX_BROWSER_PROFILE_DIRECTORY`, and `VERIDEX_BROWSER_DEBUG_PORT`; its data
+stays beneath ignored runtime storage and is never pushed to GitHub. Other
+commands are:
 
 ```powershell
 .\veridex.ps1 status
@@ -88,13 +94,22 @@ route and item folder as photos chosen from the library. On a private-LAN `http:
 address where a phone browser disallows live camera access, the same buttons fall back
 to the phone's native rear-camera capture flow.
 
-On the PC, each catalog photo has a **Touch up** editor. **Save crop**, **Auto crop**,
-and **Auto adjust** run locally and save a new derived photo, never overwriting the
-source. The editor also accepts a plain-language **AI touch-up** request. Before that
+On the PC, each catalog photo has a smartphone-style **Touch up** editor with Crop,
+Light, Color, Detail, and AI tabs. Its live preview includes aspect presets, exposure,
+brightness, highlights, shadows, saturation, warmth, contrast, definition, sharpness,
+and rotation controls. The crop box can be dragged directly over the preview, with
+preview zoom for close-up inspection. **Save crop**, **Auto crop**, **Auto adjust**,
+**Marketplace auto touch-up**, and
+**Save adjustments** run locally, keep the editor open for continued work, and save a
+new derived photo, never overwriting the source. Marketplace auto touch-up uses a
+conservative local exposure/color/detail pass with limited glare softening and no
+generative changes.
+The editor also accepts a plain-language **AI touch-up** request. Before that
 option lets you explicitly select **Codex image tools** or a configured **Cloudflare
 reference-edit** provider, then asks for confirmation before it sends the selected
 photo and instruction. The AI result is also stored as a separate derived photo and is
-labeled with its source lineage.
+labeled with its source lineage. Frequently used AI instructions can be saved as named
+presets and selected or deleted from the same editor.
 
 Item Intake does not automatically run OCR, AI analysis, GPS extraction, external
 research, or marketplace actions. Shared-thread links remain local references, and the
@@ -104,11 +119,13 @@ material plus a source-linked research brief into the current Veridex session an
 ledgers those copied files. It does not begin research or create a listing.
 
 Each item also has optional **ChatGPT** and **Gemini shared thread links**. Paste only
-that item's `https://chatgpt.com/share/...` or `https://g.co/gemini/share/...` link,
+that item's `https://chatgpt.com/share/...` or Gemini public-share link (including
+`https://g.co/gemini/share/...` and `https://share.gemini.google/...`),
 then save the item. Each link is stored in the item's local record, item-folder
 `item.json`, exports, and any controlled Veridex handoff brief. The PC Inbox can
 explicitly preview a public shared thread and, only after review, save its visible text
 and available visible images into the item; it never imports a thread automatically.
+The preview also offers **Save + send to Veridex** and a shortcut to **Find eBay listing**.
 
 ## Museum
 
@@ -511,6 +528,17 @@ veridex
 ```
 
 Optional Codex arguments pass through unchanged, for example `veridex --search`.
+The launcher resolves the effective top-level model and reasoning effort from
+the base `config.toml`, an optional named `--profile`, and explicit `--model` or
+`--config` overrides. It prints that exact configured route at startup and makes
+it available to the session as `VERIDEX_CODEX_CONFIGURED_MODEL`,
+`VERIDEX_CODEX_CONFIGURED_REASONING`, and `VERIDEX_CODEX_ROUTE_SOURCE`. To inspect
+the route without starting another session, run:
+
+```powershell
+.\start_codex.ps1 -PrintRoute
+```
+
 The launcher validates that the required rule files exist before starting. It
 also starts Codex with `danger-full-access` and approval mode `never`, so the
 session has unrestricted local filesystem access and does not pause for command
@@ -540,6 +568,23 @@ Nancy supports two deliberately separate account scopes:
   workspace account; when none is assigned, the connected corporate account is
   the safe default.
 
+Veridex starts a read-only background monitor with the server. It checks important
+mail immediately at startup and then once per hour; core/account health runs every
+thirty minutes. Nancy scans
+the shared corporate Gmail and each assigned workspace Gmail for recent offers,
+sold-item notices, buyer questions, and account-security warnings such as new
+sign-ins, password changes, suspicious activity, and verification codes. It
+deduplicates results by account and Gmail
+message ID, and shows them in My Office until dismissed. New mail flashes the
+sidebar envelope three times and then leaves it solid until My Office is opened.
+The monitor never marks Gmail messages read, sends mail, or stores credentials or
+message bodies.
+
+If a core or expected account check needs attention, the browser shows one combined
+prompt asking whether to speak to Navigator. **Yes** explicitly enters the Control
+Room; **No** closes the prompt without changing rooms. Facebook and Instagram checks
+never launch profiles or attempt login automatically.
+
 An account assigned to one workspace is never exposed to another, and the
 corporate account cannot be claimed by a single workspace. Every Gmail result
 records both `account_scope` and `account_email` as evidence. Veridex does not
@@ -555,9 +600,9 @@ once:
 
 The browser authorization must use the account configured by
 `VERIDEX_GOOGLE_ACCOUNT`. The reconnect command opens that authorization in the
-same dedicated Veridex Google Chrome profile used for explicit Google work, not
-the Windows default browser profile. Passwords and OAuth tokens are never written
-to the repository or returned in chat responses.
+same unified Veridex Chrome profile used by the application and explicit Google
+work, not the Windows default browser profile. Passwords and OAuth tokens are
+never written to source or returned in chat responses.
 
 The dedicated Google search profile is also repository-wide. Google Drive is
 not yet implemented as a Veridex runtime gateway, so Veridex must not claim
@@ -587,20 +632,56 @@ item or explicitly approve an import that creates an Item Intake record and stor
 local copies of up to twelve listing photos. The public listing URL or item number can
 also be used for manual linking.
 
-Item detail keeps photos, listing copy, price, and reviewed research beside its channel
-links. Photo touch-ups continue through Item Intake and preserve the source photo. Bob
-can save eBay and Facebook drafts. Inventory API publication is fixed-price and still
+Opening an item replaces the board with a compact, URL-addressable workspace. Its tabs
+are **Item**, **Gallery**, **Research & Questions**, **Market**, **AI Chat Threads**, and
+**Groups**. Groups is a reusable Facebook-group directory: paste each group's rules,
+record requirements and allowed item types, choose a review status, and target the
+current item with an item-specific note. Rules are passed to Bob as item context, but
+an unreviewed group is never treated as permission to post.
+Fetching group information uses a temporary background page in the signed-in unified
+Veridex browser and closes it after the read; the operator does not need to keep a
+Facebook tab open. Fetch reads the group's About page, expands available **See more**
+controls, and places a detected Rules section in the Rules field for operator review.
+The Item tab is the home page for the record: it keeps master details, status, value,
+counts, and next-workspace links in one place. Gallery
+keeps source photos in a scrollable library beside the ordered **Listing photos** rail;
+the first selected image is the intended main image. Photos and ZIPs can be selected or
+dragged onto the same page. The saved ordered set is used for channel preparation without
+moving or replacing originals.
+Bob's workspace also includes non-destructive crop, auto-crop, auto-adjust, and
+confirmation-gated AI touch-up tools. AI links and working notes save independently;
+the green workspace **Save** button is always available, and switching tabs or leaving
+the item workspace automatically saves the current tab's edits when there is enough
+information to persist them.
+Research & Questions keeps General notes at the bottom, while titled questions each
+have their own findings panel. Leo can review the selected question and propose a
+finding; the operator must choose Yes or No before a proposal is saved.
+each saved thread has an in-page **View** action, while public shared links also have
+**Extract media**, **Find listing**, and **Analyze** actions. Analyze adds the reviewed
+thread material to the item, performs a governed Bob analysis, and keeps the response in
+that item's conversation; it does not silently turn thread claims into verified findings.
+**Find listing** reads the visible shared-thread proposal into separately editable eBay
+and Facebook Marketplace drafts; it does not invent missing facts or publish either
+listing. Private links remain view-only locally. The item-specific Bob panel stores its
+messages in the governed session transcript and shows only messages attached to that
+item; a reviewed response can be saved as an item finding. A separate control can look up a connected-seller listing by URL or item
+number, show its verified facts, populate the item fields, and optionally extract listing
+media into the source gallery. Inventory API publication is fixed-price and still
 requires an explicit confirmation; Seller Hub handoff and Facebook Marketplace
 preparation stop for the operator's final Publish click. Facebook preparation copies
-verified Item Intake photos into the session artifact ledger before filling the form.
+only the ordered Listing photos into the session artifact ledger before filling the form.
+The Market tab starts with Craigslist, Facebook Marketplace, eBay, and Etsy. OfferUp,
+Mercari, Poshmark, Depop, and custom marketplaces can be added per item. Every form is a
+local, photo-bound draft; only the existing eBay and Facebook governed handoffs perform
+provider work.
 
 Each item's photo workspace supports individual uploads, multi-file uploads, and ZIP
 intake. Bob keeps the original ZIP with the item, safely extracts up to 500 contained
 files within a 200 MiB expanded-content limit, and verifies stored sizes and SHA-256
 checksums before reporting success. After a successful extract, the operator may choose
-to delete the stored ZIP while keeping the extracted files. Use **Select photos** above
-the gallery to reveal per-photo corner checkboxes, then select one or more photos and
-use **Delete selected**; deletion requires a confirmation and affects only that item.
+to delete the stored ZIP while keeping the extracted files. Use **Add to listing** on
+source photos, then reorder the adjacent Listing photos sequence; deletion requires a
+confirmation and affects only that item.
 
 ### Video Production
 
@@ -731,9 +812,8 @@ Overrides are available in `.env.example`.
 ## Dedicated Google search profile
 
 Explicit requests such as `check Google for ...`, `search Google for ...`, or
-`use a Google search ...` use a real local Chrome window with a dedicated
-repository-local browser profile. They do not silently fall back to a generic
-web-search provider.
+`use a Google search ...` use the real local Chrome window owned by Veridex.
+They do not silently fall back to a generic web-search provider.
 
 Set up the profile once:
 
@@ -749,10 +829,12 @@ the resulting browser session. Check readiness with:
 .\veridex.ps1 google-status
 ```
 
-The default profile directory is
-`C:\codex2veridex\data\browser_profiles\veridex_google`, which is covered by
+The default user-data directory is
+`C:\codex2veridex\data\browser_profiles\veridex_browser`, which is covered by
 the repository's ignored `data/` directory. It is separate from ordinary Chrome
-profiles and is not copied to GitHub. Search evidence records the provider,
+profiles and is not copied to GitHub. An existing signed-in Chrome identity may
+be copied there once, after which Veridex owns and reuses the copy without
+competing with ordinary Chrome. Search evidence records the provider,
 query, timestamp, configured account, and result count in the chat transcript.
 Navigator blocks an explicit-Google response if the dedicated browser evidence
 is absent or if a generic search provider was substituted. For event searches,
@@ -779,19 +861,23 @@ desktop authentication and does not add an API-key charge.
 
 ## Dedicated Instagram bridge
 
-Veridex can inspect profiles and compose future outreach through a separate,
-repository-local Chrome profile. Put `INSTAGRAM_USERNAME` and
-`INSTAGRAM_PASSWORD` only in ignored `.env.local`, then initialize and sign in:
+Veridex can inspect profiles and compose future outreach through the unified
+Veridex Chrome profile. In **Connected accounts**, enter the Instagram
+username and choose **Open or reconnect Instagram**. Sign in directly on Instagram
+in the dedicated Chrome window; Veridex never receives or stores the password.
+The command-line profile and status helpers remain available:
 
 ```powershell
 .\veridex.ps1 instagram-profile
-.\veridex.ps1 instagram-login
 .\veridex.ps1 instagram-status
 ```
 
-If Instagram requests a security code or identity check, complete it in the
-visible Chrome window. The resulting session stays under ignored
-`data/browser_profiles/veridex_instagram` and is not pushed to GitHub. Veridex
+If Instagram requests a security code or identity check, complete it in that
+visible Chrome window. The social bridges use the unified profile configured by
+`VERIDEX_BROWSER_PROFILE_DIR`, `VERIDEX_BROWSER_PROFILE_DIRECTORY`, and
+`VERIDEX_BROWSER_DEBUG_PORT`, so Facebook and Instagram see the same saved
+browser identity and sessions. The profile remains
+local and is never pushed to GitHub. Veridex
 tools expose status, bounded profile inspection, confirmation-gated follows,
 message composition, and message sending. Composition leaves the text visible
 for review; following and sending are separate actions that require
@@ -799,8 +885,8 @@ for review; following and sending are separate actions that require
 
 ## Dedicated Facebook bridge
 
-Veridex can inspect a Facebook profile and compose outreach through a separate,
-repository-local Chrome profile. Put `FACEBOOK_USERNAME` (or `FACEBOOK_EMAIL`)
+Veridex can inspect a Facebook profile and compose outreach through the unified
+Veridex Chrome profile. Put `FACEBOOK_USERNAME` (or `FACEBOOK_EMAIL`)
 and `FACEBOOK_PASSWORD` only in ignored `local.env` or `.env.local`, then initialize
 and sign in:
 
@@ -811,8 +897,7 @@ and sign in:
 ```
 
 If Facebook requests a security code, approval, or identity check, complete it in
-the visible Chrome window. The resulting session remains under ignored
-`data/browser_profiles/veridex_facebook`. Profile reads are bounded, message
+the visible Chrome window. Profile reads are bounded, message
 composition leaves the text visible for review, and sending is a separate action
 that requires `confirm=true`.
 
@@ -841,8 +926,11 @@ deployed Worker's `/ebay/oauth/accepted` HTTPS route as the RuName accept URL; t
 route forwards the one-time result to the loopback callback. Then add
 the client ID, client secret, RuName, environment, marketplace, and the shared
 integration-encryption key to ignored `.env.local` using `.env.local.example`.
-Set `VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY` to the Chrome profile directory for
-the assigned seller account so OAuth cannot open in another workspace's browser.
+eBay OAuth reuses the unified Veridex browser configured by
+`VERIDEX_BROWSER_PROFILE_DIR`, `VERIDEX_BROWSER_PROFILE_DIRECTORY`, and
+`VERIDEX_BROWSER_DEBUG_PORT`, so authorization cannot fall into an unsigned
+default-browser window. `VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY` remains a
+legacy fallback when no unified browser is configured.
 
 Read-only tools expose connection status, Inventory API records, SKU-scoped offers,
 Seller Hub and API-created seller listings, orders, policies, and financial transactions.
@@ -903,7 +991,9 @@ route remains informational but is not the registered RuName privacy URL.
 
 The included config snippet points Codex at `veridex_mcp.py`. Calling
 `veridex_activate` starts this standalone server when needed and automatically
-uses the default local session if no session ID is configured.
+uses the default local session if no session ID is configured. Passing an explicit
+workspace ID selects that workspace's most recently updated session and pins later
+governed calls to the matching workspace/session pair.
 
 ## Test
 

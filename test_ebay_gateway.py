@@ -80,6 +80,21 @@ class EbayGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(EbayGatewayError, "(?i)profile"):
             _open_authorization_url("https://auth.ebay.test/authorize", "../Profile 42")
 
+    @patch("ebay_oauth._debug_json", side_effect=[{"Browser": "Chrome"}, {"id": "ebay-oauth-tab"}])
+    @patch("ebay_oauth.subprocess.Popen")
+    def test_oauth_reuses_unified_veridex_browser(self, popen, debug_json) -> None:
+        self.assertTrue(_open_authorization_url(
+            "https://auth.ebay.test/authorize",
+            env={
+                "VERIDEX_BROWSER_PROFILE_DIR": str(self.root / "veridex-browser"),
+                "VERIDEX_BROWSER_PROFILE_DIRECTORY": "Profile 14",
+                "VERIDEX_BROWSER_DEBUG_PORT": "9555",
+            },
+        ))
+        self.assertEqual(debug_json.call_args_list[0].args, (9555, "/json/version"))
+        self.assertEqual(debug_json.call_args_list[1].kwargs["method"], "PUT")
+        popen.assert_not_called()
+
     def test_listing_preview_is_local_and_normalized(self) -> None:
         preview = self.gateway.preview_listing(self.listing())
         self.assertEqual(preview["status"], "preview")

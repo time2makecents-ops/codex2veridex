@@ -69,6 +69,25 @@ class GmailGatewayTests(unittest.TestCase):
         self.assertTrue(status["connected"])
         self.assertEqual(status["account_email"], "veridexcorp@gmail.com")
 
+    @patch("gmail_gateway.urllib.request.urlopen")
+    def test_verified_connection_status_checks_google_profile(self, urlopen) -> None:
+        urlopen.return_value = _FakeResponse({"emailAddress": "veridexcorp@gmail.com"})
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self._service(temporary)
+            status = service.verified_connection_status()
+
+        self.assertTrue(status["connected"])
+        self.assertIn("/profile", urlopen.call_args.args[0].full_url)
+
+    def test_verified_connection_status_reports_live_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = self._service(temporary)
+            with patch.object(service, "_json_request", side_effect=gmail_gateway.GmailGatewayError("token rejected")):
+                status = service.verified_connection_status()
+
+        self.assertFalse(status["connected"])
+        self.assertEqual(status["oauth_error"], "token rejected")
+
     def test_save_connection_encrypts_tokens_in_local_store(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = self._service(temporary)

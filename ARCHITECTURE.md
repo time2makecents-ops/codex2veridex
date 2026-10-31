@@ -132,16 +132,15 @@ written `item.json` snapshot and contained source folders inside its batch. Uplo
 are stored unchanged and are not analyzed automatically. A handoff explicitly copies
 the selected files and a source-linked brief into a Veridex session through the normal
 artifact-ledger path; it cannot imply research, marketplace preparation, or publish.
-An item may retain validated `https://chatgpt.com/share/...` and
-`https://g.co/gemini/share/...` thread links as local references. The URLs are included
-in its SQLite row, item snapshot, batch export, and controlled handoff brief. A
-user-triggered PC Inbox preview may read a public shared thread through the dedicated
-Chrome boundary; a second reviewed action saves only its visible text and available
-visible images. The backend never imports automatically or gains ChatGPT credentials.
+An item may retain public shared or private local ChatGPT/Gemini conversation links as
+local references. The URLs are included in its SQLite row, item snapshot, batch export,
+and controlled handoff brief. Only public shared links may cross the dedicated Chrome
+preview/import boundary; private links are never fetched or imported. The backend never
+imports automatically or gains ChatGPT credentials.
 
 The Capture Companion is a separate lightweight LAN service on port 8775 that shares
 the same catalog but exposes only raw phone capture: title, notes, image uploads, and
-shared-thread references. Reference IDs and other catalog fields remain in the PC's
+shared-thread references (including current Gemini public-share hosts). Reference IDs and other catalog fields remain in the PC's
 collapsed Advanced details area. It accepts the same paired-device cookie as Veridex on the
 same host, so no ChatGPT, Gemini, or Veridex credentials leave the PC. Phone-side removal
 archives an item instead of destroying its catalog record or original files. A separate
@@ -155,13 +154,17 @@ is exposed by the browser and otherwise reports the limitation without claiming 
 control. A plain private-LAN HTTP phone session can fall back to the native
 `capture="environment"` file-input flow when browser live-camera access is unavailable.
 The PC Item Intake photo editor keeps originals immutable: manual crop, local automatic
-edge-contrast crop, and local automatic adjustment each create a separate JPEG under
-the item's `derivatives` folder. The catalog records the source asset ID and a bounded
+edge-contrast crop, local automatic adjustment, conservative local marketplace auto
+touch-up (including limited glare softening), and smartphone-style manual adjustments
+(light, color, detail, exposure, rotation, and direct-manipulation crop framing) each
+create a separate JPEG under the item's `derivatives` folder. The catalog records the
+source asset ID and a bounded
 transformation record, and refuses to delete a source while derivative photos remain.
 Its AI touch-up requires an explicit confirmation immediately before transmitting the
 chosen source photo and prompt to the user-selected Codex image-tools or configured
 Cloudflare reference-edit provider; there is no provider fallback. AI output follows
-the same derived-photo lineage path.
+the same derived-photo lineage path. Named AI instructions are persisted in the governed
+intake catalog and can be selected or deleted from the editor.
 
 ## Navigator governance
 
@@ -193,13 +196,27 @@ The Codex MCP bridge preserves the same boundary: an explicit workspace activati
 resolves that workspace's most recently updated session, then pins later calls to
 the returned workspace/session pair rather than retaining a session from another
 workspace.
-Gmail OAuth authorization opens in the same dedicated Veridex Google Chrome
-profile used by the browser-search boundary; it never relies on the user's
-ordinary default Chrome profile, and the callback still validates OAuth state
+Gmail OAuth authorization opens in the same repository-local Veridex Chrome
+profile used by the application, browser-search boundary, and social bridges;
+it never relies on the user's ordinary default Chrome process, and the callback
+still validates OAuth state
 and the configured account identity before storing tokens.
 This shared-services boundary is the extension point for future corporate
 services such as Google Drive; no unavailable service is inferred from a Google
 login alone.
+
+`BackgroundMonitor` starts and stops with the HTTP server. It performs an immediate
+read-only mail check, then scans marketplace and account-security mail once per hour;
+core/account health runs every thirty minutes. Provider checks are bounded and evidence-backed;
+browser-backed Facebook and Instagram status checks report an unavailable session
+without opening, navigating, or closing a site tab and without attempting login.
+They inspect an existing site page when present and otherwise use only the presence
+of provider session-cookie names through the loopback CDP connection; cookie values
+are never returned or stored. Workspace-private SQLite records
+retain check evidence plus bounded mail metadata, seen state, and dismissal state;
+credentials, tokens, and message bodies are excluded. The UI polls only this local
+status, uses the existing governed room transition for Control Room or My Office,
+and marks only the alert IDs displayed before a successful Office transition.
 
 ## File and computer access
 
@@ -292,11 +309,13 @@ found or changed.
 
 ## Browser search boundary
 
-`google_chrome_search.js` launches Chrome with a dedicated user-data directory
-under ignored Veridex `data/`, a loopback-only debugging endpoint, and no access
-to the user's normal Chrome profile. Login is manual and remains in Chrome's
-profile storage; Veridex source and environment configuration contain no Google
-password. `google_chrome_search.py` detects explicit Google intent, extracts the
+`veridex_browser.js` owns one user-data directory under ignored Veridex `data/`
+and launches the application through a loopback-only debugging endpoint.
+`google_chrome_search.js` reuses that browser. The user-data directory may be
+initialized once from a selected signed-in Chrome profile, but the runtime copy
+is separate so Veridex never competes with ordinary Chrome for profile ownership.
+Login state remains in Chrome's profile storage; Veridex source and environment
+configuration contain no Google password. `google_chrome_search.py` detects explicit Google intent, extracts the
 query, and returns bounded visible-result text and links to the server.
 
 The Lens adapter opens Google's search-by-image panel with a trusted CDP mouse event;
@@ -336,19 +355,22 @@ indexed snippets.
 
 ### Instagram browser bridge
 
-`instagram_chrome_bridge.js` uses the same loopback-only CDP boundary with a
-different ignored Chrome profile and debugging port. Its Python wrapper is an
+`instagram_chrome_bridge.js` uses the same loopback-only CDP boundary with the
+unified Veridex Chrome profile and debugging port configured by
+`VERIDEX_BROWSER_PROFILE_DIR`, `VERIDEX_BROWSER_PROFILE_DIRECTORY`, and
+`VERIDEX_BROWSER_DEBUG_PORT`. Its Python wrapper is an
 importable program interface for status checks, bounded profile reads,
 confirmation-gated follows, visible message composition, and explicit sends.
-`.env.local` supplies credentials
-without placing them in command arguments or repository files. Instagram
-security and 2FA prompts remain visible for the user to complete. The
+Connected accounts assigns the expected username, then opens Instagram's login
+page in that profile. Passwords are entered directly on Instagram and never pass
+through the Veridex UI or server. Instagram security and 2FA prompts remain visible
+for the user to complete. The
 `office.instagram_message_send` tool does not invoke the send action unless
 `confirm=true`; drafting and sending are separate bridge operations.
 
 ### Facebook browser bridge
 
-`facebook_chrome_bridge.js` owns a separate repository-local Chrome profile and
+`facebook_chrome_bridge.js` uses that same unified Veridex Chrome profile and
 loopback-only debugging port. It reads credentials from ignored `local.env` or
 `.env.local` without putting them in command arguments or source. Its Python
 wrapper exposes status, bounded profile inspection, visible message composition,
@@ -381,22 +403,53 @@ or command arguments.
 
 `ebay_room.py` is the workspace-scoped coordination layer for the eBay room. Item
 Intake remains the inventory authority; the room database stores only seller-listing
-snapshots, item-to-listing links, channel drafts, and sync audit rows. It does not
+snapshots, item-to-listing links, per-item marketplace tabs, channel drafts, and sync
+audit rows. It does not
 silently create items from provider data. `GetMyeBaySelling` supplies the review queue
 for Seller Hub and API-created listings, while `GetItem` revalidates seller ownership
-before a manual link or approved import. Imported remote photos become immutable local
-Item Intake originals. The room's Facebook preparation first ledgers those files and
-then reuses the existing review-first Facebook bridge, which cannot click Publish.
+before a manual link or approved import. The item workspace also permits an explicit,
+read-only `GetItem` lookup by listing URL/number, then a local apply step can populate
+the Item Intake fields and optionally copy listing images into that item's source
+gallery. Imported remote photos become immutable local
+Item Intake originals. Each item can store one ordered listing-photo set referencing its
+existing photo assets. It is non-destructive, keeps the first photo as the intended main
+image, and is the sole source for eBay draft photo data and Facebook preparation. The
+room's Facebook preparation first ledgers only that ordered set and then reuses the
+existing review-first Facebook bridge, which cannot click Publish.
 
-The individual item workspace owns its source photos rather than placing them on the
-room board. It accepts normal multi-file photo uploads and a ZIP archive route with a
+Public ChatGPT and Gemini shared-thread links can be viewed at their source, and their
+visible material can be imported for an item-scoped governed Bob analysis or transformed
+into a review-required marketplace plan. The analysis remains in the item's governed
+conversation and does not silently promote thread claims to verified findings. The plan is an extraction
+of labeled wording from the shared thread, with local item fields only as explicit
+fallbacks; it is stored as distinct eBay and Facebook channel drafts only after the
+operator saves them. The connected-seller `GetItem` lookup remains separate, so an AI
+thread cannot be presented as verified seller-account evidence.
+
+The individual item workspace is a full-page, URL-addressable surface with Item, Gallery,
+Research & Questions, Market, AI Chat Threads, and Groups tabs. Item is the home surface for
+master fields and workspace navigation; it owns its source photos rather
+than placing them on the room board. It accepts normal multi-file photo uploads, drag and
+drop, and a ZIP archive route with a
 separate bounded upload ceiling. ZIP extraction rejects unsafe paths and symbolic links,
 limits entries and total expanded bytes, retains the archive as an Item Intake attachment,
 and verifies each stored archive/member against its recorded size and SHA-256. The UI
-offers explicit selection mode for one or more photos; the delete action invokes the
-existing item-bound asset deletion route only after confirmation.
+keeps a scrollable source gallery and ordered listing rail beside each other, supports
+persisted selection and ordering, and exposes the existing non-destructive local/AI photo
+touch-up route. The Market tab persists default, preset, or custom marketplace drafts
+against the master Item Intake record. Only eBay and Facebook use existing governed
+provider handoffs; the other drafts remain copy-ready local records. Item-specific Bob
+messages stay in the append-only session transcript with an `ebay_item_id` discriminator,
+so the page can filter the shared transcript without creating a parallel chat store. Asset
+deletion requires confirmation and removes the item-bound listing-photo reference first.
+The Groups tab stores a workspace-scoped Facebook-group directory and item-to-group
+targets in the eBay room database. User-provided rules, requirements, allowed item types,
+posting notes, and review status are retained as source context for Bob; `not_reviewed`
+is the default and does not assert that posting is allowed.
 
-OAuth opens in the explicitly configured Chrome profile for the assigned workspace.
+OAuth opens through the same unified Veridex Chrome profile and loopback debugging
+endpoint as the application. The eBay token remains workspace-scoped even though the
+browser identity is repository-wide.
 For production, the eBay RuName accepted route terminates at the Cloudflare Worker,
 which preserves the one-time authorization response and forwards it to the local
 loopback listener. The listener still validates the OAuth state before exchanging the

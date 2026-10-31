@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +34,58 @@ def _chrome_executable() -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _open_authorization_url(url: str, profile_directory: str = "") -> bool:
+def _debug_json(port: int, route: str, *, method: str = "GET") -> Dict[str, object]:
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{route}", method=method)
+    with urllib.request.urlopen(request, timeout=2.5) as response:
+        value = json.loads(response.read().decode("utf-8"))
+    if not isinstance(value, dict):
+        raise EbayGatewayError("The Veridex Chrome debugging endpoint returned invalid data.")
+    return value
+
+
+def _open_authorization_url(
+    url: str,
+    profile_directory: str = "",
+    env: Dict[str, str] | None = None,
+) -> bool:
+    browser_env = dict(env or {})
+    unified_root = str(browser_env.get("VERIDEX_BROWSER_PROFILE_DIR") or "").strip()
+    if unified_root:
+        profile = str(
+            browser_env.get("VERIDEX_BROWSER_PROFILE_DIRECTORY") or profile_directory or "Default"
+        ).strip()
+        if profile != "Default" and not (profile.startswith("Profile ") and profile[8:].isdigit()):
+            raise EbayGatewayError("VERIDEX_BROWSER_PROFILE_DIRECTORY is invalid.")
+        debug_port = int(browser_env.get("VERIDEX_BROWSER_DEBUG_PORT") or 9226)
+        try:
+            _debug_json(debug_port, "/json/version")
+            _debug_json(debug_port, f"/json/new?{urllib.parse.quote(url, safe='')}", method="PUT")
+            return True
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError, EbayGatewayError):
+            pass
+        chrome = _chrome_executable()
+        if not chrome:
+            raise EbayGatewayError("The configured Veridex Chrome profile requires Google Chrome, but Chrome was not found.")
+        root = Path(unified_root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(
+            [
+                str(chrome),
+                f"--user-data-dir={root}",
+                f"--profile-directory={profile}",
+                f"--remote-debugging-port={debug_port}",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-allow-origins=*",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--new-window",
+                url,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
     profile = str(profile_directory or "").strip()
     chrome = _chrome_executable()
     if profile:
@@ -122,7 +176,7 @@ def connect(
     profile_directory = str(
         chrome_profile_directory or env.get("VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY") or ""
     ).strip()
-    if not _open_authorization_url(authorization_url, profile_directory):
+    if not _open_authorization_url(authorization_url, profile_directory, env):
         print(f"Open this URL in your browser:\n{authorization_url}", flush=True)
     deadline = time.monotonic() + 1800
     while not result and time.monotonic() < deadline:

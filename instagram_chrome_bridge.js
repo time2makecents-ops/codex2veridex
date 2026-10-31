@@ -7,9 +7,9 @@ const { spawn } = require("child_process");
 
 const repoRoot = __dirname;
 
-function readLocalEnv() {
+function readEnvFile(fileName) {
   const values = {};
-  const candidate = path.join(repoRoot, ".env.local");
+  const candidate = path.join(repoRoot, fileName);
   if (!fs.existsSync(candidate)) return values;
   for (const line of fs.readFileSync(candidate, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -26,14 +26,43 @@ function readLocalEnv() {
   return values;
 }
 
-const localEnv = readLocalEnv();
+const localEnv = { ...readEnvFile(".env.local"), ...readEnvFile("local.env") };
+const veridexBrowserRoot = String(
+  process.env.VERIDEX_BROWSER_PROFILE_DIR
+    || localEnv.VERIDEX_BROWSER_PROFILE_DIR
+    || process.env.VERIDEX_FACEBOOK_PROFILE_DIR
+    || localEnv.VERIDEX_FACEBOOK_PROFILE_DIR
+    || path.join(repoRoot, "data", "browser_profiles", "veridex_browser"),
+).trim();
+const sharedUserDataDir = String(
+  process.env.VERIDEX_PP_CHROME_USER_DATA_DIR
+    || localEnv.VERIDEX_PP_CHROME_USER_DATA_DIR
+    || "",
+).trim();
+const profileDirectory = String(
+  process.env.VERIDEX_BROWSER_PROFILE_DIRECTORY
+    || localEnv.VERIDEX_BROWSER_PROFILE_DIRECTORY
+    || (veridexBrowserRoot ? "Default" : (
+      process.env.VERIDEX_PP_CHROME_PROFILE_DIRECTORY
+        || localEnv.VERIDEX_PP_CHROME_PROFILE_DIRECTORY
+        || localEnv.VERIDEX_EBAY_CHROME_PROFILE_DIRECTORY
+    ))
+    || "Default",
+).trim() || "Default";
 const profileRoot = path.resolve(
-  process.env.VERIDEX_INSTAGRAM_PROFILE_DIR
+  veridexBrowserRoot
+    || process.env.VERIDEX_INSTAGRAM_PROFILE_DIR
     || localEnv.VERIDEX_INSTAGRAM_PROFILE_DIR
     || path.join(repoRoot, "data", "browser_profiles", "veridex_instagram"),
 );
 const debugPort = Number(
-  process.env.VERIDEX_INSTAGRAM_DEBUG_PORT || localEnv.VERIDEX_INSTAGRAM_DEBUG_PORT || 9224,
+  process.env.VERIDEX_BROWSER_DEBUG_PORT
+    || localEnv.VERIDEX_BROWSER_DEBUG_PORT
+    || process.env.VERIDEX_PP_CHROME_DEBUG_PORT
+    || localEnv.VERIDEX_PP_CHROME_DEBUG_PORT
+    || process.env.VERIDEX_INSTAGRAM_DEBUG_PORT
+    || localEnv.VERIDEX_INSTAGRAM_DEBUG_PORT
+    || 9224,
 );
 const configuredUsername = String(process.env.INSTAGRAM_USERNAME || localEnv.INSTAGRAM_USERNAME || "").trim();
 const configuredPassword = String(process.env.INSTAGRAM_PASSWORD || localEnv.INSTAGRAM_PASSWORD || "");
@@ -93,7 +122,7 @@ function launchChrome(startUrl) {
     chromePath(),
     [
       `--user-data-dir=${profileRoot}`,
-      "--profile-directory=Default",
+      `--profile-directory=${profileDirectory}`,
       `--remote-debugging-port=${debugPort}`,
       "--remote-debugging-address=127.0.0.1",
       "--remote-allow-origins=*",
@@ -114,6 +143,7 @@ async function ensureChrome(startUrl) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     if (await endpointReady()) return true;
   }
+  if (sharedUserDataDir && !veridexBrowserRoot) return "profile_opened_without_debugging";
   throw new Error("The dedicated Instagram Chrome profile did not become available.");
 }
 
@@ -151,6 +181,55 @@ class CdpClient {
   close() { this.socket.close(); }
 }
 
+function classifyInstagramCookies(cookies) {
+  const names = new Set((Array.isArray(cookies) ? cookies : [])
+    .filter((cookie) => /(^|\.)instagram\.com$/i.test(String(cookie && cookie.domain || "").replace(/^\./, "")))
+    .map((cookie) => String(cookie && cookie.name || "")));
+  const signedIn = names.has("sessionid");
+  return { signed_in: signedIn, evidence: signedIn ? "authenticated_cookie" : "login_cookie_absent" };
+}
+
+async function passiveInstagramSession() {
+  const version = await getJson("/json/version");
+  const targets = await getJson("/json/list");
+  const target = (Array.isArray(targets) ? targets : []).find((row) => {
+    if (row.type !== "page" || !row.webSocketDebuggerUrl) return false;
+    try { return /(^|\.)instagram\.com$/i.test(new URL(String(row.url || "")).hostname); } catch (_) { return false; }
+  });
+  let page = null;
+  if (target) {
+    const client = new CdpClient(target.webSocketDebuggerUrl);
+    try {
+      await client.connect();
+      page = await pageState(client);
+    } finally {
+      client.close();
+    }
+  }
+  let cookieSession = { signed_in: false, evidence: "cookie_check_unavailable" };
+  if (version && version.webSocketDebuggerUrl) {
+    const client = new CdpClient(version.webSocketDebuggerUrl);
+    try {
+      await client.connect();
+      const result = await client.send("Storage.getCookies");
+      cookieSession = classifyInstagramCookies(result.cookies);
+    } finally {
+      client.close();
+    }
+  }
+  const signedIn = Boolean(cookieSession.signed_in || (page && page.signed_in));
+  const activeUsername = page && page.signed_in ? String(page.active_username || "") : "";
+  return {
+    signed_in: signedIn,
+    session_evidence: page && page.signed_in ? "authenticated_navigation" : cookieSession.evidence,
+    active_username: activeUsername,
+    identity_observed: Boolean(activeUsername),
+    account_matches: activeUsername ? activeUsername.toLowerCase() === configuredUsername.toLowerCase() : null,
+    page_url: page ? String(page.url || "") : "",
+    passive: true,
+  };
+}
+
 async function createTab(url) {
   return getJson(`/json/new?${encodeURIComponent(url)}`, "PUT");
 }
@@ -176,6 +255,9 @@ async function evaluate(client, expression) {
 
 async function withTab(url, callback, keepOpen = false) {
   await ensureChrome("https://www.instagram.com/");
+  if (!(await endpointReady())) {
+    throw new Error("The Provenance Pending Chrome profile is open, but its debugging endpoint is unavailable. Complete the visible browser step, then retry after starting Veridex with the configured PP debug port.");
+  }
   const target = await createTab(url);
   const client = new CdpClient(target.webSocketDebuggerUrl);
   try {
@@ -215,26 +297,29 @@ async function status() {
   if (!chromeDebugging) {
     return {
       ok: true,
-      configured: Boolean(configuredUsername && configuredPassword),
+      configured: Boolean(configuredUsername),
       username: configuredUsername,
       profile_root: profileRoot,
+      profile_directory: profileDirectory,
+      shared_profile: Boolean(veridexBrowserRoot),
       chrome_debugging: false,
       signed_in: false,
     };
   }
-  const statusUrl = configuredUsername
-    ? `https://www.instagram.com/${encodeURIComponent(configuredUsername)}/`
-    : "https://www.instagram.com/";
-  const state = await withTab(statusUrl, (client) => pageState(client));
+  const state = await passiveInstagramSession();
   return {
     ok: true,
-    configured: Boolean(configuredUsername && configuredPassword),
+    configured: Boolean(configuredUsername),
     username: configuredUsername,
     profile_root: profileRoot,
+    profile_directory: profileDirectory,
+    shared_profile: Boolean(veridexBrowserRoot),
     chrome_debugging: true,
     signed_in: Boolean(state.signed_in),
     active_username: state.active_username || "",
-    account_matches: Boolean(state.signed_in && state.active_username && state.active_username.toLowerCase() === configuredUsername.toLowerCase()),
+    account_matches: state.account_matches,
+    identity_observed: Boolean(state.identity_observed),
+    session_evidence: String(state.session_evidence || "inconclusive"),
     page_url: state.url,
   };
 }
@@ -242,6 +327,20 @@ async function status() {
 async function login() {
   if (!configuredUsername || !configuredPassword) {
     throw new Error("INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD must be set in .env.local.");
+  }
+  const launched = await ensureChrome("https://www.instagram.com/accounts/login/");
+  if (!(await endpointReady())) {
+    return {
+      ok: true,
+      signed_in: false,
+      username: configuredUsername,
+      launched,
+      requires_interaction: true,
+      profile_root: profileRoot,
+      profile_directory: profileDirectory,
+      shared_profile: Boolean(veridexBrowserRoot),
+      instruction: "Sign in or review Instagram in the visible Provenance Pending Chrome window, then refresh status.",
+    };
   }
   return withTab("https://www.instagram.com/accounts/login/", async (client) => {
     const initial = await pageState(client);
@@ -717,8 +816,19 @@ async function main() {
   const action = String(process.argv[2] || "status").toLowerCase();
   if (action === "status") return output(await status());
   if (action === "setup") {
-    const launched = await ensureChrome("https://www.instagram.com/accounts/login/");
-    return output({ ok: true, launched, profile_root: profileRoot, username: configuredUsername, instruction: "Use instagram-login or sign in manually in the opened Chrome window." });
+    const loginUrl = "https://www.instagram.com/accounts/login/";
+    const launched = await ensureChrome(loginUrl);
+    if (!launched) await createTab(loginUrl);
+    return output({
+      ok: true,
+      launched,
+      profile_root: profileRoot,
+      profile_directory: profileDirectory,
+      shared_profile: Boolean(veridexBrowserRoot),
+      username: configuredUsername,
+      requires_interaction: true,
+      instruction: "Sign in directly on Instagram in the opened Chrome window, then return to Veridex and refresh status.",
+    });
   }
   if (action === "login") return output(await login());
   if (action === "profile") return output(await readProfile(process.argv[3]));
@@ -737,4 +847,8 @@ async function main() {
   throw new Error(`Unknown action: ${action}`);
 }
 
-main().catch((error) => output({ ok: false, error: error.message || String(error), username: configuredUsername, profile_root: profileRoot }, 1));
+if (require.main === module) {
+  main().catch((error) => output({ ok: false, error: error.message || String(error), username: configuredUsername, profile_root: profileRoot }, 1));
+}
+
+module.exports = { classifyInstagramCookies };

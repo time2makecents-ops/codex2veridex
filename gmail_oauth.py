@@ -67,16 +67,29 @@ def _open_google_authorization(url: str, env: Dict[str, str]) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != "accounts.google.com" or parsed.path != "/o/oauth2/v2/auth":
         raise GmailGatewayError("Refused to open a non-Google OAuth URL in the dedicated profile.")
+    explicit_legacy_profile = env.get("VERIDEX_GOOGLE_PROFILE_DIR") or env.get("VERIDEX_FACEBOOK_PROFILE_DIR")
     profile_root = Path(
-        env.get("VERIDEX_GOOGLE_PROFILE_DIR")
+        env.get("VERIDEX_BROWSER_PROFILE_DIR")
+        or explicit_legacy_profile
+        or os.environ.get("VERIDEX_BROWSER_PROFILE_DIR")
         or os.environ.get("VERIDEX_GOOGLE_PROFILE_DIR")
-        or LOCAL_ENV.parent / "data" / "browser_profiles" / "veridex_google"
+        or os.environ.get("VERIDEX_FACEBOOK_PROFILE_DIR")
+        or LOCAL_ENV.parent / "data" / "browser_profiles" / "veridex_browser"
     ).resolve()
+    explicit_legacy_port = env.get("VERIDEX_GOOGLE_DEBUG_PORT") or env.get("VERIDEX_PP_CHROME_DEBUG_PORT")
     debug_port = int(
-        env.get("VERIDEX_GOOGLE_DEBUG_PORT")
+        env.get("VERIDEX_BROWSER_DEBUG_PORT")
+        or explicit_legacy_port
+        or os.environ.get("VERIDEX_BROWSER_DEBUG_PORT")
         or os.environ.get("VERIDEX_GOOGLE_DEBUG_PORT")
-        or 9223
+        or os.environ.get("VERIDEX_PP_CHROME_DEBUG_PORT")
+        or 9226
     )
+    profile_directory = str(
+        env.get("VERIDEX_BROWSER_PROFILE_DIRECTORY")
+        or os.environ.get("VERIDEX_BROWSER_PROFILE_DIRECTORY")
+        or "Default"
+    ).strip() or "Default"
     try:
         _debug_json(debug_port, "/json/version")
         _debug_json(debug_port, f"/json/new?{urllib.parse.quote(url, safe='')}", method="PUT")
@@ -88,7 +101,7 @@ def _open_google_authorization(url: str, env: Dict[str, str]) -> None:
         [
             str(_chrome_path(env)),
             f"--user-data-dir={profile_root}",
-            "--profile-directory=Default",
+            f"--profile-directory={profile_directory}",
             f"--remote-debugging-port={debug_port}",
             "--remote-debugging-address=127.0.0.1",
             "--remote-allow-origins=*",

@@ -1,4 +1,4 @@
-"""Importable interface to Veridex's dedicated Facebook Chrome bridge."""
+"""Importable interface to Veridex's shared Provenance Pending Chrome bridge."""
 
 from __future__ import annotations
 
@@ -85,6 +85,10 @@ def login_facebook(*, env: Dict[str, str] | None = None) -> Dict[str, Any]:
 
 def read_facebook_profile(target: str, *, env: Dict[str, str] | None = None) -> Dict[str, Any]:
     return _invoke("profile", target, timeout=60, env=env)
+
+
+def read_facebook_group(target: str, *, env: Dict[str, str] | None = None) -> Dict[str, Any]:
+    return _invoke("group-info", target, timeout=90, env=env)
 
 
 def draft_facebook_message(target: str, message: str, *, env: Dict[str, str] | None = None) -> Dict[str, Any]:

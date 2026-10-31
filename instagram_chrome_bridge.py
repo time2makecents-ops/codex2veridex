@@ -1,4 +1,4 @@
-"""Importable interface to Veridex's dedicated Instagram Chrome bridge."""
+"""Importable interface to Veridex's shared Provenance Pending Chrome bridge."""
 
 from __future__ import annotations
 

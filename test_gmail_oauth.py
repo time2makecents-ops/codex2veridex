@@ -9,6 +9,21 @@ import gmail_oauth
 
 
 class GmailOauthBrowserTests(unittest.TestCase):
+    def test_unified_veridex_browser_takes_precedence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            gmail_oauth, "_debug_json", side_effect=[{"Browser": "Chrome"}, {"id": "oauth-tab"}]
+        ) as debug_json:
+            gmail_oauth._open_google_authorization(
+                "https://accounts.google.com/o/oauth2/v2/auth?client_id=test",
+                {
+                    "VERIDEX_BROWSER_PROFILE_DIR": str(Path(temporary) / "veridex-browser"),
+                    "VERIDEX_BROWSER_DEBUG_PORT": "9555",
+                    "VERIDEX_GOOGLE_DEBUG_PORT": "9444",
+                },
+            )
+
+        self.assertEqual(debug_json.call_args_list[0].args, (9555, "/json/version"))
+
     def test_running_dedicated_profile_receives_google_authorization_tab(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             gmail_oauth, "_debug_json", side_effect=[{"Browser": "Chrome"}, {"id": "oauth-tab"}]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -10,6 +11,27 @@ import veridex_server
 
 
 class InstagramChromeBridgeTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for the Instagram bridge")
+    def test_status_uses_passive_cookie_evidence_without_creating_a_tab(self) -> None:
+        script = (
+            "const { classifyInstagramCookies } = require('./instagram_chrome_bridge.js');"
+            "console.log(JSON.stringify(["
+            "classifyInstagramCookies([{domain:'.instagram.com',name:'sessionid'}]),"
+            "classifyInstagramCookies([{domain:'.instagram.com',name:'ig_did'}])"
+            "]));"
+        )
+        completed = subprocess.run(
+            [shutil.which("node"), "-e", script], cwd=str(instagram_chrome_bridge.ROOT),
+            capture_output=True, text=True, check=True,
+        )
+        authenticated, anonymous = json.loads(completed.stdout)
+        self.assertTrue(authenticated["signed_in"])
+        self.assertFalse(anonymous["signed_in"])
+        source = instagram_chrome_bridge.BRIDGE.read_text(encoding="utf-8")
+        status_source = source.split("async function status()", 1)[1].split("async function login()", 1)[0]
+        self.assertIn("passiveInstagramSession", status_source)
+        self.assertNotIn("withTab(", status_source)
+
     @patch("instagram_chrome_bridge.subprocess.run")
     @patch("instagram_chrome_bridge.shutil.which", return_value=r"C:\Program Files\nodejs\node.exe")
     def test_status_uses_dedicated_bridge(self, _which, run) -> None:

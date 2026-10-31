@@ -6,11 +6,31 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const repoRoot = __dirname;
+function readEnvFile(fileName) {
+  const values = {};
+  const candidate = path.join(repoRoot, fileName);
+  if (!fs.existsSync(candidate)) return values;
+  for (const line of fs.readFileSync(candidate, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+    const separator = trimmed.indexOf("=");
+    values[trimmed.slice(0, separator).trim()] = trimmed.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+  }
+  return values;
+}
+const localEnv = { ...readEnvFile(".env.local"), ...readEnvFile("local.env") };
 const profileRoot = path.resolve(
-  process.env.VERIDEX_GOOGLE_PROFILE_DIR || path.join(repoRoot, "data", "browser_profiles", "veridex_google"),
+  process.env.VERIDEX_BROWSER_PROFILE_DIR
+    || localEnv.VERIDEX_BROWSER_PROFILE_DIR
+    || process.env.VERIDEX_GOOGLE_PROFILE_DIR
+    || localEnv.VERIDEX_GOOGLE_PROFILE_DIR
+    || process.env.VERIDEX_FACEBOOK_PROFILE_DIR
+    || localEnv.VERIDEX_FACEBOOK_PROFILE_DIR
+    || path.join(repoRoot, "data", "browser_profiles", "veridex_browser"),
 );
-const expectedEmail = String(process.env.VERIDEX_GOOGLE_ACCOUNT || "veridexcorp@gmail.com").trim().toLowerCase();
-const debugPort = Number(process.env.VERIDEX_GOOGLE_DEBUG_PORT || 9223);
+const profileDirectory = String(process.env.VERIDEX_BROWSER_PROFILE_DIRECTORY || localEnv.VERIDEX_BROWSER_PROFILE_DIRECTORY || "Default").trim() || "Default";
+const expectedEmail = String(process.env.VERIDEX_GOOGLE_ACCOUNT || localEnv.VERIDEX_GOOGLE_ACCOUNT || "veridexcorp@gmail.com").trim().toLowerCase();
+const debugPort = Number(process.env.VERIDEX_BROWSER_DEBUG_PORT || localEnv.VERIDEX_BROWSER_DEBUG_PORT || process.env.VERIDEX_GOOGLE_DEBUG_PORT || localEnv.VERIDEX_GOOGLE_DEBUG_PORT || process.env.VERIDEX_PP_CHROME_DEBUG_PORT || localEnv.VERIDEX_PP_CHROME_DEBUG_PORT || 9226);
 
 function output(value, status = 0) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -29,8 +49,12 @@ function chromePath() {
   return found;
 }
 
+function profilePreferencesPath(root = profileRoot, directory = profileDirectory) {
+  return path.join(root, directory, "Preferences");
+}
+
 function profileStatus() {
-  const preferencesPath = path.join(profileRoot, "Default", "Preferences");
+  const preferencesPath = profilePreferencesPath();
   let preferences = {};
   try {
     preferences = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
@@ -86,7 +110,7 @@ function launchChrome(startUrl) {
     chromePath(),
     [
       `--user-data-dir=${profileRoot}`,
-      "--profile-directory=Default",
+      `--profile-directory=${profileDirectory}`,
       `--remote-debugging-port=${debugPort}`,
       "--remote-debugging-address=127.0.0.1",
       "--remote-allow-origins=*",
@@ -686,7 +710,9 @@ function sharedThreadProvider(url) {
   const host = parsed.hostname.toLowerCase();
   if (parsed.protocol !== "https:") throw new Error("Shared-thread links must use HTTPS.");
   if (host === "chatgpt.com" && parsed.pathname.startsWith("/share/")) return "chatgpt";
-  if (host === "g.co" && parsed.pathname.startsWith("/gemini/share/")) return "gemini";
+  if ((host === "g.co" && parsed.pathname.startsWith("/gemini/share/")
+    || host === "share.gemini.google" && parsed.pathname !== "/"
+    || host === "gemini.google.com" && parsed.pathname.startsWith("/share/"))) return "gemini";
   throw new Error("Only ChatGPT and Gemini shared-thread links can be imported.");
 }
 
@@ -707,6 +733,27 @@ async function sharedThreadSnapshot(client) {
   });
   if (evaluated.exceptionDetails) throw new Error("The shared-thread page could not be read.");
   return evaluated.result && evaluated.result.value ? evaluated.result.value : {};
+}
+
+async function waitForSharedThreadContent(client, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  const earliestReady = Date.now() + 5000;
+  let page = {};
+  let priorLength = 0;
+  let stableSamples = 0;
+  while (Date.now() < deadline) {
+    page = await sharedThreadSnapshot(client);
+    const text = String(page.text || "");
+    const unavailable = /sign in|log in|access denied|not found|share link.*invalid|expired/i.test(`${page.title || ""} ${text}`);
+    if (unavailable) return page;
+    // Gemini first renders a partial prior turn, then streams the requested answer.
+    // Wait through that transition and return only once the visible transcript settles.
+    stableSamples = Math.abs(text.length - priorLength) < 80 ? stableSamples + 1 : 0;
+    priorLength = text.length;
+    if (Date.now() >= earliestReady && text.length >= 500 && stableSamples >= 2) return page;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return page;
 }
 
 async function visibleImageBodies(client, imageRows) {
@@ -754,8 +801,7 @@ async function importSharedThread(url) {
     await waitForDocument(client);
     await client.send("Page.reload", { ignoreCache: false });
     await waitForDocument(client);
-    await new Promise((resolve) => setTimeout(resolve, 1800));
-    const page = await sharedThreadSnapshot(client);
+    const page = await waitForSharedThreadContent(client);
     const text = String(page.text || "");
     if (/sign in|log in|access denied|not found|share link.*invalid|expired/i.test(`${page.title || ""} ${text}`) || !text) {
       throw new Error("The shared thread is unavailable, private, expired, or requires a login.");
@@ -942,6 +988,7 @@ module.exports = {
   clickElementCenter,
   classifyGooglePage,
   compactGoogleDiagnostic,
+  profilePreferencesPath,
   selectGooglePageText,
   waitForGoogleEvidence,
 };

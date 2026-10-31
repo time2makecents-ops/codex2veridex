@@ -55,6 +55,30 @@ class ItemIntakeHttpTests(unittest.TestCase):
                     status, preview = self.request(base, "/api/item-intake/threads/preview", method="POST", value={"item_id": item_id, "provider": "chatgpt"})
                     self.assertEqual(status, 200)
                     self.assertEqual(preview["preview"]["text_preview"], "The lamp is likely mid-century.")
+                    listing_text = """Option 1: Facebook Marketplace (Local Pickup)
+Title Options: Vintage Framed Triple Berry Botanical Art Set - Signed & Numbered
+Price: $55 (Leave room to haggle)
+Category: Home Decor / Wall Art
+Condition: Excellent vintage condition
+Description:
+Ready-to-hang framed botanical berry prints.
+Option 2: eBay (Shipping / Nationwide Audience)
+Title: Vintage Signed Limited Edition Botanical Berry Art Prints Set By Toni Framed
+Buy It Now: $74.99 with Best Offer enabled
+Shipping: Calculated shipping based on buyer location
+Item Specifics:
+Artist: Toni
+Type: Print / Lithograph
+Description:
+Framed signed and numbered botanical berry art set.
+"""
+                    with patch.object(veridex_server, "import_shared_thread", return_value={**thread_result, "text": listing_text}):
+                        status, plan = self.request(base, "/api/item-intake/threads/listing-plan", method="POST", value={"item_id": item_id, "provider": "chatgpt"})
+                    self.assertEqual(status, 200)
+                    self.assertEqual(plan["listing_plan"]["plan"]["facebook"]["price"], 55.0)
+                    self.assertEqual(plan["listing_plan"]["plan"]["ebay"]["price"], 74.99)
+                    self.assertIn("Toni", plan["listing_plan"]["plan"]["ebay"]["title"])
+                    self.assertTrue(plan["listing_plan"]["plan"]["review_required"])
                     status, imported = self.request(base, "/api/item-intake/threads/import", method="POST", value={"item_id": item_id, "provider": "chatgpt", "confirm": True})
                     self.assertEqual(status, 201)
                     self.assertEqual(len(imported["imported"]["photos"]), 1)
@@ -70,17 +94,36 @@ class ItemIntakeHttpTests(unittest.TestCase):
                     query = urllib.parse.urlencode({"name": "source.jpg", "role": "photo"})
                     status, source = self.request(base, f"/api/item-intake/items/{item_id}/assets?{query}", method="POST", value=image.getvalue(), content_type="image/jpeg")
                     self.assertEqual(status, 201)
+                    status, adjusted = self.request(base, "/api/item-intake/photos/touch-up", method="POST", value={"item_id": item_id, "asset_id": source["asset"]["asset_id"], "operation": "adjust", "options": {"brightness": 12, "exposure": 8, "contrast": 16, "saturation": 10, "warmth": 6, "shadows": 14, "highlights": -8, "definition": 9, "sharpness": 12, "rotation": 90, "left_percent": 5, "top_percent": 5, "right_percent": 95, "bottom_percent": 95}})
+                    self.assertEqual(status, 201)
+                    self.assertEqual(adjusted["touch_up"]["asset"]["transformation"]["operation"], "adjust")
+                    self.assertEqual(adjusted["touch_up"]["asset"]["transformation"]["rotation"], 90)
+                    self.assertEqual(set(adjusted["touch_up"]["asset"]["transformation"]["adjustments"]), {"brightness", "exposure", "contrast", "saturation", "warmth", "shadows", "highlights", "sharpness", "definition"})
+                    status, upside_down = self.request(base, "/api/item-intake/photos/touch-up", method="POST", value={"item_id": item_id, "asset_id": source["asset"]["asset_id"], "operation": "adjust", "options": {"rotation": 180, "left_percent": 5, "top_percent": 5, "right_percent": 95, "bottom_percent": 95}})
+                    self.assertEqual(status, 201)
+                    self.assertEqual(upside_down["touch_up"]["asset"]["transformation"]["rotation"], 180)
                     status, touch_up = self.request(base, "/api/item-intake/photos/touch-up", method="POST", value={"item_id": item_id, "asset_id": source["asset"]["asset_id"], "operation": "auto_adjust"})
                     self.assertEqual(status, 201)
                     self.assertEqual(touch_up["touch_up"]["asset"]["source_asset_id"], source["asset"]["asset_id"])
                     self.assertEqual(touch_up["touch_up"]["asset"]["transformation"]["operation"], "auto_adjust")
-                    with patch.object(veridex_server, "workspace_context", return_value={}), patch.object(veridex_server, "codex_art_provider", return_value={"configured": True, "quota_label": "ready"}), patch.object(veridex_server, "codex_art_assets", return_value=[{"content": image.getvalue(), "extension": ".jpg", "content_type": "image/jpeg", "metadata": {"provider": "codex", "operation": "edit"}}]):
+                    status, marketplace = self.request(base, "/api/item-intake/photos/touch-up", method="POST", value={"item_id": item_id, "asset_id": source["asset"]["asset_id"], "operation": "marketplace_auto"})
+                    self.assertEqual(status, 201)
+                    self.assertEqual(marketplace["touch_up"]["asset"]["transformation"]["operation"], "marketplace_auto")
+                    self.assertIn("glare_softening", marketplace["touch_up"]["asset"]["transformation"])
+                    status, preset = self.request(base, "/api/item-intake/touchup-presets", method="POST", value={"name": "Glass glare", "prompt": "Remove glare from glass while preserving the item exactly."})
+                    self.assertEqual(status, 201)
+                    self.assertEqual(preset["preset"]["name"], "Glass glare")
+                    status, presets = self.request(base, "/api/item-intake/touchup-presets")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(presets["presets"][0]["prompt"], "Remove glare from glass while preserving the item exactly.")
+                    with patch.object(veridex_server, "workspace_context", return_value={}), patch.object(veridex_server, "codex_art_provider", return_value={"configured": True, "quota_label": "ready"}), patch.object(veridex_server, "codex_art_assets", return_value=[{"content": image.getvalue(), "extension": ".jpg", "content_type": "image/jpeg", "metadata": {"provider": "codex", "operation": "edit"}}]) as codex_assets:
                         ai_touch_up = veridex_server.touch_up_intake_photo({"item_id": item_id, "asset_id": source["asset"]["asset_id"], "operation": "ai", "provider": "codex", "prompt": "Remove glare", "confirm": True, "workspace_id": "workspace_test", "session_id": "session_test"})
+                    self.assertEqual(codex_assets.call_args.args[3]["timeout_seconds"], 180)
                     self.assertEqual(ai_touch_up["asset"]["source_asset_id"], source["asset"]["asset_id"])
                     self.assertEqual(ai_touch_up["asset"]["transformation"]["provider"], "codex")
                     status, loaded = self.request(base, f"/api/item-intake/bootstrap?item_id={item_id}")
                     self.assertEqual(status, 200)
-                    self.assertEqual(loaded["item"]["asset_count"], 5)
+                    self.assertEqual(loaded["item"]["asset_count"], 8)
                 finally:
                     server.shutdown()
                     server.server_close()

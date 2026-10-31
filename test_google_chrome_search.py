@@ -32,6 +32,12 @@ def run_bridge_javascript(source: str) -> dict:
 
 
 class GoogleChromeSearchTests(unittest.TestCase):
+    def test_bridge_uses_configured_chrome_profile_for_preferences(self) -> None:
+        result = run_bridge_javascript(
+            'console.log(JSON.stringify({path: bridge.profilePreferencesPath("C:/profiles", "Profile 14")}));'
+        )
+        self.assertEqual(Path(result["path"]), Path("C:/profiles/Profile 14/Preferences"))
+
     def test_bridge_prefers_populated_body_over_empty_search_placeholder(self) -> None:
         selected = run_bridge_javascript(
             'console.log(JSON.stringify(bridge.selectGooglePageText({'

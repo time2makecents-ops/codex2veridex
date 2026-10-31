@@ -29,6 +29,7 @@ class ConnectedAccountsTests(unittest.TestCase):
         self.assertIn("ws_one", row["profile_dir"])
         stored = self.accounts.read("ws_one")
         self.assertNotIn("password", stored["instagram"])
+        self.assertNotIn("INSTAGRAM_PASSWORD", self.accounts.instagram_env("ws_one"))
         self.assertEqual(self.accounts.instagram_config("ws_two"), {})
 
     def test_same_instagram_account_cannot_be_assigned_twice(self):

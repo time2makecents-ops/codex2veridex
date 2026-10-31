@@ -55,6 +55,16 @@ function Stop-Veridex {
   } else {
     Write-Host "Standalone Veridex is not running."
   }
+  # A launcher crash can leave an untracked Veridex server holding the configured
+  # port. Reclaim only a listener that identifies itself as this server.
+  $Listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
+  foreach ($Listener in $Listeners) {
+    $ListenerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($Listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($ListenerProcess -and [string]$ListenerProcess.CommandLine -match '(?i)(^|[\\/\s])veridex_server\.py(?:\s|$)') {
+      Stop-VeridexProcessTree -ProcessId ([int]$Listener.OwningProcess)
+      Write-Host "Stopped stale Veridex listener (PID $($Listener.OwningProcess))."
+    }
+  }
   if (Test-Path -LiteralPath $PidPath) { Remove-Item -LiteralPath $PidPath -Force }
   if (Test-Path -LiteralPath $LaunchPath) { Remove-Item -LiteralPath $LaunchPath -Force }
 }
@@ -124,6 +134,14 @@ function Normalize-ProcessPathEnvironment {
   [Environment]::SetEnvironmentVariable("Path", $PathValue, "Process")
 }
 
+function Open-VeridexBrowser {
+  param([string]$Url)
+  $Node = (Get-Command node -ErrorAction Stop).Source
+  $Bridge = Join-Path $RepoRoot "veridex_browser.js"
+  & $Node $Bridge open $Url | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "The Veridex browser could not be opened." }
+}
+
 function Start-Veridex {
   param(
     [string]$ListenHost = "127.0.0.1",
@@ -141,7 +159,7 @@ function Start-Veridex {
     } else {
       $CurrentLabel = if ($CurrentStatus) { $CurrentStatus.access_label } else { "access mode unavailable" }
       Write-Host "Standalone Veridex is already running at http://$ListenHost`:$Port ($CurrentLabel)."
-      if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
+      if (-not $NoBrowser) { Open-VeridexBrowser "http://127.0.0.1:$Port" }
       return
     }
   }
@@ -182,7 +200,7 @@ function Start-Veridex {
   Save-VeridexLaunch -ListenHost $ListenHost -AllowInsecureRemoteCookie ([bool]$AllowInsecureRemoteCookie)
   $AccessLabel = if ($RequestedAccessMode -eq "full") { "FULL COMPUTER ACCESS" } else { "read-only computer access" }
   Write-Host "Standalone Veridex is running at http://$ListenHost`:$Port (PID $($Process.Id), $AccessLabel)."
-  if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port" }
+  if (-not $NoBrowser) { Open-VeridexBrowser "http://127.0.0.1:$Port" }
 }
 
 function Enable-TailscaleAccess {

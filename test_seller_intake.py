@@ -98,8 +98,43 @@ class SellerIntakeTests(unittest.TestCase):
             item = catalog.create_item({"batch_id": batch["batch_id"], "title": "Lamp"})
             with self.assertRaisesRegex(Exception, "chatgpt.com/share"):
                 catalog.update_item({"item_id": item["item_id"], "chatgpt_thread_url": "https://example.com/thread"})
-            with self.assertRaisesRegex(Exception, "g.co/gemini/share"):
+            with self.assertRaisesRegex(Exception, "public share URL"):
                 catalog.update_item({"item_id": item["item_id"], "gemini_thread_url": "https://example.com/thread"})
+
+    def test_private_ai_links_are_saved_but_only_shared_links_are_importable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = SellerIntakeCatalog(Path(temporary))
+            batch = catalog.create_batch({"title": "AI links"})
+            item = catalog.create_item({"batch_id": batch["batch_id"], "title": "Lamp"})
+            saved = catalog.update_item({
+                "item_id": item["item_id"],
+                "chatgpt_thread_url": "https://chatgpt.com/c/private-conversation",
+                "gemini_thread_url": "https://gemini.google.com/app/private-conversation",
+            })
+            self.assertEqual(saved["chatgpt_thread_url"], "https://chatgpt.com/c/private-conversation")
+            self.assertEqual(saved["gemini_thread_url"], "https://gemini.google.com/app/private-conversation")
+            self.assertFalse(catalog.is_shared_thread_url("chatgpt", saved["chatgpt_thread_url"]))
+            self.assertFalse(catalog.is_shared_thread_url("gemini", saved["gemini_thread_url"]))
+            self.assertTrue(catalog.is_shared_thread_url("chatgpt", "https://chatgpt.com/share/public-conversation"))
+            self.assertTrue(catalog.is_shared_thread_url("gemini", "https://g.co/gemini/share/public-conversation"))
+            self.assertTrue(catalog.is_shared_thread_url("gemini", "https://share.gemini.google/public-conversation"))
+            self.assertTrue(catalog.is_shared_thread_url("gemini", "https://gemini.google.com/share/public-conversation"))
+
+    def test_listing_photos_persist_in_order_without_moving_originals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = SellerIntakeCatalog(Path(temporary))
+            batch = catalog.create_batch({"title": "Listing photos"})
+            item = catalog.create_item({"batch_id": batch["batch_id"], "title": "Lamp"})
+            first = catalog.add_asset(item["item_id"], "front.jpg", b"front", "image/jpeg", "photo")
+            second = catalog.add_asset(item["item_id"], "detail.jpg", b"detail", "image/jpeg", "photo")
+
+            saved = catalog.set_listing_photos(item["item_id"], [second["asset_id"], first["asset_id"]])
+
+            self.assertEqual(saved["listing_photo_asset_ids"], [second["asset_id"], first["asset_id"]])
+            self.assertEqual([row["asset_id"] for row in saved["listing_photos"]], [second["asset_id"], first["asset_id"]])
+            self.assertEqual({row["asset_id"] for row in saved["assets"]}, {first["asset_id"], second["asset_id"]})
+            catalog.delete_asset(item["item_id"], second["asset_id"])
+            self.assertEqual(catalog.get_item(item["item_id"])["listing_photo_asset_ids"], [first["asset_id"]])
 
     def test_delete_item_removes_its_catalog_rows_and_source_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

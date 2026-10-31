@@ -17,6 +17,10 @@
             <div class="eyebrow">Local governed AI</div>
             <div class="brand">Veridex</div>
           </div>
+          <button id="important-mail-indicator" class="important-mail-indicator" type="button" aria-label="Open My Office for important mail" title="Nancy found important mail" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h17v12h-17zM4 7l8 6 8-6" /></svg>
+            <span id="important-mail-count" class="important-mail-count">0</span>
+          </button>
         </div>
 
         <div class="rail-section">
@@ -87,6 +91,10 @@
 
         <footer class="composer-wrap">
           <div id="file-tray" class="file-tray" aria-label="Session files"></div>
+          <section id="nancy-important-mail" class="nancy-important-mail" aria-label="Nancy important mail" aria-live="polite" hidden>
+            <div class="nancy-mail-heading"><div><div class="eyebrow">Nancy Mail</div><h2>Important messages</h2></div><span id="nancy-mail-checked"></span></div>
+            <div id="nancy-mail-list" class="nancy-mail-list"></div>
+          </section>
           <section id="delivery-alerts" class="delivery-alerts" aria-label="Email delivery alerts" aria-live="polite" hidden></section>
           <div id="email-actions" class="email-actions" hidden>
             <span><strong>Nancy Mail</strong><small>Read, reply, and send through your connected Gmail</small></span>
@@ -693,9 +701,8 @@
           <div id="instagram-active-account" class="active-account" hidden></div>
           <form id="instagram-connect-form" class="connected-account-form">
             <label>Username<input id="instagram-username" name="username" autocomplete="username" placeholder="provenancepending" required /></label>
-            <label>Password<input id="instagram-password" name="password" type="password" autocomplete="current-password" placeholder="Enter once to create the session" required /></label>
-            <p class="field-note">Your password is used for this sign-in and is not saved by Veridex. Instagram may open a security or 2FA prompt in Chrome.</p>
-            <div class="connected-account-actions"><button class="primary-action" type="submit">Connect Instagram</button><button id="instagram-verify" type="button">Refresh status</button><button id="instagram-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
+            <p class="field-note">Veridex opens this workspace’s dedicated Instagram window. Enter your password only on Instagram; Veridex never receives it.</p>
+            <div class="connected-account-actions"><button class="primary-action" type="submit">Open or reconnect Instagram</button><button id="instagram-verify" type="button">Refresh status</button><button id="instagram-disconnect" class="danger-action" type="button" hidden>Unassign</button></div>
           </form>
         </section>
         <section class="connected-account-card" aria-labelledby="facebook-account-title">
@@ -794,6 +801,18 @@
       </section>
     </aside>
     <div id="administration-scrim" class="governance-scrim" hidden></div>
+    <dialog id="startup-health-dialog" class="startup-health-dialog" aria-labelledby="startup-health-title">
+      <div class="startup-health-shell">
+        <div class="eyebrow">Veridex startup check</div>
+        <h2 id="startup-health-title">Something needs attention</h2>
+        <ul id="startup-health-issues" class="startup-health-issues"></ul>
+        <p>Would you like to speak to the Navigator?</p>
+        <div class="startup-health-actions">
+          <button id="startup-health-no" type="button">No</button>
+          <button id="startup-health-yes" class="primary-action" type="button">Yes</button>
+        </div>
+      </div>
+    </dialog>
     <div id="toast" class="toast" role="status"></div>
     <script src="/app.js" defer></script>
   </body>

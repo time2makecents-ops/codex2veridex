@@ -22,9 +22,63 @@ from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_instagram_connect_opens_profile_without_receiving_a_password(self) -> None:
+        accounts = Mock()
+        accounts.instagram_env.return_value = {"INSTAGRAM_USERNAME": "provenancepending"}
+        with patch.object(veridex_server, "workspace_context"), patch.object(
+            veridex_server, "ACCOUNTS", accounts
+        ), patch.object(
+            veridex_server, "setup_instagram_profile", return_value={"ok": True, "requires_interaction": True}
+        ) as setup, patch.object(
+            veridex_server.BACKGROUND_MONITOR, "wake"
+        ):
+            result = veridex_server.open_instagram_connection("ws_test", "sess_test", "@provenancepending")
+
+        accounts.assign_instagram.assert_called_once_with("ws_test", "provenancepending")
+        accounts.instagram_env.assert_called_once_with("ws_test")
+        setup.assert_called_once_with(env={"INSTAGRAM_USERNAME": "provenancepending"})
+        self.assertTrue(result["instagram"]["requires_interaction"])
+
+    def test_monitor_routes_validate_workspace_session_and_forward_alert_ids(self) -> None:
+        store = Mock()
+        store.get_workspace.return_value = {"workspace_id": "ws_test"}
+        store.find_session.return_value = {"workspace_id": "ws_test", "session_id": "sess_test"}
+        monitor = Mock()
+        monitor.status.return_value = {"health": {"status": "healthy"}, "mail": {"alerts": []}}
+        monitor.mark_seen.return_value = {"mail": {"unseen_count": 0}}
+        monitor.dismiss.return_value = {"mail": {"alerts": []}}
+        with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "BACKGROUND_MONITOR", monitor):
+            self.assertEqual(veridex_server.monitor_status_response("ws_test", "sess_test")["health"]["status"], "healthy")
+            veridex_server.monitor_seen_response({"workspace_id": "ws_test", "session_id": "sess_test", "alert_ids": ["mail_1"]})
+            veridex_server.monitor_dismiss_response({"workspace_id": "ws_test", "session_id": "sess_test", "alert_id": "mail_1"})
+        monitor.mark_seen.assert_called_once_with("ws_test", ["mail_1"])
+        monitor.dismiss.assert_called_once_with("ws_test", "mail_1")
+
+        store.find_session.return_value = {"workspace_id": "ws_other", "session_id": "sess_test"}
+        with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "BACKGROUND_MONITOR", monitor):
+            with self.assertRaises(KeyError):
+                veridex_server.monitor_status_response("ws_test", "sess_test")
+
     def test_zip_upload_limit_accepts_archives_larger_than_general_uploads(self) -> None:
         self.assertGreaterEqual(veridex_server.MAX_ZIP_UPLOAD_BYTES, 70_427_383)
         self.assertGreater(veridex_server.MAX_ZIP_UPLOAD_BYTES, veridex_server.MAX_UPLOAD_BYTES)
+
+    def test_ebay_item_chat_filters_the_governed_session_transcript_by_item(self) -> None:
+        store = Mock()
+        store.find_session.return_value = {"workspace_id": "ws_test", "session_id": "sess_test", "active_room": "ebay"}
+        store.load_messages.return_value = [
+            {"message_id": "one", "ebay_item_id": "item_one", "text": "first"},
+            {"message_id": "two", "ebay_item_id": "item_two", "text": "second"},
+            {"message_id": "room", "text": "general room chat"},
+        ]
+        intake = Mock()
+        intake.get_item.return_value = {"item_id": "item_one"}
+        with patch.object(veridex_server, "workspace_context"), patch.object(
+            veridex_server, "STORE", store
+        ), patch.object(veridex_server, "SELLER_INTAKE", intake):
+            messages = veridex_server.ebay_item_chat_messages("ws_test", "sess_test", "item_one")
+
+        self.assertEqual([row["message_id"] for row in messages], ["one"])
 
     def test_workspace_activate_returns_selected_workspaces_recent_session(self) -> None:
         selected = {
@@ -75,7 +129,7 @@ class VeridexServerTests(unittest.TestCase):
         self.assertIn("; Secure", pair(False))
         self.assertNotIn("; Secure", pair(True))
 
-    def test_main_starts_and_stops_ebay_notification_poller(self) -> None:
+    def test_main_starts_and_stops_background_pollers(self) -> None:
         server = Mock()
         server.serve_forever.side_effect = KeyboardInterrupt
         with patch.object(veridex_server.argparse.ArgumentParser, "parse_args", return_value=SimpleNamespace(host="127.0.0.1", port=0)), patch.object(
@@ -88,11 +142,17 @@ class VeridexServerTests(unittest.TestCase):
             veridex_server.EBAY_NOTIFICATION_POLLER, "start"
         ) as start, patch.object(
             veridex_server.EBAY_NOTIFICATION_POLLER, "stop"
-        ) as stop:
+        ) as stop, patch.object(
+            veridex_server.BACKGROUND_MONITOR, "start"
+        ) as monitor_start, patch.object(
+            veridex_server.BACKGROUND_MONITOR, "stop"
+        ) as monitor_stop:
             self.assertEqual(veridex_server.main(), 0)
 
         start.assert_called_once_with()
         stop.assert_called_once_with()
+        monitor_start.assert_called_once_with()
+        monitor_stop.assert_called_once_with()
         server.server_close.assert_called_once_with()
 
     def test_price_search_adapter_falls_back_to_partial_exact_query_once(self) -> None:

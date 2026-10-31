@@ -11,8 +11,9 @@ explicitly places that runtime state in scope.
 
 - Explicit Google requests use the dedicated Veridex Chrome profile and cannot
   silently fall back to another provider.
-- Facebook and Instagram use separate repository-local Chrome profiles. Reads
-  are bounded; composing and sending/following are separate steps.
+- Facebook and Instagram use the shared local Provenance Pending Chrome profile
+  configured by the `VERIDEX_PP_CHROME_*` settings. Reads are bounded;
+  composing and sending/following are separate steps.
 - eBay uses OAuth and encrypted workspace-local tokens, defaults new connections
   to Sandbox, and exposes seller tools through governed APIs.
 - Marketplace mutations require `confirm=true` through the app's explicit

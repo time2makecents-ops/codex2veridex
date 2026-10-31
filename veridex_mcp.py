@@ -129,6 +129,10 @@ class VeridexClient:
                 result = self.call("office.workspace_activate", {"workspace_id": resolved_workspace})
                 structured = result.get("structuredContent") if isinstance(result, dict) else {}
                 structured = structured if isinstance(structured, dict) else {}
+                selected_session = str(structured.get("session_id") or "").strip()
+                if not selected_session:
+                    raise RuntimeError("Veridex did not return a session for the requested workspace.")
+                self.session_id = selected_session
             self.workspace_id = str(structured.get("workspace_id") or resolved_workspace).strip()
             return {
                 "active": True,

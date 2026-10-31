@@ -139,6 +139,14 @@ class SellerIntakeCatalog:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS research_questions (
+                    question_id TEXT PRIMARY KEY,
+                    item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    prompt TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS handoffs (
                     handoff_id TEXT PRIMARY KEY,
                     item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
@@ -147,9 +155,25 @@ class SellerIntakeCatalog:
                     artifact_file_ids_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS listing_photos (
+                    item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+                    asset_id TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(item_id, asset_id),
+                    UNIQUE(item_id, position)
+                );
+                CREATE TABLE IF NOT EXISTS touchup_presets (
+                    preset_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    prompt TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS item_batch_idx ON items(batch_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS asset_item_idx ON assets(item_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS evidence_item_idx ON evidence(item_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS listing_photo_item_idx ON listing_photos(item_id, position);
                 """
             )
             item_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(items)").fetchall()}
@@ -164,6 +188,41 @@ class SellerIntakeCatalog:
                 connection.execute("ALTER TABLE assets ADD COLUMN source_asset_id TEXT REFERENCES assets(asset_id)")
             if "transformation_json" not in asset_columns:
                 connection.execute("ALTER TABLE assets ADD COLUMN transformation_json TEXT NOT NULL DEFAULT '{}'")
+            evidence_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(evidence)").fetchall()}
+            if "question_id" not in evidence_columns:
+                connection.execute("ALTER TABLE evidence ADD COLUMN question_id TEXT REFERENCES research_questions(question_id)")
+
+    def list_touchup_presets(self) -> list[Dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute("SELECT preset_id, name, prompt, created_at, updated_at FROM touchup_presets ORDER BY name COLLATE NOCASE").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_touchup_preset(self, value: Dict[str, Any]) -> Dict[str, Any]:
+        name = _text(value.get("name"), 80)
+        prompt = _body(value.get("prompt"), 2000)
+        if not name:
+            raise SellerIntakeError("A touch-up preset name is required")
+        if not prompt:
+            raise SellerIntakeError("A touch-up instruction is required")
+        now = _now()
+        with self._lock, self._connection() as connection:
+            existing = connection.execute("SELECT preset_id FROM touchup_presets WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+            preset_id = str(existing["preset_id"]) if existing else _identifier("touchup")
+            if existing:
+                connection.execute("UPDATE touchup_presets SET name = ?, prompt = ?, updated_at = ? WHERE preset_id = ?", (name, prompt, now, preset_id))
+            else:
+                connection.execute("INSERT INTO touchup_presets(preset_id, name, prompt, created_at, updated_at) VALUES(?, ?, ?, ?, ?)", (preset_id, name, prompt, now, now))
+            row = connection.execute("SELECT preset_id, name, prompt, created_at, updated_at FROM touchup_presets WHERE preset_id = ?", (preset_id,)).fetchone()
+        return dict(row)
+
+    def delete_touchup_preset(self, preset_id: str) -> Dict[str, str]:
+        preset_id = self._safe_id(preset_id, "preset_id")
+        with self._lock, self._connection() as connection:
+            row = connection.execute("SELECT name FROM touchup_presets WHERE preset_id = ?", (preset_id,)).fetchone()
+            if not row:
+                raise KeyError("Unknown touch-up preset")
+            connection.execute("DELETE FROM touchup_presets WHERE preset_id = ?", (preset_id,))
+        return {"preset_id": preset_id, "name": str(row["name"])}
 
     @staticmethod
     def _safe_id(value: Any, label: str) -> str:
@@ -230,11 +289,18 @@ class SellerIntakeCatalog:
             result["tags"] = []
         result["asset_count"] = int(connection.execute("SELECT COUNT(*) FROM assets WHERE item_id = ?", (item["item_id"],)).fetchone()[0])
         result["evidence_count"] = int(connection.execute("SELECT COUNT(*) FROM evidence WHERE item_id = ?", (item["item_id"],)).fetchone()[0])
+        result["listing_photo_count"] = int(connection.execute("SELECT COUNT(*) FROM listing_photos WHERE item_id = ?", (item["item_id"],)).fetchone()[0])
         if detail:
             assets = connection.execute("SELECT * FROM assets WHERE item_id = ? ORDER BY created_at", (item["item_id"],)).fetchall()
             evidence = connection.execute("SELECT * FROM evidence WHERE item_id = ? ORDER BY created_at DESC", (item["item_id"],)).fetchall()
             result["assets"] = [self._public_asset(row) for row in assets]
             result["evidence"] = [self._public_evidence(row) for row in evidence]
+            listing_rows = connection.execute(
+                "SELECT assets.* FROM listing_photos JOIN assets ON assets.asset_id = listing_photos.asset_id WHERE listing_photos.item_id = ? ORDER BY listing_photos.position",
+                (item["item_id"],),
+            ).fetchall()
+            result["listing_photos"] = [self._public_asset(row) for row in listing_rows]
+            result["listing_photo_asset_ids"] = [row["asset_id"] for row in listing_rows]
         return result
 
     def _write_snapshot(self, connection: sqlite3.Connection, item_id: str) -> None:
@@ -326,8 +392,8 @@ class SellerIntakeCatalog:
         if not url:
             return ""
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc.lower() != "chatgpt.com" or not parsed.path.startswith("/share/"):
-            raise SellerIntakeError("ChatGPT thread link must be an https://chatgpt.com/share/... URL")
+        if parsed.scheme != "https" or parsed.netloc.lower() != "chatgpt.com" or not (parsed.path.startswith("/share/") or parsed.path.startswith("/c/")):
+            raise SellerIntakeError("ChatGPT link must be an https://chatgpt.com/share/... or https://chatgpt.com/c/... URL")
         return url
 
     @staticmethod
@@ -336,9 +402,30 @@ class SellerIntakeCatalog:
         if not url:
             return ""
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc.lower() != "g.co" or not parsed.path.startswith("/gemini/share/"):
-            raise SellerIntakeError("Gemini thread link must be an https://g.co/gemini/share/... URL")
+        public_share = (
+            (parsed.netloc.lower() == "g.co" and parsed.path.startswith("/gemini/share/"))
+            or (parsed.netloc.lower() == "share.gemini.google" and parsed.path.strip("/") != "")
+            or (parsed.netloc.lower() == "gemini.google.com" and parsed.path.startswith("/share/"))
+        )
+        private_thread = parsed.netloc.lower() == "gemini.google.com" and parsed.path.startswith("/app/")
+        if parsed.scheme != "https" or not (public_share or private_thread):
+            raise SellerIntakeError("Gemini link must be a public share URL or an https://gemini.google.com/app/... URL")
         return url
+
+    @staticmethod
+    def is_shared_thread_url(provider: str, value: Any) -> bool:
+        parsed = urlparse(str(value or "").strip())
+        if parsed.scheme != "https":
+            return False
+        if provider == "chatgpt":
+            return parsed.netloc.lower() == "chatgpt.com" and parsed.path.startswith("/share/")
+        if provider == "gemini":
+            return (
+                (parsed.netloc.lower() == "g.co" and parsed.path.startswith("/gemini/share/"))
+                or (parsed.netloc.lower() == "share.gemini.google" and parsed.path.strip("/") != "")
+                or (parsed.netloc.lower() == "gemini.google.com" and parsed.path.startswith("/share/"))
+            )
+        return False
 
     def get_item(self, item_id: str) -> Dict[str, Any]:
         with self._connection() as connection:
@@ -503,11 +590,37 @@ class SellerIntakeCatalog:
             if self.root not in path.parents or not path.is_file():
                 raise SellerIntakeError("Stored asset is unavailable")
             path.unlink()
+            connection.execute("DELETE FROM listing_photos WHERE item_id = ? AND asset_id = ?", (item_id, asset_id))
             connection.execute("DELETE FROM assets WHERE asset_id = ?", (asset_id,))
             connection.execute("UPDATE items SET updated_at = ? WHERE item_id = ?", (_now(), item_id))
             connection.execute("UPDATE batches SET updated_at = ? WHERE batch_id = ?", (_now(), item["batch_id"]))
             self._write_snapshot(connection, item_id)
             return {"asset_id": asset_id, "item_id": item_id, "name": str(asset["name"])}
+
+    def set_listing_photos(self, item_id: str, asset_ids: Any) -> Dict[str, Any]:
+        """Persist one ordered, non-destructive listing-photo set for an item."""
+        item_id = self._safe_id(item_id, "item_id")
+        if not isinstance(asset_ids, list):
+            raise SellerIntakeError("Listing photos must be an ordered list")
+        normalized = [self._safe_id(asset_id, "asset_id") for asset_id in asset_ids]
+        if len(normalized) != len(set(normalized)):
+            raise SellerIntakeError("A listing photo may be selected only once")
+        with self._lock, self._connection() as connection:
+            item = self._item_row(connection, item_id)
+            for asset_id in normalized:
+                asset = self._asset_row(connection, asset_id)
+                if str(asset["item_id"]) != item_id or str(asset["role"]) != "photo":
+                    raise SellerIntakeError("Listing photos must belong to this item and be photos")
+            now = _now()
+            connection.execute("DELETE FROM listing_photos WHERE item_id = ?", (item_id,))
+            connection.executemany(
+                "INSERT INTO listing_photos(item_id, asset_id, position, created_at) VALUES(?, ?, ?, ?)",
+                [(item_id, asset_id, position, now) for position, asset_id in enumerate(normalized)],
+            )
+            connection.execute("UPDATE items SET updated_at = ? WHERE item_id = ?", (now, item_id))
+            connection.execute("UPDATE batches SET updated_at = ? WHERE batch_id = ?", (now, item["batch_id"]))
+            self._write_snapshot(connection, item_id)
+            return self._public_item(connection, self._item_row(connection, item_id))
 
     def add_source_text(self, value: Dict[str, Any]) -> Dict[str, Any]:
         item_id = self._safe_id(value.get("item_id"), "item_id")
@@ -534,12 +647,33 @@ class SellerIntakeCatalog:
                 asset = connection.execute("SELECT asset_id FROM assets WHERE asset_id = ? AND item_id = ?", (source_asset_id, item_id)).fetchone()
                 if not asset: raise SellerIntakeError("Evidence source does not belong to this item")
             connection.execute(
-                "INSERT INTO evidence(evidence_id, item_id, kind, claim, source_asset_id, source_excerpt, observed_date, location_text, confidence, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (evidence_id, item_id, _text(value.get("kind"), 80) or "note", claim, source_asset_id or None, _body(value.get("source_excerpt"), 4000), _text(value.get("observed_date"), 80), _text(value.get("location_text"), 240), _text(value.get("confidence"), 80) or "unrated", status, now, now),
+                "INSERT INTO evidence(evidence_id, item_id, question_id, kind, claim, source_asset_id, source_excerpt, observed_date, location_text, confidence, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (evidence_id, item_id, str(value.get("question_id") or "").strip() or None, _text(value.get("kind"), 80) or "note", claim, source_asset_id or None, _body(value.get("source_excerpt"), 4000), _text(value.get("observed_date"), 80), _text(value.get("location_text"), 240), _text(value.get("confidence"), 80) or "unrated", status, now, now),
             )
             connection.execute("UPDATE items SET updated_at = ? WHERE item_id = ?", (now, item_id))
             self._write_snapshot(connection, item_id)
             return self._public_evidence(connection.execute("SELECT * FROM evidence WHERE evidence_id = ?", (evidence_id,)).fetchone())
+
+    def list_questions(self, item_id: str) -> list[Dict[str, Any]]:
+        item_id = self._safe_id(item_id, "item_id")
+        with self._connection() as connection:
+            rows = connection.execute("SELECT * FROM research_questions WHERE item_id=? ORDER BY updated_at DESC, title", (item_id,)).fetchall()
+            return [{**dict(row), "findings": [self._public_evidence(e) for e in connection.execute("SELECT * FROM evidence WHERE question_id=? ORDER BY created_at DESC", (row["question_id"],)).fetchall()]} for row in rows]
+
+    def save_question(self, value: Dict[str, Any]) -> Dict[str, Any]:
+        item_id = self._safe_id(value.get("item_id"), "item_id")
+        title = _text(value.get("title"), 200)
+        if not title:
+            raise SellerIntakeError("Question title is required")
+        question_id = str(value.get("question_id") or "").strip() or _identifier("question")
+        now = _now()
+        with self._lock, self._connection() as connection:
+            self._item_row(connection, item_id)
+            connection.execute("INSERT INTO research_questions(question_id,item_id,title,prompt,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(question_id) DO UPDATE SET title=excluded.title,prompt=excluded.prompt,updated_at=excluded.updated_at", (question_id, item_id, title, _body(value.get("prompt"), 5000), now, now))
+            self._write_snapshot(connection, item_id)
+            row = connection.execute("SELECT * FROM research_questions WHERE question_id=?", (question_id,)).fetchone()
+            findings = connection.execute("SELECT * FROM evidence WHERE question_id=? ORDER BY created_at DESC", (question_id,)).fetchall()
+        return {**dict(row), "findings": [self._public_evidence(item) for item in findings]}
 
     def _asset_row(self, connection: sqlite3.Connection, asset_id: str) -> sqlite3.Row:
         row = connection.execute("SELECT * FROM assets WHERE asset_id = ?", (self._safe_id(asset_id, "asset_id"),)).fetchone()
@@ -585,12 +719,23 @@ class SellerIntakeCatalog:
             workbook.save(xlsx_path)
             return {"batch": self._public_batch(batch, len(rows)), "exports": [{"name": csv_path.name, "relative_path": csv_path.relative_to(self.root).as_posix(), "content_type": "text/csv", "size": csv_path.stat().st_size}, {"name": xlsx_path.name, "relative_path": xlsx_path.relative_to(self.root).as_posix(), "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "size": xlsx_path.stat().st_size}]}
 
-    def handoff_to_veridex(self, item_id: str, workspace_id: str, session_id: str, store: Any) -> Dict[str, Any]:
+    def handoff_to_veridex(self, item_id: str, workspace_id: str, session_id: str, store: Any, *, asset_ids: Optional[list[str]] = None) -> Dict[str, Any]:
         with self._lock, self._connection() as connection:
             item = self._item_row(connection, item_id)
             public = self._public_item(connection, item)
+            selected_ids = [str(asset_id) for asset_id in asset_ids] if asset_ids is not None else None
+            if selected_ids is not None:
+                if len(selected_ids) != len(set(selected_ids)):
+                    raise SellerIntakeError("Handoff files must be unique")
+                assets_by_id = {str(asset["asset_id"]): asset for asset in public["assets"]}
+                try:
+                    assets_to_save = [assets_by_id[asset_id] for asset_id in selected_ids]
+                except KeyError as exc:
+                    raise SellerIntakeError("A selected handoff file does not belong to this item") from exc
+            else:
+                assets_to_save = public["assets"]
             saved = []
-            for asset in public["assets"]:
+            for asset in assets_to_save:
                 source_row = self._asset_row(connection, asset["asset_id"])
                 source_path = (self.root / str(source_row["relative_path"])).resolve()
                 if not source_path.is_file(): raise SellerIntakeError(f"Stored asset is unavailable: {asset['name']}")
@@ -599,7 +744,7 @@ class SellerIntakeCatalog:
             brief = {
                 "seller_intake_item": {key: public.get(key) for key in ("item_id", "batch_id", "reference_id", "title", "description", "estimated_value", "currency", "research_needed", "status", "notes", "chatgpt_thread_url", "gemini_thread_url", "tags")},
                 "evidence": public["evidence"],
-                "source_assets": [{key: asset.get(key) for key in ("asset_id", "name", "content_type", "sha256")} for asset in public["assets"]],
+                "source_assets": [{key: asset.get(key) for key in ("asset_id", "name", "content_type", "sha256")} for asset in assets_to_save],
                 "instruction": "These are source materials from Seller Intake. Treat timeline entries as source-linked notes, not authentication or valuation facts. External research still requires the normal Veridex confirmation path.",
             }
             brief_file = store.save_file(workspace_id, session_id, f"{item_id}_research_brief.json", json.dumps(brief, ensure_ascii=False, indent=2).encode("utf-8"), "application/json", source="seller_intake_handoff", kind="upload", description=f"Seller Intake research brief for {item_id}", metadata={"seller_intake": {"item_id": item_id, "batch_id": item["batch_id"]}})

@@ -16,18 +16,19 @@ import shutil
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
-from PIL import Image, ImageChops, ImageEnhance, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
 from animation_studio import AnimationStudio, ROOM_ID as ANIMATION_STUDIO_ROOM_ID
 from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
+from background_monitor import BackgroundMonitor
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
@@ -41,6 +42,7 @@ from facebook_chrome_bridge import (
     login_facebook,
     prepare_facebook_group_share,
     prepare_marketplace_listing,
+    read_facebook_group,
     read_facebook_profile,
     resume_marketplace_listing,
     send_facebook_message,
@@ -60,7 +62,6 @@ from instagram_chrome_bridge import (
     draft_instagram_message,
     follow_instagram_account,
     instagram_profile_status,
-    login_instagram,
     read_instagram_profile,
     send_instagram_message,
     setup_instagram_profile,
@@ -209,6 +210,8 @@ def _thread_import_payload(item_id: str, provider: str) -> tuple[Dict[str, Any],
     thread_url = str(item.get(key) or "").strip()
     if provider not in {"chatgpt", "gemini"} or not thread_url:
         raise ValueError(f"This item has no saved {provider.title()} shared link")
+    if not SELLER_INTAKE.is_shared_thread_url(provider, thread_url):
+        raise ValueError("Only a public shared link can be previewed or imported. This private conversation link is stored locally only.")
     extracted = import_shared_thread(thread_url)
     if str(extracted.get("thread_provider") or "") != provider:
         raise ValueError("The saved shared link did not match the requested provider")
@@ -225,6 +228,104 @@ def preview_shared_thread_import(item_id: str, provider: str) -> Dict[str, Any]:
         "text_characters": len(text),
         "text_preview": text[:3000],
         "image_count": min(MAX_THREAD_IMPORT_IMAGES, len(extracted.get("images") or [])),
+    }
+
+
+def _thread_section(text: str, start: str, end: str = "") -> str:
+    """Return a labeled portion of a shared AI thread without inventing facts."""
+    match = re.search(start, text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    value = text[match.end():]
+    if end:
+        boundary = re.search(end, value, flags=re.IGNORECASE | re.DOTALL)
+        if boundary:
+            value = value[:boundary.start()]
+    return value.strip()
+
+
+def _thread_field(text: str, labels: list[str], *, fallback: Any = "") -> Any:
+    """Read a short labeled field from a thread, preserving the author’s wording."""
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:^|\n)\s*(?:{label_pattern})\s*:\s*(.+?)(?=\n\s*[A-Z][A-Za-z /&()-]{{1,42}}\s*:|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return fallback
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _thread_first_line(text: str, labels: list[str], *, fallback: Any = "") -> Any:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?:^|\n)\s*(?:{label_pattern})\s*:\s*(?:\n\s*)?([^\n]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else fallback
+
+
+def _thread_price(value: Any, fallback: Any = None) -> Any:
+    match = re.search(r"\$\s*([0-9]+(?:\.[0-9]{1,2})?)", str(value or ""))
+    return float(match.group(1)) if match else fallback
+
+
+def marketplace_listing_plan_from_thread(text: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn a reviewed shared-thread proposal into editable eBay/Facebook drafts.
+
+    This deliberately extracts only the thread's visible wording. Missing fields fall
+    back to the local item and are marked for review rather than being synthesized.
+    """
+    source = str(text or "").strip()
+    facebook_text = _thread_section(source, r"(?:^|\n)\s*(?:option\s*1\s*:\s*)?facebook marketplace", r"(?:^|\n)\s*option\s*2\s*:\s*ebay") or source
+    ebay_text = _thread_section(source, r"(?:^|\n)\s*(?:option\s*2\s*:\s*)?ebay(?:\s*\([^)]*\))?", r"tips?\s+for\s+inspecting") or source
+    item_title = str(item.get("title") or "")
+    item_description = str(item.get("description") or "")
+    item_price = item.get("estimated_value")
+    facebook_title = _thread_first_line(facebook_text, ["Title Options", "Title"], fallback=item_title)
+    ebay_title = _thread_first_line(ebay_text, ["Optimized Title", "Title"], fallback=item_title)
+    facebook_price_text = _thread_field(facebook_text, ["Price"], fallback="")
+    ebay_price_text = _thread_field(ebay_text, ["Buy It Now", "Price", "Pricing Strategy"], fallback="")
+    facebook_description = _thread_section(facebook_text, r"(?:^|\n)\s*Description\s*:", r"(?:^|\n)\s*(?:Item Specifics|Tips?\s+for|Condition)\s*:") or item_description
+    ebay_description = _thread_section(ebay_text, r"(?:^|\n)\s*Description\s*:", r"(?:^|\n)\s*(?:Tips?\s+for|Condition)\s*:") or item_description
+    specifics = _thread_section(ebay_text, r"(?:^|\n)\s*Item Specifics\s*:", r"(?:^|\n)\s*Description\s*:")
+    return {
+        "review_required": True,
+        "source_kind": "shared_ai_thread",
+        "ebay": {
+            "title": facebook_title if not ebay_title else ebay_title,
+            "description": ebay_description,
+            "price": _thread_price(ebay_price_text, item_price),
+            "currency": str(item.get("currency") or "USD"),
+            "shipping": _thread_field(ebay_text, ["Shipping"], fallback=""),
+            "offer_note": _thread_field(ebay_text, ["Pricing Strategy", "Best Offer"], fallback=""),
+            "item_specifics": specifics,
+            "condition": _thread_field(ebay_text, ["Condition"], fallback=""),
+        },
+        "facebook": {
+            "title": facebook_title,
+            "description": facebook_description,
+            "price": _thread_price(facebook_price_text, item_price),
+            "currency": str(item.get("currency") or "USD"),
+            "category": _thread_field(facebook_text, ["Category"], fallback=""),
+            "location": _thread_field(facebook_text, ["Location"], fallback=""),
+            "condition": _thread_field(facebook_text, ["Condition"], fallback=""),
+            "pricing_note": facebook_price_text,
+        },
+    }
+
+
+def build_shared_thread_marketplace_plan(item_id: str, provider: str) -> Dict[str, Any]:
+    # This stays a read-only transformation; saving is a separate, explicit UI action.
+    item, thread_url, extracted = _thread_import_payload(item_id, provider)
+    plan = marketplace_listing_plan_from_thread(str(extracted.get("text") or ""), item)
+    return {
+        "provider": provider,
+        "thread_url": thread_url,
+        "page_title": str(extracted.get("page_title") or ""),
+        "plan": plan,
     }
 
 
@@ -305,6 +406,102 @@ def _touchup_jpeg(content: bytes, operation: str, options: Dict[str, Any]) -> tu
                 metadata["crop"] = {"method": "edge-contrast", "applied": False}
         else:
             metadata["crop"] = {"method": "edge-contrast", "applied": False}
+    elif operation == "adjust":
+        def adjustment(name: str, default: float = 0.0, minimum: float = -100.0, maximum: float = 100.0) -> float:
+            try:
+                value = float(options.get(name, default))
+            except (TypeError, ValueError):
+                raise ValueError(f"{name} must be a number") from None
+            if not math.isfinite(value) or value < minimum or value > maximum:
+                raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
+            return value
+
+        crop_values = [options.get(key) for key in ("left_percent", "top_percent", "right_percent", "bottom_percent")]
+        if any(value is not None for value in crop_values):
+            try:
+                left_percent = float(options.get("left_percent") or 0)
+                top_percent = float(options.get("top_percent") or 0)
+                right_percent = float(options.get("right_percent") if options.get("right_percent") is not None else 100)
+                bottom_percent = float(options.get("bottom_percent") if options.get("bottom_percent") is not None else 100)
+            except (TypeError, ValueError):
+                raise ValueError("Crop controls are invalid") from None
+            if not all(math.isfinite(value) and 0 <= value <= 100 for value in (left_percent, top_percent, right_percent, bottom_percent)):
+                raise ValueError("Crop controls must be percentages from 0 to 100")
+            left, top = round(width * left_percent / 100), round(height * top_percent / 100)
+            right, bottom = round(width * right_percent / 100), round(height * bottom_percent / 100)
+            if right - left < 32 or bottom - top < 32:
+                raise ValueError("Keep a crop area at least 32 pixels wide and high")
+            image = image.crop((left, top, right, bottom))
+            width, height = image.size
+            metadata["crop"] = {"left_percent": left_percent, "top_percent": top_percent, "right_percent": right_percent, "bottom_percent": bottom_percent}
+
+        rotation = adjustment("rotation", 0, -360, 360)
+        if rotation:
+            rotation = (round(rotation / 90) * 90) % 360
+            image = image.rotate(-rotation, expand=True)
+            metadata["rotation"] = rotation
+        brightness = adjustment("brightness")
+        exposure = adjustment("exposure")
+        contrast = adjustment("contrast")
+        saturation = adjustment("saturation")
+        warmth = adjustment("warmth")
+        highlights = adjustment("highlights")
+        shadows = adjustment("shadows")
+        sharpness = adjustment("sharpness")
+        definition = adjustment("definition")
+        if exposure or brightness:
+            image = ImageEnhance.Brightness(image).enhance((2 ** (exposure / 100)) * (1 + brightness / 100))
+        if contrast or definition:
+            image = ImageEnhance.Contrast(image).enhance(max(0.05, 1 + contrast / 100 + definition / 200))
+        if saturation:
+            image = ImageEnhance.Color(image).enhance(max(0, 1 + saturation / 100))
+        if sharpness:
+            image = ImageEnhance.Sharpness(image).enhance(max(0, 1 + sharpness / 100))
+        if warmth:
+            warm = warmth / 100
+            red_lookup = [max(0, min(255, round(value + 32 * warm))) for value in range(256)]
+            blue_lookup = [max(0, min(255, round(value - 32 * warm))) for value in range(256)]
+            red, green, blue = image.split()
+            image = Image.merge("RGB", (red.point(red_lookup), green, blue.point(blue_lookup)))
+        if highlights or shadows:
+            def tone_lookup(value: int) -> int:
+                level = value / 255
+                delta = 0
+                if shadows and level < 0.55:
+                    delta += (shadows / 100) * ((0.55 - level) / 0.55) * 0.35
+                if highlights and level > 0.45:
+                    delta += (highlights / 100) * ((level - 0.45) / 0.55) * 0.35
+                return max(0, min(255, round((level + delta) * 255)))
+            lookup = [tone_lookup(value) for value in range(256)]
+            image = Image.merge("RGB", tuple(channel.point(lookup) for channel in image.split()))
+        metadata["adjustments"] = {
+            key: value for key, value in {
+                "brightness": brightness, "exposure": exposure, "contrast": contrast,
+                "saturation": saturation, "warmth": warmth, "highlights": highlights,
+                "shadows": shadows, "sharpness": sharpness, "definition": definition,
+            }.items() if value
+        }
+    elif operation == "marketplace_auto":
+        # Conservative, local-only marketplace pass. It improves the photograph
+        # without synthesizing pixels, replacing the background, or changing the
+        # object's geometry/condition. Highlight softening is limited to bright
+        # low-saturation peaks whose surrounding area is materially darker.
+        image = ImageOps.autocontrast(image, cutoff=1)
+        image = ImageEnhance.Color(image).enhance(1.03)
+        image = ImageEnhance.Contrast(image).enhance(1.03)
+        image = ImageEnhance.Sharpness(image).enhance(1.04)
+        gray = ImageOps.grayscale(image)
+        blurred_gray = gray.filter(ImageFilter.GaussianBlur(radius=3))
+        bright = gray.point(lambda value: 255 if value >= 245 else 0)
+        surrounding = blurred_gray.point(lambda value: max(0, min(255, (232 - value) * 4)))
+        glare_mask = ImageChops.multiply(bright, surrounding).filter(ImageFilter.GaussianBlur(radius=1.25))
+        if glare_mask.getbbox():
+            softened = ImageEnhance.Brightness(image).enhance(0.90)
+            image = Image.composite(softened, image, glare_mask)
+            metadata["glare_softening"] = {"applied": True, "method": "conservative-highlight-peaks", "strength": 0.10}
+        else:
+            metadata["glare_softening"] = {"applied": False, "method": "conservative-highlight-peaks"}
+        metadata["adjustments"] = {"autocontrast_cutoff": 1, "color": 1.03, "contrast": 1.03, "sharpness": 1.04}
     elif operation == "auto_adjust":
         image = ImageOps.autocontrast(image, cutoff=1)
         image = ImageEnhance.Color(image).enhance(1.05)
@@ -325,7 +522,7 @@ def touch_up_intake_photo(payload: Dict[str, Any]) -> Dict[str, Any]:
     asset, content, facts = _intake_photo_source(item_id, asset_id)
     options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
     stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(asset["name"])).stem).strip("-")[:80] or "photo"
-    if operation in {"crop", "auto_crop", "auto_adjust"}:
+    if operation in {"crop", "auto_crop", "auto_adjust", "marketplace_auto", "adjust"}:
         output, transformation = _touchup_jpeg(content, operation, options)
         filename, content_type = f"{stem}--{operation}.jpg", "image/jpeg"
     elif operation == "ai":
@@ -362,6 +559,7 @@ def touch_up_intake_photo(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "prompt": instruction,
                 "aspect": aspect,
                 "variants": 1,
+                "timeout_seconds": _environment_int("VERIDEX_CODEX_IMAGE_TIMEOUT_SECONDS", 180, 30, 600),
             }, [{"name": asset["name"], "content": content, "content_type": asset["content_type"], "path": str(source_path)}])[0]
         else:
             raise ValueError("Choose Codex image tools or Cloudflare reference edit")
@@ -371,7 +569,7 @@ def touch_up_intake_photo(payload: Dict[str, Any]) -> Dict[str, Any]:
         content_type = str(result.get("content_type") or generated["content_type"])
         transformation = {"operation": "ai_touch_up", "prompt": prompt, "provider": provider, **(result.get("metadata") if isinstance(result.get("metadata"), dict) else {})}
     else:
-        raise ValueError("Choose crop, auto crop, auto adjust, or AI touch-up")
+        raise ValueError("Choose marketplace auto touch-up, crop, auto crop, auto adjust, adjust, or AI touch-up")
     saved = SELLER_INTAKE.add_asset(item_id, filename, output, content_type, "photo", source_asset_id=asset_id, transformation=transformation)
     return {"asset": saved, "item": SELLER_INTAKE.get_item(item_id)}
 
@@ -688,6 +886,15 @@ def ebay_room_bootstrap(workspace_id: str, session_id: str, batch_id: str = "") 
     }
 
 
+def ebay_item_chat_messages(workspace_id: str, session_id: str, item_id: str) -> list[Dict[str, Any]]:
+    ebay_room_context(workspace_id, session_id)
+    item = SELLER_INTAKE.get_item(item_id)
+    return [
+        row for row in STORE.load_messages(workspace_id, session_id)
+        if str(row.get("ebay_item_id") or "") == str(item["item_id"])
+    ]
+
+
 def ebay_automatic_notification_status(workspace_id: str) -> Dict[str, Any]:
     status = EBAY_NOTIFICATION_POLLER.status(workspace_id)
     status["workspace_enabled"] = ACCOUNTS.ebay_automatic_notifications_enabled(workspace_id)
@@ -696,6 +903,17 @@ def ebay_automatic_notification_status(workspace_id: str) -> Dict[str, Any]:
 
 def workspace_instagram_env(workspace_id: str) -> Dict[str, str]:
     return ACCOUNTS.instagram_env(workspace_id)
+
+
+def open_instagram_connection(workspace_id: str, session_id: str, username: str) -> Dict[str, Any]:
+    workspace_context(workspace_id, session_id)
+    handle = str(username or "").strip().lstrip("@")
+    if not handle:
+        raise ValueError("Instagram username is required.")
+    ACCOUNTS.assign_instagram(workspace_id, handle)
+    result = setup_instagram_profile(env=ACCOUNTS.instagram_env(workspace_id))
+    BACKGROUND_MONITOR.wake()
+    return {"instagram": {"assigned": True, "username": handle, **result}}
 
 
 def verified_instagram_env(workspace_id: str) -> Dict[str, str]:
@@ -978,6 +1196,62 @@ def governance_status(workspace_id: str, session_id: str = "") -> Dict[str, Any]
     status["latest_incident"] = incidents[-1] if incidents else None
     status["persistent_memo_count"] = len(STORE.list_governance_memos(workspace_id))
     return status
+
+
+def background_core_check(workspace_id: str) -> list[Dict[str, str]]:
+    """Return bounded, read-only core readiness issues for one workspace."""
+    issues: list[Dict[str, str]] = []
+    try:
+        STORE.get_workspace(workspace_id)
+    except Exception as exc:
+        return [{"service": "Workspace", "summary": f"Workspace state is unavailable: {exc}"}]
+    try:
+        status = governance_status(workspace_id)
+        navigator = status.get("navigator") if isinstance(status.get("navigator"), dict) else {}
+        if str(navigator.get("status") or "").upper() != "ACTIVE":
+            issues.append({"service": "Navigator", "summary": "Navigator is not reporting an active state."})
+        if not str(status.get("registry_sha256") or ""):
+            issues.append({"service": "Navigator", "summary": "The governance snapshot checksum is unavailable."})
+    except Exception as exc:
+        issues.append({"service": "Navigator", "summary": f"Governance readiness check failed: {exc}"})
+    room_ids = {str(row.get("id") or "") for row in rooms_payload()}
+    if "control_room" not in room_ids:
+        issues.append({"service": "Room routing", "summary": "Navigator's Control Room is unavailable."})
+    if "my_office" not in room_ids:
+        issues.append({"service": "Room routing", "summary": "Nancy's My Office is unavailable."})
+    return issues
+
+
+BACKGROUND_MONITOR = BackgroundMonitor(
+    data_root=DATA_ROOT,
+    workspace_rows=STORE.list_workspaces,
+    accounts=ACCOUNTS,
+    shared_gmail=ACCOUNTS.shared_gmail,
+    facebook_status=facebook_profile_status,
+    instagram_status=instagram_profile_status,
+    ebay_poller_status=ebay_automatic_notification_status,
+    core_check=background_core_check,
+    mail_interval_seconds=_environment_int("VERIDEX_MAIL_MONITOR_SECONDS", 3600, 60, 3600),
+    health_interval_seconds=_environment_int("VERIDEX_HEALTH_MONITOR_SECONDS", 1800, 60, 21600),
+)
+
+
+def monitor_status_response(workspace_id: str, session_id: str) -> Dict[str, Any]:
+    workspace_context(workspace_id, session_id)
+    return BACKGROUND_MONITOR.status(workspace_id)
+
+
+def monitor_seen_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    workspace_context(workspace_id, str(payload.get("session_id") or "").strip())
+    alert_ids = payload.get("alert_ids") if isinstance(payload.get("alert_ids"), list) else []
+    return BACKGROUND_MONITOR.mark_seen(workspace_id, alert_ids)
+
+
+def monitor_dismiss_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    workspace_context(workspace_id, str(payload.get("session_id") or "").strip())
+    return BACKGROUND_MONITOR.dismiss(workspace_id, str(payload.get("alert_id") or ""))
 
 
 def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -1282,6 +1556,7 @@ def codex_art_assets(
         },
         "attachment_paths": [str(row.get("path") or "") for row in sources if str(row.get("path") or "")],
         "artifact_output_dir": str(output_dir),
+        "timeout_seconds": payload.get("timeout_seconds"),
     })
     assets: list[Dict[str, Any]] = []
     for candidate in sorted(output_dir.rglob("*")):
@@ -1514,19 +1789,12 @@ def local_chat_response(
     task_type: str,
     **extra: Any,
 ) -> Dict[str, Any]:
-    message_metadata = extra.pop("message_metadata", {})
+    message_metadata = dict(extra.pop("message_metadata", {}) or {})
+    if user_message.get("ebay_item_id"):
+        message_metadata.setdefault("ebay_item_id", user_message["ebay_item_id"])
     response_provider = str(extra.pop("response_provider", "veridex_router"))
-    assistant_message = STORE.append_message(
-        workspace_id,
-        session_id,
-        "assistant",
-        text,
-        speaker=speaker,
-        provider=response_provider,
-        model="deterministic",
-        reasoning_effort="none",
-        task_type=task_type,
-        **(message_metadata if isinstance(message_metadata, dict) else {}),
+    assistant_message = {"role": "assistant", "content": text, "speaker": speaker, "provider": response_provider, "task_type": task_type, **(message_metadata if isinstance(message_metadata, dict) else {})} if ephemeral else STORE.append_message(
+        workspace_id, session_id, "assistant", text, speaker=speaker, provider=response_provider, model="deterministic", reasoning_effort="none", task_type=task_type, **(message_metadata if isinstance(message_metadata, dict) else {})
     )
     return {
         "ok": True,
@@ -1653,6 +1921,7 @@ def gmail_chat_response(
     draft_override: Optional[Dict[str, Any]] = None,
     attachments: Optional[list[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    ephemeral = bool(extra.pop("ephemeral", False))
     pending = STORE.pending_email(workspace_id, session_id) if GMAIL_CONFIRM_RE.search(str(prompt or "")) else {}
     requested_scope = str(pending.get("account_scope") or "") if pending else ""
     try:
@@ -3580,6 +3849,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     request_id = str(payload.get("request_id") or "").strip()
+    ephemeral = bool(payload.get("_ephemeral"))
     cancel_event = payload.get("_cancel_event")
     if not session_id:
         raise ValueError("session_id is required")
@@ -3605,20 +3875,22 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     active_room = str(session.get("active_room") or "lobby")
     active_persona = str(session.get("active_persona") or "Receptionist")
+    ebay_item_id = str(payload.get("ebay_item_id") or "").strip()
+    ebay_item = None
+    if ebay_item_id:
+        if active_room != "ebay":
+            raise ValueError("Item-specific Bob chat is available only in the eBay room.")
+        ebay_item = SELLER_INTAKE.get_item(ebay_item_id)
     if structured_email_draft and (active_room != "my_office" or active_persona != "Nancy"):
         raise ValueError("structured email drafts are available only with Nancy in My Office")
     room = room_by_id(active_room) or room_by_id("lobby")
     room_title = str(room["title"] if room else "Lobby")
     previous = STORE.load_messages(workspace_id, session_id, limit=24)
+    if ebay_item_id:
+        previous = [row for row in previous if str(row.get("ebay_item_id") or "") == ebay_item_id]
     public_attachments = [public_file(row) for row in attachments]
-    user_message = STORE.append_message(
-        workspace_id,
-        session_id,
-        "user",
-        user_prompt,
-        speaker="You",
-        attachments=public_attachments,
-        request_id=request_id,
+    user_message = {"role": "user", "content": user_prompt, "speaker": "You", "attachments": public_attachments, "request_id": request_id, "ebay_item_id": ebay_item_id} if ephemeral else STORE.append_message(
+        workspace_id, session_id, "user", user_prompt, speaker="You", attachments=public_attachments, request_id=request_id, ebay_item_id=ebay_item_id
     )
     payload["_persisted_user_message"] = user_message
     if cancel_event is not None and cancel_event.is_set():
@@ -3925,6 +4197,26 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "latest_sync": ebay_board.get("latest_sync"),
             "inventory_url": "/ebay-room",
         }
+        if ebay_item:
+            context["ebay_item"] = {
+                "item_id": ebay_item["item_id"],
+                "title": ebay_item.get("title"),
+                "description": ebay_item.get("description"),
+                "estimated_value": ebay_item.get("estimated_value"),
+                "currency": ebay_item.get("currency"),
+                "status": ebay_item.get("status"),
+                "reference_id": ebay_item.get("reference_id"),
+                "tags": ebay_item.get("tags") or [],
+                "notes": ebay_item.get("notes"),
+                "evidence": ebay_item.get("evidence") or [],
+                "listing_photo_asset_ids": ebay_item.get("listing_photo_asset_ids") or [],
+                "photo_names": [row.get("name") for row in (ebay_item.get("assets") or []) if row.get("role") == "photo"],
+            }
+        context["facebook_groups"] = (
+            workspace_ebay_room(workspace_id).group_context(ebay_item_id)
+            if ebay_item_id
+            else workspace_ebay_room(workspace_id).facebook_groups()
+        )
     context["current_local_date"] = datetime.now().astimezone().date().isoformat()
     context["event_time_scope"] = (
         "upcoming_only"
@@ -4177,7 +4469,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     response_text = str(result["text"])
     if generated_artifacts:
         response_text = f"{response_text.rstrip()}\n\n{generated_artifact_report(generated_artifacts)}"
-    assistant_message = STORE.append_message(
+    assistant_message = ({"role": "assistant", "content": response_text, "speaker": "Leo", "provider": result["provider"], "model": result["model"], "reasoning_effort": result["reasoning_effort"], "task_type": result["task_type"]} if ephemeral else STORE.append_message(
         workspace_id,
         session_id,
         "assistant",
@@ -4194,7 +4486,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         execution_evidence=evidence,
         generated_artifacts=generated_artifacts,
         request_id=request_id,
-    )
+        ebay_item_id=ebay_item_id,
+    ))
     return {
         "ok": True,
         "workspace_id": workspace_id,
@@ -4430,6 +4723,26 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     str(query.get("session_id", [""])[0]).strip(),
                     str(query.get("batch_id", [""])[0]).strip(),
                 ))
+            elif parsed.path == "/api/ebay-room/markets":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                item_id = str(query.get("item_id", [""])[0]).strip()
+                ebay_room_context(workspace_id, session_id)
+                self._json({"markets": workspace_ebay_room(workspace_id).item_markets(item_id)})
+            elif parsed.path == "/api/ebay-room/groups":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                item_id = str(query.get("item_id", [""])[0]).strip()
+                ebay_room_context(workspace_id, session_id)
+                self._json({"groups": workspace_ebay_room(workspace_id).facebook_groups(item_id)})
+            elif parsed.path == "/api/ebay-room/item-chat":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                item_id = str(query.get("item_id", [""])[0]).strip()
+                self._json({"messages": ebay_item_chat_messages(workspace_id, session_id, item_id)})
+            elif parsed.path == "/api/ebay-room/questions":
+                item_id = str(query.get("item_id", [""])[0]).strip()
+                self._json({"questions": SELLER_INTAKE.list_questions(item_id)})
             elif parsed.path == "/api/item-intake/bootstrap":
                 batch_id = str(query.get("batch_id", [""])[0]).strip()
                 item_id = str(query.get("item_id", [""])[0]).strip()
@@ -4438,6 +4751,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "batches": batches,
                     "upload_limit_bytes": MAX_UPLOAD_BYTES,
                     "zip_upload_limit_bytes": MAX_ZIP_UPLOAD_BYTES,
+                    "touchup_presets": SELLER_INTAKE.list_touchup_presets(),
                 }
                 if item_id:
                     payload["item"] = SELLER_INTAKE.get_item(item_id)
@@ -4447,6 +4761,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 elif batches:
                     payload["batch"] = SELLER_INTAKE.get_batch(str(batches[0]["batch_id"]))
                 self._json(payload)
+            elif parsed.path == "/api/item-intake/touchup-presets":
+                self._json({"presets": SELLER_INTAKE.list_touchup_presets()})
             elif parsed.path == "/api/item-intake/assets/content":
                 asset_id = str(query.get("asset_id", [""])[0]).strip()
                 asset, path = SELLER_INTAKE.asset_path(asset_id)
@@ -4501,7 +4817,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
                 workspace_context(workspace_id, session_id)
-                value = ACCOUNTS.public_status(workspace_id, shared_gmail_status=GMAIL.connection_status())
+                value = ACCOUNTS.public_status(workspace_id, shared_gmail_status=GMAIL.verified_connection_status())
+                if value["gmail"].get("assigned"):
+                    value["gmail"].update(workspace_gmail(workspace_id).verified_connection_status())
                 if value["ebay"].get("assigned"):
                     try:
                         value["ebay"]["notifications"] = workspace_ebay_notifications(workspace_id).status()
@@ -4513,8 +4831,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     try:
                         bridge_status = instagram_profile_status(env=ACCOUNTS.instagram_env(workspace_id))
                         value["instagram"].update({
-                            "connected": bool(bridge_status.get("signed_in") and bridge_status.get("account_matches")),
+                            "connected": bool(bridge_status.get("signed_in") and bridge_status.get("account_matches") is not False),
                             "active_username": str(bridge_status.get("active_username") or ""),
+                            "identity_observed": bool(bridge_status.get("identity_observed")),
                             "requires_interaction": bool(bridge_status.get("chrome_debugging") and not bridge_status.get("signed_in")),
                         })
                     except Exception as exc:
@@ -4609,6 +4928,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
                 self._json({"alerts": delivery_alerts(workspace_id, session_id)})
+            elif parsed.path == "/api/monitor/status":
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                self._json(monitor_status_response(workspace_id, session_id))
             elif parsed.path == "/api/files/content":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
@@ -4691,12 +5014,105 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"extracted": extracted, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
                 return
             payload = self._body()
+            if parsed.path == "/api/item-intake/threads/listing-plan":
+                self._json({"listing_plan": build_shared_thread_marketplace_plan(str(payload.get("item_id") or ""), str(payload.get("provider") or ""))})
+                return
+            if parsed.path == "/api/ebay-room/markets":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item_id = str(payload.get("item_id") or "").strip()
+                market = workspace_ebay_room(workspace_id).add_item_market(
+                    item_id,
+                    preset=str(payload.get("preset") or ""),
+                    name=str(payload.get("name") or ""),
+                )
+                self._json({"market": market, "markets": workspace_ebay_room(workspace_id).item_markets(item_id)}, HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/ebay-room/groups":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                room = workspace_ebay_room(workspace_id)
+                group = room.save_facebook_group(payload)
+                item_id = str(payload.get("item_id") or "").strip()
+                if item_id and bool(payload.get("targeted")):
+                    room.set_group_target(item_id, group["group_id"], status=str(payload.get("target_status") or "planned"), note=str(payload.get("target_note") or ""), post_url=str(payload.get("target_post_url") or ""))
+                self._json({"group": group, "groups": room.facebook_groups(item_id)}, HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/ebay-room/groups/fetch-info":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                url = str(payload.get("url") or "").strip()
+                fetched = read_facebook_group(url)
+                text = str(fetched.get("text") or "")
+                name = str(fetched.get("name") or fetched.get("title") or "").strip()
+                description = str(fetched.get("about") or text).strip()
+                rules_text = str(fetched.get("rules_text") or "").strip()
+                access = fetched.get("facebook_access") if isinstance(fetched.get("facebook_access"), dict) else {}
+                profile = fetched.get("group_profile") if isinstance(fetched.get("group_profile"), dict) else {}
+                your_items = fetched.get("your_items") if isinstance(fetched.get("your_items"), dict) else {}
+                checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                visible_items = [" ".join(str(item or "").split())[:500] for item in (your_items.get("items") or [])]
+                self._json({"info": {"name": name, "url": str(fetched.get("url") or url), "description": description[:4000], "about_complete": bool(fetched.get("about_complete", True)), "rules_text": rules_text[:6000], "facebook_access_status": str(access.get("status") or "unknown")[:80], "facebook_access_detail": str(access.get("detail") or "")[:1000], "facebook_access_checked_at": checked_at, "privacy_text": str(profile.get("privacy") or "")[:1000], "visibility_text": str(profile.get("visibility") or "")[:1000], "history_text": str(profile.get("history") or "")[:1000], "tags_text": str(profile.get("tags") or "")[:2000], "location_text": str(profile.get("location") or "")[:1000], "facebook_visible_items_count": int(your_items.get("count") or 0) if your_items.get("available") else -1, "facebook_visible_items_detail": str(your_items.get("detail") or "")[:1000], "facebook_visible_items": [item for item in visible_items if item][:20], "facebook_visible_items_checked_at": checked_at if your_items else "", "expanded_count": int(fetched.get("expanded_count") or 0), "source": "facebook_chrome_profile", "review_required": True}})
+                return
+            if parsed.path == "/api/ebay-room/groups/target":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                room = workspace_ebay_room(workspace_id)
+                item_id = str(payload.get("item_id") or "").strip()
+                result = room.set_group_target(item_id, str(payload.get("group_id") or "").strip(), status=str(payload.get("status") or "planned"), note=str(payload.get("note") or ""), post_url=str(payload.get("post_url") or ""), remove=bool(payload.get("remove")))
+                self._json({"target": result, "groups": room.facebook_groups(item_id)}, HTTPStatus.CREATED)
+                return
+            if parsed.path == "/api/ebay-room/item-chat":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                item_id = str(payload.get("item_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                request = {**payload, "ebay_item_id": item_id, "request_id": str(payload.get("request_id") or f"req_{uuid.uuid4().hex[:12]}")}
+                result = run_chat_request(request)
+                result["messages"] = ebay_item_chat_messages(workspace_id, session_id, item_id)
+                self._json(result)
+                return
+            if parsed.path == "/api/ebay-room/leo-chat":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                item_id = str(payload.get("item_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item = SELLER_INTAKE.get_item(item_id)
+                prompt = "You are Leo, contained inside an item research window. Do not save findings. Answer in a research report with: answer, where you looked or what evidence was reviewed, important observations, limitations or why no finding is possible, and suggestions. Selected question: " + str(payload.get("question") or "") + ". Existing findings: " + str(payload.get("findings") or "") + ". User request: " + str(payload.get("text") or "") + ". Item title: " + str(item.get("title") or "")
+                result = run_chat_request({**payload, "text": prompt, "ebay_item_id": item_id, "_ephemeral": True, "request_id": str(payload.get("request_id") or f"leo_{uuid.uuid4().hex[:12]}")})
+                result["speaker"] = "Leo"
+                self._json(result)
+                return
             if parsed.path == "/api/ebay-room/sync":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 ebay_room_context(workspace_id, session_id)
                 sync = workspace_ebay_room(workspace_id).sync(workspace_ebay(workspace_id))
                 self._json({"sync": sync, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))})
+            elif parsed.path == "/api/ebay-room/listing/find":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item_id = str(payload.get("item_id") or "").strip()
+                item = SELLER_INTAKE.get_item(item_id)
+                listing_value = str(payload.get("listing") or item.get("reference_id") or "").strip()
+                listing = workspace_ebay_room(workspace_id).find_listing(workspace_ebay(workspace_id), listing_value)
+                self._json({"listing": listing, "item_id": item_id})
+            elif parsed.path == "/api/ebay-room/listing/apply":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item_id = str(payload.get("item_id") or "").strip()
+                item = SELLER_INTAKE.get_item(item_id)
+                listing_value = str(payload.get("listing") or item.get("reference_id") or "").strip()
+                applied = workspace_ebay_room(workspace_id).populate_item_from_listing(
+                    workspace_ebay(workspace_id), item_id, listing_value, extract_media=bool(payload.get("extract_media"))
+                )
+                self._json({"applied": applied, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))})
             elif parsed.path == "/api/ebay-room/link":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -4735,6 +5151,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 ebay_room_context(workspace_id, session_id)
                 evidence = SELLER_INTAKE.add_evidence({
                     "item_id": payload.get("item_id"),
+                    "question_id": payload.get("question_id"),
                     "kind": "market_research",
                     "claim": payload.get("claim"),
                     "source_excerpt": payload.get("source_excerpt"),
@@ -4744,13 +5161,25 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "status": "accepted" if payload.get("confirm") is True else "needs_review",
                 })
                 self._json({"evidence": evidence, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/ebay-room/questions":
+                question = SELLER_INTAKE.save_question(payload)
+                self._json({"question": question, "questions": SELLER_INTAKE.list_questions(str(payload.get("item_id") or ""))}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/ebay-room/listing-photos":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                ebay_room_context(workspace_id, session_id)
+                item = SELLER_INTAKE.set_listing_photos(str(payload.get("item_id") or ""), payload.get("asset_ids"))
+                self._json({"item": item, **ebay_room_bootstrap(workspace_id, session_id, str(payload.get("batch_id") or ""))})
             elif parsed.path == "/api/ebay-room/facebook/prepare":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 ebay_room_context(workspace_id, session_id)
                 item_id = str(payload.get("item_id") or "").strip()
                 item = SELLER_INTAKE.get_item(item_id)
-                handoff = SELLER_INTAKE.handoff_to_veridex(item_id, workspace_id, session_id, STORE)
+                listing_assets = list(item.get("listing_photo_asset_ids") or [])
+                if not listing_assets:
+                    raise ValueError("Choose and order at least one Listing photo before preparing Facebook Marketplace.")
+                handoff = SELLER_INTAKE.handoff_to_veridex(item_id, workspace_id, session_id, STORE, asset_ids=listing_assets)
                 photo_ids = [row["file_id"] for row in handoff["files"] if str(row.get("content_type") or "").startswith("image/")]
                 draft = save_facebook_marketplace_draft({
                     "workspace_id": workspace_id,
@@ -4775,6 +5204,11 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"deleted": SELLER_INTAKE.delete_asset(str(payload.get("item_id") or ""), str(payload.get("asset_id") or ""))})
             elif parsed.path == "/api/item-intake/photos/touch-up":
                 self._json({"touch_up": touch_up_intake_photo(payload)}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/item-intake/touchup-presets":
+                if payload.get("action") == "delete":
+                    self._json({"deleted": SELLER_INTAKE.delete_touchup_preset(str(payload.get("preset_id") or "")), "presets": SELLER_INTAKE.list_touchup_presets()})
+                else:
+                    self._json({"preset": SELLER_INTAKE.save_touchup_preset(payload), "presets": SELLER_INTAKE.list_touchup_presets()}, HTTPStatus.CREATED)
             elif parsed.path == "/api/item-intake/threads/preview":
                 self._json({"preview": preview_shared_thread_import(str(payload.get("item_id") or ""), str(payload.get("provider") or ""))})
             elif parsed.path == "/api/item-intake/threads/import":
@@ -4793,29 +5227,28 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 workspace_context(workspace_id, session_id)
-                self._json({"handoff": SELLER_INTAKE.handoff_to_veridex(str(payload.get("item_id") or ""), workspace_id, session_id, STORE)})
+                asset_ids = payload.get("asset_ids")
+                if asset_ids is not None and not isinstance(asset_ids, list):
+                    raise ValueError("asset_ids must be a list")
+                self._json({"handoff": SELLER_INTAKE.handoff_to_veridex(str(payload.get("item_id") or ""), workspace_id, session_id, STORE, asset_ids=asset_ids)})
             elif parsed.path == "/api/integrations/instagram/connect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
-                workspace_context(workspace_id, session_id)
                 username = str(payload.get("username") or "").strip().lstrip("@")
-                password = str(payload.get("password") or "")
-                if not username or not password:
-                    raise ValueError("Instagram username and password are required.")
-                ACCOUNTS.assign_instagram(workspace_id, username)
-                result = login_instagram(env=ACCOUNTS.instagram_env(workspace_id, username=username, password=password))
-                self._json({"instagram": {"assigned": True, "username": username, **result}})
+                self._json(open_instagram_connection(workspace_id, session_id, username))
             elif parsed.path == "/api/integrations/facebook/connect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 workspace_context(workspace_id, session_id)
                 result = login_facebook()
+                BACKGROUND_MONITOR.wake()
                 self._json({"facebook": {"connected": bool(result.get("signed_in")), **result}})
             elif parsed.path == "/api/integrations/facebook/verify":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
                 workspace_context(workspace_id, session_id)
                 result = facebook_profile_status()
+                BACKGROUND_MONITOR.wake()
                 self._json({"facebook": {"connected": bool(result.get("signed_in")), **result}})
             elif parsed.path == "/api/facebook/marketplace/groups/save":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -4858,11 +5291,13 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
                 result = instagram_profile_status(env=workspace_instagram_env(workspace_id))
+                BACKGROUND_MONITOR.wake()
                 self._json({"instagram": {"assigned": True, "username": ACCOUNTS.instagram_config(workspace_id).get("username"), "connected": bool(result.get("signed_in") and result.get("account_matches")), **result}})
             elif parsed.path == "/api/integrations/instagram/disconnect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
                 ACCOUNTS.unassign_instagram(workspace_id)
+                BACKGROUND_MONITOR.wake()
                 self._json({"ok": True, "instagram": {"assigned": False, "connected": False, "username": ""}})
             elif parsed.path == "/api/integrations/gmail/connect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -4892,6 +5327,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
                 ACCOUNTS.unassign_gmail(workspace_id)
+                BACKGROUND_MONITOR.wake()
                 self._json({"ok": True, "gmail": {"assigned": False, "connected": False, "account_email": ""}})
             elif parsed.path == "/api/integrations/ebay/connect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -4941,6 +5377,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 if config:
                     ACCOUNTS.ebay(workspace_id).disconnect()
                 ACCOUNTS.unassign_ebay(workspace_id)
+                BACKGROUND_MONITOR.wake()
                 self._json({"ok": True, "ebay": {"assigned": False, "connected": False, "username": ""}})
             elif parsed.path == "/api/integrations/ebay/notifications/check":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -4958,6 +5395,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 ACCOUNTS.set_ebay_automatic_notifications(workspace_id, enabled)
                 if enabled:
                     EBAY_NOTIFICATION_POLLER.wake()
+                BACKGROUND_MONITOR.wake()
                 self._json({
                     "ok": True,
                     "automatic": ebay_automatic_notification_status(workspace_id),
@@ -5128,6 +5566,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         ),
                     }
                 )
+            elif parsed.path == "/api/monitor/mail/seen":
+                self._json(monitor_seen_response(payload))
+            elif parsed.path == "/api/monitor/mail/dismiss":
+                self._json(monitor_dismiss_response(payload))
             elif parsed.path == "/api/workspaces":
                 workspace = STORE.create_workspace(str(payload.get("label") or "Workspace"))
                 session = STORE.create_session(workspace["workspace_id"], "New session")
@@ -5612,12 +6054,14 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), VeridexHandler)
     server.allow_insecure_remote_cookie = bool(getattr(args, "allow_insecure_remote_cookie", False))
     EBAY_NOTIFICATION_POLLER.start()
+    BACKGROUND_MONITOR.start()
     print(f"Codex + Veridex running at http://{args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        BACKGROUND_MONITOR.stop()
         EBAY_NOTIFICATION_POLLER.stop()
         server.server_close()
     return 0

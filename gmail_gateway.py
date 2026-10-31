@@ -310,6 +310,23 @@ class GmailGateway:
             "updated_at": row.get("updated_at"),
         }
 
+    def verified_connection_status(self) -> Dict[str, Any]:
+        """Return connection metadata only after a read-only Gmail API check succeeds."""
+        status = self.connection_status()
+        if not status.get("configured") or not status.get("connected"):
+            return status
+        try:
+            profile = self._json_request(f"{GMAIL_API}/profile", token=self._access_token())
+            active_email = str(profile.get("emailAddress") or status.get("account_email") or "").strip()
+            expected_email = str(status.get("account_email") or self.account_email or "").strip()
+            if expected_email and active_email and active_email.lower() != expected_email.lower():
+                raise GmailGatewayError(
+                    f"Google authorized {active_email}, but this connection is assigned to {expected_email}. Reconnect the intended account."
+                )
+        except GmailGatewayError as exc:
+            return {**status, "connected": False, "oauth_error": str(exc)}
+        return {**status, "account_email": active_email or status.get("account_email")}
+
     def configured(self) -> bool:
         return bool(
             self.env.get("VERIDEX_INTEGRATION_ENCRYPTION_KEY")

@@ -1,5 +1,6 @@
 const AUTO_READ_STORAGE_KEY = "veridex.readAutomatically";
 const DELIVERY_POLL_INTERVAL_MS = 15_000;
+const MONITOR_STATUS_POLL_INTERVAL_MS = 15_000;
 const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
 const savedAutoRead = (() => {
   try { return window.localStorage.getItem(AUTO_READ_STORAGE_KEY) === "true"; }
@@ -59,6 +60,15 @@ const state = {
   selectedRoomFileId: "",
   attachingRoomFileId: "",
   deliveryAlerts: [],
+  monitor: {
+    health: { status: "pending", issues: [], issue_signature: "" },
+    mail: { status: "pending", alerts: [], unseen_count: 0, checked_at: "" },
+    promptedSignatures: new Set(),
+    knownUnseenIds: new Set(),
+    initialized: false,
+    checking: false,
+    errorShown: false,
+  },
   governance: {},
   antiques: { shopping_mode: { active: false }, settings: {}, sources: [], cases: [], external_uploads: [] },
   administration: { versions: {}, proposals: [], audit: [], rooms: [] },
@@ -239,6 +249,11 @@ function applyState(value, preserveRoute = false) {
   state.animation.waveformInteraction = null;
   state.animation.waveformLastDrag = false;
   if (workspaceChanged) {
+    state.monitor.health = { status: "pending", issues: [], issue_signature: "" };
+    state.monitor.mail = { status: "pending", alerts: [], unseen_count: 0, checked_at: "" };
+    state.monitor.knownUnseenIds.clear();
+    state.monitor.initialized = false;
+    state.monitor.errorShown = false;
     state.connectedAccounts = null;
     state.marketplace.loaded = false;
     state.marketplace.drafts = [];
@@ -2235,6 +2250,131 @@ async function confirmAnimationMouthFit() {
     state.animation.busy = false;
     renderAnimationLipSync();
   }
+}
+
+function flashImportantMailIndicator() {
+  const indicator = el("important-mail-indicator");
+  indicator.classList.remove("is-flashing");
+  void indicator.offsetWidth;
+  indicator.classList.add("is-flashing");
+}
+
+function renderImportantMailIndicator() {
+  const unseen = Number(state.monitor.mail?.unseen_count || 0);
+  const indicator = el("important-mail-indicator");
+  indicator.hidden = unseen < 1;
+  el("important-mail-count").textContent = unseen > 99 ? "99+" : String(unseen);
+  indicator.setAttribute("aria-label", unseen === 1
+    ? "Open My Office for 1 important email"
+    : `Open My Office for ${unseen} important emails`);
+}
+
+function mailCategoryLabel(category) {
+  if (category === "security") return "Security alert";
+  if (category === "buyer_question") return "Buyer question";
+  if (category === "sold") return "Sold item";
+  return "Offer";
+}
+
+function renderNancyImportantMail() {
+  const section = el("nancy-important-mail");
+  const alerts = Array.isArray(state.monitor.mail?.alerts) ? state.monitor.mail.alerts : [];
+  const visible = state.session?.active_room === "my_office" && alerts.length > 0;
+  section.hidden = !visible;
+  const list = el("nancy-mail-list");
+  list.replaceChildren();
+  if (!visible) return;
+  el("nancy-mail-checked").textContent = state.monitor.mail.checked_at
+    ? `Checked ${new Date(state.monitor.mail.checked_at).toLocaleString()}`
+    : "Checking mail…";
+  alerts.forEach((alert) => {
+    const card = document.createElement("article");
+    card.className = "nancy-mail-card";
+    const copy = document.createElement("div");
+    copy.className = "nancy-mail-copy";
+    const meta = document.createElement("div");
+    meta.className = "nancy-mail-meta";
+    meta.textContent = [mailCategoryLabel(alert.category), alert.account_email || alert.account_scope, alert.date].filter(Boolean).join(" · ");
+    const subject = document.createElement("strong");
+    subject.textContent = alert.subject || "(no subject)";
+    const detail = document.createElement("span");
+    detail.textContent = [alert.from, alert.snippet].filter(Boolean).join(" · ");
+    copy.append(meta, subject, detail);
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => dismissImportantMail(alert.alert_id));
+    card.append(copy, dismiss);
+    list.append(card);
+  });
+}
+
+function maybeShowHealthDialog() {
+  const health = state.monitor.health || {};
+  const issues = Array.isArray(health.issues) ? health.issues : [];
+  const signature = String(health.issue_signature || "");
+  if (health.status !== "attention" || !signature || !issues.length || !state.workspace) return;
+  const promptKey = `${state.workspace.workspace_id}:${signature}`;
+  if (state.monitor.promptedSignatures.has(promptKey)) return;
+  state.monitor.promptedSignatures.add(promptKey);
+  const list = el("startup-health-issues");
+  list.replaceChildren();
+  issues.forEach((issue) => {
+    const item = document.createElement("li");
+    const service = document.createElement("strong");
+    service.textContent = issue.service || "Veridex";
+    item.append(service, document.createTextNode(issue.summary || "A check needs attention."));
+    list.append(item);
+  });
+  const dialog = el("startup-health-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function applyMonitorStatus(value) {
+  const nextMail = value.mail || { status: "pending", alerts: [], unseen_count: 0 };
+  const unseenIds = new Set((nextMail.alerts || []).filter((row) => !row.seen).map((row) => row.alert_id));
+  const hasNew = [...unseenIds].some((alertId) => !state.monitor.knownUnseenIds.has(alertId));
+  state.monitor.health = value.health || state.monitor.health;
+  state.monitor.mail = nextMail;
+  if ((hasNew || (!state.monitor.initialized && unseenIds.size)) && unseenIds.size) flashImportantMailIndicator();
+  state.monitor.knownUnseenIds = unseenIds;
+  state.monitor.initialized = true;
+  renderImportantMailIndicator();
+  renderNancyImportantMail();
+  maybeShowHealthDialog();
+}
+
+async function refreshBackgroundMonitor() {
+  if (state.monitor.checking || !state.workspace || !state.session) return;
+  state.monitor.checking = true;
+  try {
+    const query = new URLSearchParams({
+      workspace_id: state.workspace.workspace_id,
+      session_id: state.session.session_id,
+    });
+    applyMonitorStatus(await api(`/api/monitor/status?${query}`));
+    state.monitor.errorShown = false;
+  } catch (error) {
+    if (!state.monitor.errorShown) {
+      state.monitor.errorShown = true;
+      showError(`Background checks are unavailable: ${error.message || String(error)}`);
+    }
+  } finally {
+    state.monitor.checking = false;
+  }
+}
+
+async function dismissImportantMail(alertId) {
+  try {
+    applyMonitorStatus(await api("/api/monitor/mail/dismiss", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace.workspace_id,
+        session_id: state.session.session_id,
+        alert_id: alertId,
+      }),
+    }));
+  } catch (error) { showError(error.message || String(error)); }
 }
 
 function manualJawOpeningFromPoints(timeSeconds, points) {
@@ -5515,6 +5655,8 @@ function render() {
   renderMessages();
   renderFiles();
   renderRoute();
+  renderImportantMailIndicator();
+  renderNancyImportantMail();
 }
 
 function accountRequestBody(extra = {}) {
@@ -5542,6 +5684,7 @@ function renderConnectedAccounts() {
   el("shared-gmail-active-account").textContent = sharedGmail.account_email
     ? `Shared corporate account: ${sharedGmail.account_email}`
     : "";
+  if (sharedGmail.oauth_error) el("connected-accounts-message").textContent = `Veridex corporate Gmail failed: ${sharedGmail.oauth_error}`;
 
   const instagramState = el("instagram-connection-state");
   instagramState.className = `account-state ${instagram.connected ? "connected" : instagram.assigned ? "attention" : ""}`;
@@ -5611,12 +5754,26 @@ function renderConnectedAccounts() {
   el("open-connected-accounts").classList.toggle("has-connection", Boolean(sharedGmail.connected || instagram.connected || facebook.connected || gmail.connected || ebay.connected));
 }
 
+function connectedAccountsError(value = {}) {
+  const sharedGmail = value.shared?.gmail || {};
+  const facebook = value.facebook || {};
+  const instagram = value.instagram || {};
+  const gmail = value.gmail || {};
+  const ebay = value.ebay || {};
+  if (sharedGmail.oauth_error) return `Veridex corporate Gmail failed: ${sharedGmail.oauth_error}`;
+  if (facebook.error) return `Facebook connection failed: ${facebook.error}`;
+  if (instagram.error) return `Instagram connection failed: ${instagram.error}`;
+  if (gmail.oauth_error) return `Google connection failed: ${gmail.oauth_error}`;
+  if (ebay.oauth_error) return `eBay connection failed: ${ebay.oauth_error}`;
+  return "";
+}
+
 async function refreshConnectedAccounts(message = "") {
   if (!state.workspace || !state.session) return;
   const query = new URLSearchParams({ workspace_id: state.workspace.workspace_id, session_id: state.session.session_id });
   state.connectedAccounts = await api(`/api/integrations?${query}`);
   renderConnectedAccounts();
-  el("connected-accounts-message").textContent = message;
+  el("connected-accounts-message").textContent = connectedAccountsError(state.connectedAccounts) || message;
 }
 
 async function openConnectedAccounts() {
@@ -5632,9 +5789,8 @@ async function connectInstagram(event) {
   button.disabled = true;
   el("connected-accounts-message").textContent = "Opening the dedicated Instagram session for this workspace…";
   try {
-    const result = await api("/api/integrations/instagram/connect", { method: "POST", body: accountRequestBody({ username: el("instagram-username").value.trim(), password: el("instagram-password").value }) });
-    el("instagram-password").value = "";
-    await refreshConnectedAccounts(result.instagram?.requires_interaction ? "Complete Instagram’s security prompt in the opened Chrome window, then refresh status." : "Instagram is connected to this workspace.");
+    await api("/api/integrations/instagram/connect", { method: "POST", body: accountRequestBody({ username: el("instagram-username").value.trim() }) });
+    await refreshConnectedAccounts("Sign in directly on Instagram in the opened Chrome window, then refresh status here.");
   } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
   finally { button.disabled = false; }
 }
@@ -6092,6 +6248,7 @@ async function loadState(workspaceId = "", sessionId = "", preserveRoute = false
     state.deliveryAlerts = result.alerts || [];
     renderDeliveryAlerts();
   }
+  await refreshBackgroundMonitor();
 }
 
 function routeNotice(next) {
@@ -6820,8 +6977,7 @@ bindFileDrop(el("email-drop-zone"), "email", (active) => {
   el("email-drop-zone").classList.toggle("drag-active", active);
 });
 
-el("room-selector").addEventListener("change", async (event) => {
-  const roomId = event.target.value;
+async function navigateToRoom(roomId) {
   if (!roomId || roomId === state.session?.active_room || state.switchingRoom) return;
   state.switchingRoom = true;
   render();
@@ -6845,7 +7001,32 @@ el("room-selector").addEventListener("change", async (event) => {
     state.switchingRoom = false;
     render();
   }
+}
+
+el("room-selector").addEventListener("change", async (event) => {
+  await navigateToRoom(event.target.value);
 });
+
+async function openImportantMail() {
+  const alertIds = (state.monitor.mail?.alerts || []).filter((row) => !row.seen).map((row) => row.alert_id);
+  if (state.session?.active_room !== "my_office") {
+    await navigateToRoom("my_office");
+    if (state.session?.active_room !== "my_office") return;
+  }
+  try {
+    if (alertIds.length) {
+      applyMonitorStatus(await api("/api/monitor/mail/seen", {
+        method: "POST",
+        body: JSON.stringify({
+          workspace_id: state.workspace.workspace_id,
+          session_id: state.session.session_id,
+          alert_ids: alertIds,
+        }),
+      }));
+    }
+    el("nancy-important-mail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) { showError(error.message || String(error)); }
+}
 
 function setGovernancePanel(open) {
   el("governance-panel").hidden = !open;
@@ -6967,6 +7148,17 @@ async function handleAdministrationAction(event) {
 }
 
 el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
+el("important-mail-indicator").addEventListener("click", openImportantMail);
+el("important-mail-indicator").addEventListener("animationend", (event) => event.currentTarget.classList.remove("is-flashing"));
+el("startup-health-no").addEventListener("click", () => el("startup-health-dialog").close());
+el("startup-health-yes").addEventListener("click", async () => {
+  el("startup-health-dialog").close();
+  await navigateToRoom("control_room");
+});
+el("startup-health-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  el("startup-health-dialog").close();
+});
 el("governance-close").addEventListener("click", () => setGovernancePanel(false));
 el("governance-scrim").addEventListener("click", () => setGovernancePanel(false));
 el("open-administration").addEventListener("click", () => setAdministrationPanel(el("administration-panel").hidden));
@@ -7047,7 +7239,9 @@ el("new-session").addEventListener("click", async () => {
 api("/api/bootstrap").then((value) => {
   applyState(value);
   if (state.session?.active_room === "my_office") window.setTimeout(checkDeliveryFailures, 0);
+  window.setTimeout(refreshBackgroundMonitor, 0);
 }).catch((error) => showError(error.message || String(error)));
 window.setInterval(() => {
   if (state.session?.active_room === "my_office") checkDeliveryFailures();
 }, DELIVERY_POLL_INTERVAL_MS);
+window.setInterval(refreshBackgroundMonitor, MONITOR_STATUS_POLL_INTERVAL_MS);
