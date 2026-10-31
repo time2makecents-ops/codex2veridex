@@ -5130,7 +5130,6 @@ function priceObservationText(row) {
 }
 
 function renderEbayTools() {
-  el("ebay-actions").hidden = state.session?.active_room !== "ebay";
   el("open-ebay-room").disabled = state.sending || state.uploading || state.switchingRoom;
 }
 
@@ -5602,7 +5601,6 @@ function renderRoute() {
 }
 
 function render() {
-  el("workspace-name").textContent = state.workspace?.label || "Workspace";
   el("session-title").textContent = state.session?.title || "New session";
   const fullAccess = state.runtime.access_mode === "full";
   el("access-status").className = `access-status ${fullAccess ? "full" : "read-only"}`;
@@ -5629,6 +5627,10 @@ function render() {
   el("message-input").disabled = state.sending || state.uploading;
   el("attach-button").disabled = state.sending || state.uploading;
   el("open-marketplace-sell").disabled = state.sending || state.uploading || state.switchingRoom;
+  el("open-item-intake").href = `/item-intake?${new URLSearchParams({
+    workspace_id: state.workspace?.workspace_id || "",
+    session_id: state.session?.session_id || "",
+  })}`;
   const canRead = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
   const autoRead = el("auto-read");
   autoRead.checked = state.autoRead;

@@ -23,21 +23,59 @@
           </button>
         </div>
 
-        <div class="rail-section">
-          <div class="rail-heading">
-            <span>Workspaces</span>
-            <button id="new-workspace" class="text-action" type="button">New</button>
-          </div>
-          <nav id="workspace-list" class="nav-list" aria-label="Workspaces"></nav>
-        </div>
+        <nav class="rail-menus" aria-label="Veridex navigation">
+          <details class="rail-menu" open>
+            <summary>Rooms</summary>
+            <div class="rail-menu-body room-menu-body">
+              <label for="room-selector">Choose room</label>
+              <select id="room-selector" aria-label="Active room">
+                <option value="lobby">Lobby · Receptionist</option>
+              </select>
+            </div>
+          </details>
 
-        <div class="rail-section sessions-section">
-          <div class="rail-heading">
-            <span>Sessions</span>
-            <button id="new-session" class="text-action" type="button">New</button>
-          </div>
-          <nav id="session-list" class="nav-list" aria-label="Sessions"></nav>
-        </div>
+          <details class="rail-menu" open>
+            <summary>Workspaces</summary>
+            <div class="rail-menu-body">
+              <button id="new-workspace" class="text-action" type="button">New workspace</button>
+              <nav id="workspace-list" class="nav-list" aria-label="Workspaces"></nav>
+            </div>
+          </details>
+
+          <details class="rail-menu sessions-section" open>
+            <summary>Sessions</summary>
+            <div class="rail-menu-body">
+              <button id="new-session" class="text-action" type="button">New session</button>
+              <nav id="session-list" class="nav-list" aria-label="Sessions"></nav>
+            </div>
+          </details>
+
+          <details class="rail-menu">
+            <summary>Actions</summary>
+            <div class="rail-menu-body action-menu-body">
+              <button id="open-connected-accounts" type="button">Connected accounts</button>
+              <button id="open-marketplace-sell" type="button">Sell on Facebook</button>
+              <button id="open-ebay-room" type="button">Sell on eBay</button>
+              <a id="open-item-intake" href="/item-intake">Item intake</a>
+            </div>
+          </details>
+
+          <details class="rail-menu status-menu">
+            <summary>Status</summary>
+            <div class="rail-menu-body">
+              <div id="access-status" class="access-status read-only"><span class="access-dot"></span><span id="access-label">Read-only computer access</span></div>
+              <button id="navigator-status" class="navigator-status" type="button" aria-expanded="false" aria-controls="governance-panel">
+                <span class="navigator-dot"></span><span>Navigator active · monitoring</span>
+              </button>
+              <button id="open-administration" class="administration-status" type="button" aria-expanded="false" aria-controls="administration-panel" hidden>Infrastructure administration</button>
+              <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">
+                <div class="route-primary"><span class="route-dot"></span><span id="route-model">Model routing ready</span></div>
+                <div id="route-meta" class="route-meta">Codex selects the model automatically</div>
+                <div id="route-notice" class="route-notice"></div>
+              </div>
+            </div>
+          </details>
+        </nav>
 
         <div class="local-account">
           <span class="presence-dot"></span>
@@ -54,30 +92,7 @@
         </div>
         <header class="chat-header">
           <div>
-            <div class="eyebrow" id="workspace-name">Workspace</div>
             <h1 id="session-title">New session</h1>
-            <button id="open-connected-accounts" class="connected-accounts-trigger" type="button">
-              <span class="connection-indicator" aria-hidden="true"></span>
-              Connected accounts
-            </button>
-            <button id="open-marketplace-sell" class="marketplace-sell-trigger" type="button">Sell on Facebook</button>
-            <a class="marketplace-sell-trigger" href="/item-intake">Item intake</a>
-            <div class="room-control">
-              <label for="room-selector">Room</label>
-              <select id="room-selector" aria-label="Active room">
-                <option value="lobby">Lobby · Receptionist</option>
-              </select>
-            </div>
-            <div id="access-status" class="access-status read-only"><span class="access-dot"></span><span id="access-label">Read-only computer access</span></div>
-            <button id="navigator-status" class="navigator-status" type="button" aria-expanded="false" aria-controls="governance-panel">
-              <span class="navigator-dot"></span><span>Navigator active · monitoring</span>
-            </button>
-            <button id="open-administration" class="administration-status" type="button" aria-expanded="false" aria-controls="administration-panel" hidden>Infrastructure administration</button>
-          </div>
-          <div id="route-status" class="route-status ready" aria-live="polite" aria-atomic="true">
-            <div class="route-primary"><span class="route-dot"></span><span id="route-model">Model routing ready</span></div>
-            <div id="route-meta" class="route-meta">Codex selects the model automatically</div>
-            <div id="route-notice" class="route-notice"></div>
           </div>
         </header>
 
@@ -122,10 +137,6 @@
           <div id="animation-actions" class="art-actions animation-actions" hidden>
             <span><strong>Animation Studio</strong><small>Build Eternia, generate mouth cues, and prepare verified shots</small></span>
             <button id="open-animation-studio" type="button">Open studio</button>
-          </div>
-          <div id="ebay-actions" class="art-actions" hidden>
-            <span><strong>eBay · Bob</strong><small>Inventory, listing review, research, and cross-channel preparation</small></span>
-            <button id="open-ebay-room" type="button">Open inventory</button>
           </div>
           <div id="room-file-actions" class="art-actions room-file-actions" hidden>
             <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
