@@ -1,6 +1,10 @@
 const AUTO_READ_STORAGE_KEY = "veridex.readAutomatically";
 const DELIVERY_POLL_INTERVAL_MS = 15_000;
 const MONITOR_STATUS_POLL_INTERVAL_MS = 15_000;
+const ROOM_PAGE_LOCATIONS = [
+  { path: "/ebay-room", label: "eBay workspace", roomId: "ebay" },
+  { path: "/item-intake", label: "Item Intake", roomId: "ebay" },
+];
 const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
 const savedAutoRead = (() => {
   try { return window.localStorage.getItem(AUTO_READ_STORAGE_KEY) === "true"; }
@@ -58,6 +62,8 @@ const state = {
   roomFilesLoading: false,
   roomFilesRoomId: "",
   selectedRoomFileId: "",
+  selectedSessionFileId: "",
+  sessionFileExplorer: { query: "", sort: "recent", view: "list" },
   attachingRoomFileId: "",
   deliveryAlerts: [],
   monitor: {
@@ -77,6 +83,7 @@ const state = {
   emailAttachments: [],
   runtime: { access_mode: "full", access_label: "Full computer access" },
   route: null,
+  containedChat: { kind: "", messages: [], sending: false },
   sending: false,
   stopping: false,
   activeRequestId: null,
@@ -1076,16 +1083,47 @@ function renderAntiquesMessage(row, article) {
   article.append(details);
 }
 
+function isSystemTranscriptRow(row) {
+  return ["room_navigation", "system_notice"].includes(String(row.task_type || "")) || String(row.message_kind || "") === "system_notice";
+}
+
+function renderSystemLog() {
+  const list = el("system-log-list");
+  if (!list) return;
+  list.replaceChildren();
+  const rows = state.messages.filter(isSystemTranscriptRow).slice().reverse();
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "system-log-empty";
+    empty.textContent = "No system notices in this session yet.";
+    list.append(empty);
+    return;
+  }
+  rows.forEach((row) => {
+    const entry = document.createElement("article");
+    entry.className = "system-log-entry";
+    const time = document.createElement("time");
+    time.textContent = row.timestamp ? new Date(row.timestamp).toLocaleString() : "Time unavailable";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = String(row.task_type || "system notice").replaceAll("_", " ");
+    const text = document.createElement("span");
+    text.textContent = row.text || "No detail recorded.";
+    details.append(title, text); entry.append(time, details); list.append(entry);
+  });
+}
+
 function renderMessages() {
   const container = el("messages");
   container.replaceChildren();
-  if (!state.messages.length) {
+  const visibleMessages = state.messages.filter((row) => !isSystemTranscriptRow(row));
+  if (!visibleMessages.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.innerHTML = '<div class="empty-rule"></div><h2>Start where the work is.</h2><p>Coding and planning receive stronger reasoning. Simple checks use a lighter model. Every switch appears above.</p>';
     container.append(empty);
   } else {
-    state.messages.forEach((row) => {
+    visibleMessages.forEach((row) => {
       const article = document.createElement("article");
       article.className = `message ${row.role === "user" ? "user" : "assistant"}`;
       if (String(row.message_kind || "").startsWith("navigator_")) article.classList.add("navigator-message");
@@ -1182,6 +1220,7 @@ function renderMessages() {
     container.append(processing);
   }
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+  renderSystemLog();
 }
 
 function formatBytes(size) {
@@ -1191,42 +1230,7 @@ function formatBytes(size) {
 }
 
 function renderFiles() {
-  const tray = el("file-tray");
-  tray.replaceChildren();
-  if (!state.files.length && !state.uploading) {
-    tray.hidden = true;
-    return;
-  }
-  tray.hidden = false;
-  if (state.uploading) {
-    const uploading = document.createElement("span");
-    uploading.className = "file-uploading";
-    uploading.textContent = "Saving file…";
-    tray.append(uploading);
-  }
-  const recentFiles = state.files
-    .map((file, index) => ({ file, index }))
-    .sort((left, right) => {
-      const leftTime = String(left.file.linked_at || left.file.updated_at || left.file.created_at || left.file.ledgered_at || "");
-      const rightTime = String(right.file.linked_at || right.file.updated_at || right.file.created_at || right.file.ledgered_at || "");
-      return rightTime.localeCompare(leftTime) || right.index - left.index;
-    })
-    .slice(0, 4)
-    .map((entry) => entry.file);
-  recentFiles.forEach((file) => {
-    const button = document.createElement("button");
-    const selected = state.selectedFiles.has(file.file_id);
-    button.type = "button";
-    button.className = `file-chip${selected ? " selected" : ""}`;
-    button.textContent = `${selected ? "✓ " : ""}${file.name} · ${formatBytes(file.size || 0)}`;
-    button.title = selected ? "Included with the next message" : "Click to include with the next message";
-    button.addEventListener("click", () => {
-      if (selected) state.selectedFiles.delete(file.file_id);
-      else state.selectedFiles.add(file.file_id);
-      renderFiles();
-    });
-    tray.append(button);
-  });
+  if (el("session-files-dialog")?.open) renderSessionFileLibrary();
 }
 
 function artImageContentUrl(image) {
@@ -1236,6 +1240,117 @@ function artImageContentUrl(image) {
     file_id: image.file_id,
   });
   return `/api/files/content?${query}`;
+}
+
+function selectedSessionFile() {
+  return state.files.find((file) => file.file_id === state.selectedSessionFileId) || state.files[0] || null;
+}
+
+function renderSessionFileLibrary() {
+  const dialog = el("session-files-dialog");
+  if (!dialog) return;
+  const grid = el("session-files-grid");
+  const preview = el("session-files-preview");
+  grid.replaceChildren();
+  preview.replaceChildren();
+  const explorer = state.sessionFileExplorer;
+  el("session-files-search").value = explorer.query;
+  el("session-files-sort").value = explorer.sort;
+  const query = explorer.query.trim().toLowerCase();
+  const files = state.files.filter((file) => !query || `${file.name || ""} ${file.content_type || ""}`.toLowerCase().includes(query)).sort((left, right) => {
+    if (explorer.sort === "name") return String(left.name || "").localeCompare(String(right.name || ""));
+    if (explorer.sort === "size") return Number(right.size || 0) - Number(left.size || 0);
+    if (explorer.sort === "type") return roomFileType(left).localeCompare(roomFileType(right)) || String(left.name || "").localeCompare(String(right.name || ""));
+    return String(right.linked_at || right.updated_at || right.created_at || right.ledgered_at || "").localeCompare(String(left.linked_at || left.updated_at || left.created_at || left.ledgered_at || ""));
+  });
+  if (!files.some((file) => file.file_id === state.selectedSessionFileId)) state.selectedSessionFileId = files[0]?.file_id || "";
+  el("session-files-summary").textContent = `${files.length} of ${state.files.length} ${state.files.length === 1 ? "file" : "files"} in this session`;
+  el("session-files-empty").hidden = files.length > 0;
+  el("session-files-content").hidden = !files.length;
+  grid.className = `session-files-${explorer.view}`;
+  el("session-files-list-view").setAttribute("aria-pressed", String(explorer.view === "list"));
+  el("session-files-grid-view").setAttribute("aria-pressed", String(explorer.view === "grid"));
+  if (!files.length) return;
+  const selected = selectedSessionFile();
+  files.forEach((file) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `session-file-row${selected?.file_id === file.file_id ? " active" : ""}`;
+    button.setAttribute("aria-pressed", String(selected?.file_id === file.file_id));
+    if (String(file.content_type || "").startsWith("image/")) {
+      const image = document.createElement("img");
+      image.src = artImageContentUrl(file);
+      image.alt = "";
+      image.loading = "lazy";
+      button.append(image);
+    } else {
+      const type = document.createElement("div");
+      type.className = "room-file-type";
+      type.textContent = roomFileType(file);
+      button.append(type);
+    }
+    const label = document.createElement("span");
+    label.textContent = file.name || "File";
+    const metadata = document.createElement("small");
+    metadata.textContent = `${roomFileType(file)} · ${formatBytes(Number(file.size || 0))}`;
+    button.append(label, metadata);
+    button.addEventListener("click", () => { state.selectedSessionFileId = file.file_id; renderSessionFileLibrary(); });
+    grid.append(button);
+  });
+  if (!selected) return;
+  const hero = document.createElement("figure");
+  if (String(selected.content_type || "").startsWith("image/")) {
+    const image = document.createElement("img");
+    image.src = artImageContentUrl(selected);
+    image.alt = selected.name || "Session file";
+    hero.append(image);
+  } else {
+    const documentPreview = document.createElement("div");
+    documentPreview.className = "room-file-document-preview";
+    const type = document.createElement("strong");
+    type.textContent = roomFileType(selected);
+    const contentType = document.createElement("span");
+    contentType.textContent = selected.content_type || "File";
+    documentPreview.append(type, contentType);
+    hero.append(documentPreview);
+  }
+  const caption = document.createElement("figcaption");
+  const name = document.createElement("h3");
+  name.textContent = selected.name || "File";
+  const facts = document.createElement("p");
+  facts.textContent = [formatBytes(Number(selected.size || 0)), readableEmailDate(selected.created_at || selected.ledgered_at)].filter(Boolean).join(" · ");
+  caption.append(name, facts);
+  hero.append(caption);
+  const actions = document.createElement("div");
+  actions.className = "session-files-preview-actions";
+  const open = document.createElement("a");
+  open.href = artImageContentUrl(selected);
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.textContent = "Open original";
+  const download = document.createElement("a");
+  download.href = artImageContentUrl(selected);
+  download.download = selected.name || "file";
+  download.textContent = "Download";
+  const attach = document.createElement("button");
+  const attached = state.selectedFiles.has(selected.file_id);
+  attach.type = "button";
+  attach.className = "primary-action";
+  attach.textContent = attached ? "Included with next message" : "Include with next message";
+  attach.addEventListener("click", () => {
+    if (attached) state.selectedFiles.delete(selected.file_id);
+    else state.selectedFiles.add(selected.file_id);
+    renderSessionFileLibrary();
+    showToast(attached ? "File removed from the next message." : "File will be included with your next message.");
+  });
+  actions.append(open, download, attach);
+  preview.append(hero, actions);
+}
+
+function openSessionFileLibrary() {
+  const dialog = el("session-files-dialog");
+  renderSessionFileLibrary();
+  if (!dialog.open) dialog.showModal();
 }
 
 function artReferenceCandidates() {
@@ -5078,6 +5193,12 @@ function renderRoomControl() {
     option.value = room.id;
     option.textContent = `${room.title} · ${room.default_persona}`;
     selector.append(option);
+    ROOM_PAGE_LOCATIONS.filter((page) => page.roomId === room.id).forEach((page) => {
+      const pageOption = document.createElement("option");
+      pageOption.value = `page:${page.path}`;
+      pageOption.textContent = `\u00a0\u00a0\u00a0\u00a0- ${page.label}`;
+      selector.append(pageOption);
+    });
   });
   selector.value = state.session?.active_room || "lobby";
   selector.disabled = state.sending || state.uploading || state.switchingRoom;
@@ -5382,15 +5503,6 @@ async function startAntiquesResearch(mode, caseId = "") {
   });
 }
 
-function renderRoomFileTools() {
-  const room = currentRoom();
-  const hasFileLibrary = Boolean(room && !["lobby", "art_department"].includes(room.id));
-  el("room-file-actions").hidden = !hasFileLibrary;
-  el("room-file-action-title").textContent = room ? `${room.title} files` : "Room files";
-  el("open-room-files").disabled = state.sending || state.uploading || state.switchingRoom;
-  if (!hasFileLibrary && el("room-file-dialog").open) closeRoomFileLibrary();
-}
-
 function renderGovernance() {
   const governance = state.governance || {};
   const navigator = governance.navigator || {};
@@ -5602,6 +5714,8 @@ function renderRoute() {
 
 function render() {
   el("session-title").textContent = state.session?.title || "New session";
+  const activeRoom = state.rooms.find((room) => room.id === state.session?.active_room);
+  el("toolbar-room-context").textContent = activeRoom?.title || state.session?.active_room || "Lobby";
   const fullAccess = state.runtime.access_mode === "full";
   el("access-status").className = `access-status ${fullAccess ? "full" : "read-only"}`;
   el("access-label").textContent = state.runtime.access_label || (fullAccess ? "Full computer access" : "Read-only computer access");
@@ -5625,7 +5739,6 @@ function render() {
     sendButton.title = "Send message";
   }
   el("message-input").disabled = state.sending || state.uploading;
-  el("attach-button").disabled = state.sending || state.uploading;
   el("open-marketplace-sell").disabled = state.sending || state.uploading || state.switchingRoom;
   el("open-item-intake").href = `/item-intake?${new URLSearchParams({
     workspace_id: state.workspace?.workspace_id || "",
@@ -5649,7 +5762,6 @@ function render() {
   renderArtTools();
   renderMuseumTools();
   renderAnimationTools();
-  renderRoomFileTools();
   renderResumeTools();
   renderGovernance();
   renderAdministration();
@@ -6364,6 +6476,97 @@ function showToast(message) {
   window.setTimeout(() => toast.classList.remove("show"), 4500);
 }
 
+const containedChatConfig = {
+  navigator: { roomId: "control_room", title: "Navigator", eyebrow: "Navigator · Control Room", placeholder: "Ask Navigator…" },
+  system: { roomId: "infrastructure_room", title: "System", eyebrow: "System · Infrastructure Room", placeholder: "Ask Infrastructure…" },
+};
+
+function renderContainedChat() {
+  const list = el("contained-chat-messages");
+  if (!list) return;
+  list.replaceChildren();
+  for (const row of state.containedChat.messages) {
+    const message = document.createElement("article");
+    message.className = `contained-chat-message ${row.role || "assistant"}${row.processing ? " processing" : ""}`;
+    const label = document.createElement("strong");
+    label.textContent = row.label || (row.role === "user" ? "You" : "Advisor");
+    const body = document.createElement("span");
+    body.textContent = row.text;
+    message.append(label, body);
+    list.append(message);
+  }
+  list.scrollTop = list.scrollHeight;
+  el("contained-chat-send").disabled = state.containedChat.sending;
+  el("contained-chat-input").disabled = state.containedChat.sending;
+}
+
+function openContainedChat(kind) {
+  const config = containedChatConfig[kind];
+  if (!config) return;
+  const activeRoom = state.rooms.find((room) => room.id === state.session?.active_room);
+  const roomTitle = activeRoom?.title || state.session?.active_room || "your current room";
+  state.containedChat = {
+    kind,
+    sending: false,
+    messages: [{
+      role: "assistant",
+      label: config.title,
+      text: `You are working in ${roomTitle}. I am available from the ${config.roomId === "control_room" ? "Control Room" : "Infrastructure Room"}; this consultation will not change your active room or add messages to its transcript.`,
+    }],
+  };
+  el("contained-chat-title").textContent = config.title;
+  el("contained-chat-eyebrow").textContent = config.eyebrow;
+  el("contained-chat-context").textContent = `Current room: ${roomTitle}. This is a contained consultation.`;
+  el("contained-chat-input").placeholder = config.placeholder;
+  renderContainedChat();
+  el("contained-chat-dialog").showModal();
+  window.setTimeout(() => el("contained-chat-input").focus(), 0);
+}
+
+async function sendContainedChat(event) {
+  event.preventDefault();
+  const text = el("contained-chat-input").value.trim();
+  const config = containedChatConfig[state.containedChat.kind];
+  if (!text || !config || state.containedChat.sending) return;
+  state.containedChat.messages.push({ role: "user", label: "You", text });
+  state.containedChat.messages.push({ role: "assistant", label: config.title, text: "Thinking…", processing: true });
+  state.containedChat.sending = true;
+  el("contained-chat-input").value = "";
+  renderContainedChat();
+  try {
+    const result = await api("/api/assistant-chat", {
+      method: "POST",
+      body: JSON.stringify({
+        workspace_id: state.workspace?.workspace_id,
+        session_id: state.session?.session_id,
+        assistant_room: config.roomId,
+        text,
+        request_id: globalThis.crypto?.randomUUID?.() || `advisor_${Date.now()}`,
+      }),
+    });
+    state.containedChat.messages.pop();
+    state.containedChat.messages.push({ role: "assistant", label: result.message?.speaker || config.title, text: result.message?.text || result.message?.content || "No response was returned." });
+  } catch (error) {
+    state.containedChat.messages.pop();
+    state.containedChat.messages.push({ role: "assistant", label: config.title, text: `Unable to respond: ${error.message || String(error)}` });
+  } finally {
+    state.containedChat.sending = false;
+    renderContainedChat();
+  }
+}
+
+async function saveSessionCheckpoint() {
+  try {
+    const result = await api("/api/session/save", {
+      method: "POST",
+      body: JSON.stringify({ workspace_id: state.workspace?.workspace_id, session_id: state.session?.session_id }),
+    });
+    applyState(result);
+    render();
+    showToast("Session checkpoint saved. Messages and files are saved as you work, too.");
+  } catch (error) { showError(error.message || String(error)); }
+}
+
 el("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = el("message-input");
@@ -6532,7 +6735,6 @@ el("art-gallery-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeArtGallery();
 });
-el("open-room-files").addEventListener("click", openRoomFileLibrary);
 el("room-file-close").addEventListener("click", closeRoomFileLibrary);
 el("room-file-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
@@ -6936,7 +7138,6 @@ async function uploadFiles(fileList, target = "chat") {
   }
 }
 
-el("attach-button").addEventListener("click", () => el("file-input").click());
 el("file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "chat"));
 el("email-attach-button").addEventListener("click", () => el("email-file-input").click());
 el("email-file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "email"));
@@ -7006,7 +7207,20 @@ async function navigateToRoom(roomId) {
 }
 
 el("room-selector").addEventListener("change", async (event) => {
-  await navigateToRoom(event.target.value);
+  const destination = String(event.target.value || "");
+  if (destination.startsWith("page:")) {
+    const page = ROOM_PAGE_LOCATIONS.find((row) => row.path === destination.slice(5));
+    if (!page) return renderRoomControl();
+    if (state.session?.active_room !== page.roomId) await navigateToRoom(page.roomId);
+    if (state.session?.active_room !== page.roomId) return renderRoomControl();
+    const query = new URLSearchParams({
+      workspace_id: state.workspace?.workspace_id || "",
+      session_id: state.session?.session_id || "",
+    });
+    location.href = `${page.path}?${query}`;
+    return;
+  }
+  await navigateToRoom(destination);
 });
 
 async function openImportantMail() {
@@ -7150,6 +7364,23 @@ async function handleAdministrationAction(event) {
 }
 
 el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
+el("toolbar-add-files").addEventListener("click", () => el("file-input").click());
+el("toolbar-view-files").addEventListener("click", openSessionFileLibrary);
+el("session-files-close").addEventListener("click", () => el("session-files-dialog").close());
+el("session-files-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("session-files-dialog").close(); });
+el("session-files-search").addEventListener("input", (event) => { state.sessionFileExplorer.query = event.target.value; renderSessionFileLibrary(); });
+el("session-files-sort").addEventListener("change", (event) => { state.sessionFileExplorer.sort = event.target.value; renderSessionFileLibrary(); });
+el("session-files-list-view").addEventListener("click", () => { state.sessionFileExplorer.view = "list"; renderSessionFileLibrary(); });
+el("session-files-grid-view").addEventListener("click", () => { state.sessionFileExplorer.view = "grid"; renderSessionFileLibrary(); });
+el("toolbar-navigator").addEventListener("click", () => openContainedChat("navigator"));
+el("toolbar-system").addEventListener("click", () => openContainedChat("system"));
+el("toolbar-selling").addEventListener("click", () => { location.href = "/market"; });
+el("toolbar-save-session").addEventListener("click", saveSessionCheckpoint);
+el("contained-chat-close").addEventListener("click", () => el("contained-chat-dialog").close());
+el("contained-chat-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("contained-chat-dialog").close(); });
+el("contained-chat-form").addEventListener("submit", sendContainedChat);
+el("open-system-log").addEventListener("click", () => { renderSystemLog(); el("system-log-dialog").showModal(); });
+el("system-log-close").addEventListener("click", () => el("system-log-dialog").close());
 el("important-mail-indicator").addEventListener("click", openImportantMail);
 el("important-mail-indicator").addEventListener("animationend", (event) => event.currentTarget.classList.remove("is-flashing"));
 el("startup-health-no").addEventListener("click", () => el("startup-health-dialog").close());
@@ -7238,7 +7469,11 @@ el("new-session").addEventListener("click", async () => {
   } catch (error) { showError(error.message || String(error)); }
 });
 
-api("/api/bootstrap").then((value) => {
+const initialStateQuery = new URLSearchParams(location.search);
+const initialStateUrl = initialStateQuery.get("workspace_id") && initialStateQuery.get("session_id")
+  ? `/api/state?workspace_id=${encodeURIComponent(initialStateQuery.get("workspace_id"))}&session_id=${encodeURIComponent(initialStateQuery.get("session_id"))}`
+  : "/api/bootstrap";
+api(initialStateUrl).then((value) => {
   applyState(value);
   if (state.session?.active_room === "my_office") window.setTimeout(checkDeliveryFailures, 0);
   window.setTimeout(refreshBackgroundMonitor, 0);

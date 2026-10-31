@@ -34,8 +34,11 @@
     }
   };
   const act = async (action, panel) => {
-    if (action === "rooms") return rooms(panel);
     if (action === "email" || action === "calendar") { close(); return goOffice(action); }
+    if (action === "system") {
+      if (!rootSurface()) { location.href = rootUrl("system"); return; }
+      close(); document.getElementById("open-system-log")?.click(); return;
+    }
     if (action === "navigator") {
       if (!rootSurface()) { location.href = rootUrl("navigator"); return; }
       close(); document.getElementById("navigator-status")?.click(); return;
@@ -46,20 +49,43 @@
     }
   };
   const build = () => {
-    if (document.getElementById("veridex-action-trigger")) return;
+    const existingTrigger = document.getElementById("veridex-action-trigger");
+    if (existingTrigger?.dataset.veridexActionsReady) return;
     const style = document.createElement("style");
     style.textContent = `.veridex-command{position:fixed;z-index:100;top:16px;right:18px}.veridex-action-trigger{width:42px;height:42px;display:grid;place-items:center;border:1px solid #315d3d;border-radius:8px;padding:0;color:#3dd06f;background:#18251d;box-shadow:0 9px 24px rgba(14,31,20,.2);font:700 22px/1 Georgia,serif}.veridex-action-trigger:hover,.veridex-action-trigger[aria-expanded="true"]{color:#fff;border-color:#3dd06f;background:#146331}.veridex-action-trigger:focus-visible,.veridex-action-menu button:focus-visible{outline:3px solid #8ce8a8;outline-offset:2px}.veridex-action-menu{position:absolute;top:50px;right:0;width:min(310px,calc(100vw - 28px));overflow:hidden;border:1px solid #cdd8cf;border-radius:12px;background:#fff;box-shadow:0 18px 44px rgba(15,31,21,.24);animation:veridex-menu-in 140ms ease both}.veridex-action-menu[hidden]{display:none}.veridex-action-menu header{display:flex;align-items:center;justify-content:space-between;padding:13px 14px 10px;border-bottom:1px solid #dce2dc;font:600 18px/1 Georgia,serif}.veridex-action-menu header button{border:0;padding:0 4px;color:#667069;background:transparent;font-size:22px}.veridex-action-menu-body{display:grid;padding:7px}.veridex-action-menu-body>button,.veridex-room-list button{display:grid;gap:2px;width:100%;border:0;border-radius:8px;padding:10px 11px;color:#172019;background:transparent;text-align:left}.veridex-action-menu-body>button:hover,.veridex-room-list button:hover{background:#eef7ef}.veridex-action-menu-body span{font-size:13px;font-weight:800}.veridex-action-menu-body small{color:#667069;font-size:11px}.veridex-menu-label{margin:4px 5px 8px;color:#667069;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.veridex-room-list{display:grid;gap:3px;max-height:min(48vh,370px);overflow:auto}.veridex-room-list button{border:1px solid transparent;font-size:12px;font-weight:700}@keyframes veridex-menu-in{from{opacity:0;transform:translateY(-5px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}`;
+    style.textContent += `.rail .veridex-action-menu{position:fixed;z-index:110;top:18px;left:280px;right:auto;direction:ltr;text-align:left}.veridex-action-menu *{box-sizing:border-box}.veridex-action-menu header strong{color:#172019;font:600 18px/1.1 Georgia,serif}.veridex-action-menu-body>button{min-height:52px;align-content:center;line-height:1.2;white-space:normal;overflow-wrap:anywhere}.veridex-action-menu-body span{display:block;line-height:1.2}.veridex-action-menu-body small{display:block;margin-top:3px;line-height:1.35}.veridex-room-list button{line-height:1.35;white-space:normal;overflow-wrap:anywhere}@media(max-width:760px){.rail .veridex-action-menu{top:58px;left:12px;right:auto}}`;
+    style.textContent += `.veridex-menu-account{display:flex;align-items:center;gap:7px;margin-top:5px;color:#667069;font:600 10px/1.2 system-ui,sans-serif}.veridex-menu-account .presence-dot{width:7px;height:7px;display:inline-block;border-radius:50%;background:#3dd06f;box-shadow:0 0 0 3px rgba(61,208,111,.14)}.veridex-menu-account small{display:block;margin-top:2px;color:#87918a;font-size:9px;font-weight:500}`;
     document.head.append(style);
-    const shell = document.createElement("div");
-    shell.className = "veridex-command";
-    shell.innerHTML = `<button id="veridex-action-trigger" class="veridex-action-trigger" type="button" aria-label="Open Veridex actions" aria-expanded="false" aria-controls="veridex-action-menu">V</button><section id="veridex-action-menu" class="veridex-action-menu" aria-label="Veridex actions" hidden><header><strong>Veridex</strong><button type="button" data-veridex-close aria-label="Close actions">×</button></header><div class="veridex-action-menu-body"><button type="button" data-veridex-action="rooms"><span>Rooms</span><small>Choose where to work</small></button><button type="button" data-veridex-action="email"><span>Email</span><small>Open Nancy’s composer</small></button><button type="button" data-veridex-action="calendar"><span>Calendar</span><small>Ask Nancy about your schedule</small></button><button type="button" data-veridex-action="navigator"><span>Navigator</span><small>Open governance status</small></button><button type="button" data-veridex-action="file"><span>Add file</span><small>Save to this session’s archive</small></button></div></section>`;
-    document.body.append(shell);
-    const trigger = shell.querySelector("#veridex-action-trigger"), panel = shell.querySelector("#veridex-action-menu");
+    const shell = existingTrigger ? existingTrigger.closest(".brand-block") : document.createElement("div");
+    if (!existingTrigger) {
+      shell.className = "veridex-command";
+      shell.innerHTML = `<button id="veridex-action-trigger" class="veridex-action-trigger" type="button" aria-label="Open Veridex actions" aria-expanded="false" aria-controls="veridex-action-menu">V</button>`;
+      document.body.append(shell);
+    }
+    shell.insertAdjacentHTML("beforeend", `<section id="veridex-action-menu" class="veridex-action-menu" aria-label="Veridex actions" hidden><header><strong>Veridex</strong><button type="button" data-veridex-close aria-label="Close actions">×</button></header><div class="veridex-action-menu-body"><button type="button" data-veridex-action="email"><span>Email</span><small>Open Nancy’s composer</small></button><button type="button" data-veridex-action="calendar"><span>Calendar</span><small>Ask Nancy about your schedule</small></button><button type="button" data-veridex-action="navigator"><span>Navigator</span><small>Open governance status</small></button><button type="button" data-veridex-action="system"><span>System</span><small>View room changes and system notices</small></button><button type="button" data-veridex-action="file"><span>Add file</span><small>Save to this session’s archive</small></button></div></section>`);
+    const panel = shell.querySelector("#veridex-action-menu");
+    const menuHeader = panel?.querySelector("header");
+    const menuBrand = menuHeader?.querySelector("strong");
+    if (menuBrand && !menuHeader.querySelector(".veridex-menu-account")) {
+      const account = document.createElement("div");
+      account.className = "veridex-menu-account";
+      account.innerHTML = `<span class="presence-dot" aria-hidden="true"></span><span>Local User<small>Single account · saved locally</small></span>`;
+      menuBrand.parentElement.append(account);
+    }
+    const trigger = document.getElementById("veridex-action-trigger");
+    trigger.dataset.veridexActionsReady = "true";
     trigger.addEventListener("click", () => { const open = panel.hidden; panel.hidden = !open; trigger.setAttribute("aria-expanded", String(open)); });
     shell.querySelector("[data-veridex-close]").addEventListener("click", close);
     shell.querySelectorAll("[data-veridex-action]").forEach((button) => button.addEventListener("click", () => act(button.dataset.veridexAction, panel)));
     document.addEventListener("click", (event) => { if (!shell.contains(event.target)) close(); });
     document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+    const railCollapse = document.getElementById("rail-collapse");
+    railCollapse?.addEventListener("click", () => {
+      const app = document.querySelector(".app-shell"), collapsed = app?.classList.toggle("rail-collapsed");
+      railCollapse.setAttribute("aria-expanded", String(!collapsed));
+      railCollapse.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+      railCollapse.querySelector(".sr-only").textContent = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    });
     const requested = query.get("veridex_menu");
     if (requested) window.setTimeout(() => { panel.hidden = false; trigger.setAttribute("aria-expanded", "true"); if (requested === "rooms") rooms(panel); else act(requested, panel); }, 550);
   };

@@ -1264,6 +1264,41 @@ def state_response(value: Dict[str, Any]) -> Dict[str, Any]:
     return {**value, "runtime": runtime_status(), "governance": governance, "administration": ADMIN.bootstrap(), "antiques": antiques}
 
 
+def session_save_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    session = STORE.find_session(session_id)
+    workspace_id = workspace_id or str(session.get("workspace_id") or "")
+    STORE.save_session_checkpoint(workspace_id, session_id)
+    return state_response(STORE.bootstrap(workspace_id, session_id))
+
+
+def market_bootstrap_response() -> Dict[str, Any]:
+    batches = SELLER_INTAKE.list_batches()
+    items = []
+    for batch in batches:
+        try:
+            items.extend(SELLER_INTAKE.get_batch(str(batch.get("batch_id") or "")).get("items") or [])
+        except (KeyError, ValueError):
+            continue
+    return {"item_count": len(items), "items": items, "batches": batches}
+
+
+def contained_assistant_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    assistant_room = str(payload.get("assistant_room") or "").strip()
+    if assistant_room not in {"control_room", "infrastructure_room"}:
+        raise ValueError("assistant_room must be control_room or infrastructure_room")
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    session = STORE.find_session(session_id)
+    workspace_id = str(payload.get("workspace_id") or session.get("workspace_id") or "").strip()
+    workspace_context(workspace_id, session_id)
+    return run_chat_request({**payload, "workspace_id": workspace_id, "_ephemeral": True, "_contained_assistant": True, "_assistant_room": assistant_room})
+
+
 def public_delivery_alert(
     row: Dict[str, Any],
     workspace_id: str = "",
@@ -1789,6 +1824,7 @@ def local_chat_response(
     task_type: str,
     **extra: Any,
 ) -> Dict[str, Any]:
+    ephemeral = bool(extra.pop("ephemeral", user_message.get("_ephemeral", False)))
     message_metadata = dict(extra.pop("message_metadata", {}) or {})
     if user_message.get("ebay_item_id"):
         message_metadata.setdefault("ebay_item_id", user_message["ebay_item_id"])
@@ -3850,6 +3886,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(payload.get("session_id") or "").strip()
     request_id = str(payload.get("request_id") or "").strip()
     ephemeral = bool(payload.get("_ephemeral"))
+    contained_assistant = bool(payload.get("_contained_assistant"))
     cancel_event = payload.get("_cancel_event")
     if not session_id:
         raise ValueError("session_id is required")
@@ -3873,8 +3910,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         if structured_email_draft
         else "Review the attached file or files and summarize what is important."
     )
-    active_room = str(session.get("active_room") or "lobby")
-    active_persona = str(session.get("active_persona") or "Receptionist")
+    session_room = str(session.get("active_room") or "lobby")
+    active_room = str(payload.get("_assistant_room") or session_room) if contained_assistant else session_room
+    if contained_assistant and (not ephemeral or active_room not in {"control_room", "infrastructure_room"}):
+        raise ValueError("contained assistant chat is available only for Navigator or Infrastructure")
+    active_persona = str((room_by_id(active_room) or {}).get("default_persona") or session.get("active_persona") or "Receptionist")
     ebay_item_id = str(payload.get("ebay_item_id") or "").strip()
     ebay_item = None
     if ebay_item_id:
@@ -3889,7 +3929,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     if ebay_item_id:
         previous = [row for row in previous if str(row.get("ebay_item_id") or "") == ebay_item_id]
     public_attachments = [public_file(row) for row in attachments]
-    user_message = {"role": "user", "content": user_prompt, "speaker": "You", "attachments": public_attachments, "request_id": request_id, "ebay_item_id": ebay_item_id} if ephemeral else STORE.append_message(
+    user_message = {"role": "user", "content": user_prompt, "speaker": "You", "attachments": public_attachments, "request_id": request_id, "ebay_item_id": ebay_item_id, "_ephemeral": True} if ephemeral else STORE.append_message(
         workspace_id, session_id, "user", user_prompt, speaker="You", attachments=public_attachments, request_id=request_id, ebay_item_id=ebay_item_id
     )
     payload["_persisted_user_message"] = user_message
@@ -3898,7 +3938,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     workspace_governance = STORE.ensure_governance_state(workspace_id)
     active_gates = dict(workspace_governance.get("gates") or {})
     pending = STORE.pending_governance(workspace_id, session_id)
-    admin_response = maybe_admin_chat_response(
+    admin_response = None if contained_assistant else maybe_admin_chat_response(
         workspace_id,
         session_id,
         user_message,
@@ -3917,7 +3957,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             preflight,
             user_prompt,
         )
-    if preflight.get("resolved_pending"):
+    if preflight.get("resolved_pending") and not contained_assistant:
         STORE.clear_pending_governance(workspace_id, session_id)
         resolution = preflight.get("resolution") if isinstance(preflight.get("resolution"), dict) else {}
         if resolution.get("save_authorized"):
@@ -3988,7 +4028,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             },
         )
     governed_prompt = str(preflight.get("effective_text") or user_prompt)
-    room_route = route_room_request(governed_prompt) if not attachments else None
+    room_route = route_room_request(governed_prompt) if not attachments and not contained_assistant else None
     if room_route and room_route["action"] == "directory":
         return local_chat_response(
             workspace_id,
@@ -4131,7 +4171,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             draft_override=structured_email_draft,
             attachments=attachments,
         )
-    if wants_gmail_route(governed_prompt, workspace_id, session_id) and (
+    if not contained_assistant and wants_gmail_route(governed_prompt, workspace_id, session_id) and (
         not attachments or bool(parse_email_send_request(governed_prompt))
     ):
         return gmail_chat_response(
@@ -4142,7 +4182,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             attachments=attachments,
         )
     task_type = classify_task(" ".join([governed_prompt, *[str(row.get("name") or "") for row in attachments]]))
-    explicit_google_search = wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous)
+    explicit_google_search = not contained_assistant and (wants_google_search(governed_prompt) or continues_google_search(governed_prompt, previous))
     if explicit_google_search:
         task_type = "search_deep"
     policy = select_model(task_type)
@@ -4173,6 +4213,13 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "title": room_title,
         "active_persona": active_persona,
     }
+    if contained_assistant:
+        source_room = room_by_id(session_room) or room_by_id("lobby")
+        context["operator_room"] = {
+            "id": session_room,
+            "title": str((source_room or {}).get("title") or session_room),
+            "active_persona": str(session.get("active_persona") or ""),
+        }
     context["available_rooms"] = rooms_payload()
     context["governance"] = governance_status(workspace_id, session_id)
     context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
@@ -4240,7 +4287,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
                 governance=governance_status(workspace_id, session_id),
             )
         context["google_browser_search"] = google_browser_search
-    artifact_required = governance.requires_file_artifact(governed_prompt, task_type)
+    artifact_required = not contained_assistant and governance.requires_file_artifact(governed_prompt, task_type)
     artifact_output_dir = (
         STORE.prepare_generated_output_dir(workspace_id, session_id, user_message["message_id"])
         if artifact_required
@@ -4268,6 +4315,11 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "When asked to find local files, use the available shell tools and report only verified paths. "
             "Attached files are saved locally and their exact paths are supplied in governed context. "
             "Use the governed context for continuity, but do not claim actions that were not performed."
+            + (
+                " This is a contained advisor consultation. The operator remains in context.operator_room and must not be moved. "
+                "Do not navigate rooms, write files, invoke providers, or take consequential actions; provide guidance and explain the next step instead."
+                if contained_assistant else ""
+            )
             + (
                 " For resume work, use only facts in attached files, the current request, or Resume Studio's explicitly saved profile/project. "
                 "Never invent employers, dates, credentials, skills, accomplishments, or metrics; label useful missing metrics as questions for the user."
@@ -4469,7 +4521,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     response_text = str(result["text"])
     if generated_artifacts:
         response_text = f"{response_text.rstrip()}\n\n{generated_artifact_report(generated_artifacts)}"
-    assistant_message = ({"role": "assistant", "content": response_text, "speaker": "Leo", "provider": result["provider"], "model": result["model"], "reasoning_effort": result["reasoning_effort"], "task_type": result["task_type"]} if ephemeral else STORE.append_message(
+    assistant_message = ({"role": "assistant", "content": response_text, "speaker": active_persona, "provider": result["provider"], "model": result["model"], "reasoning_effort": result["reasoning_effort"], "task_type": result["task_type"]} if ephemeral else STORE.append_message(
         workspace_id,
         session_id,
         "assistant",
@@ -4679,6 +4731,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
     def _serve_asset(self, route: str) -> None:
         if route in {"/", "/chat"}:
             relative = "index.html"
+        elif route in {"/market", "/market/"}:
+            relative = "market/index.html"
+        elif route.startswith("/market/"):
+            relative = "market/" + route.removeprefix("/market/")
         elif route in {"/item-intake", "/item-intake/"}:
             relative = "item_intake/index.html"
         elif route.startswith("/item-intake/"):
@@ -4717,6 +4773,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/health":
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
+            elif parsed.path == "/api/market/bootstrap":
+                self._json(market_bootstrap_response())
             elif parsed.path == "/api/ebay-room/bootstrap":
                 self._json(ebay_room_bootstrap(
                     str(query.get("workspace_id", [""])[0]).strip(),
@@ -5580,6 +5638,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     str(payload.get("title") or "New session"),
                 )
                 self._json(state_response(STORE.bootstrap(session["workspace_id"], session["session_id"])), HTTPStatus.CREATED)
+            elif parsed.path == "/api/session/save":
+                self._json(session_save_response(payload))
+            elif parsed.path == "/api/assistant-chat":
+                self._json(contained_assistant_response(payload))
             elif parsed.path == "/api/rooms":
                 self._json(room_change_response(payload))
             elif parsed.path == "/api/admin/proposals":

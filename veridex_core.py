@@ -253,6 +253,17 @@ class VeridexStore:
                 "room_title": room["title"],
             }
 
+    def save_session_checkpoint(self, workspace_id: str, session_id: str) -> Dict[str, Any]:
+        """Persist a deliberate checkpoint without adding transcript clutter."""
+        with self._lock:
+            session = self.find_session(session_id)
+            if session.get("workspace_id") != workspace_id:
+                raise KeyError("Session does not belong to workspace")
+            session["updated_at"] = utc_now()
+            self._write_json(self.session_dir(workspace_id, session_id) / "session.json", session)
+            self._touch_workspace(workspace_id)
+            return dict(session)
+
     def ensure_governance_state(self, workspace_id: str) -> Dict[str, Any]:
         with self._lock:
             self.get_workspace(workspace_id)

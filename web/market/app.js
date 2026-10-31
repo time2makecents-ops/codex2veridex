@@ -1,0 +1,3 @@
+const marketApi=async(path,options={})=>{const response=await fetch(path,{headers:{"Content-Type":"application/json",...(options.headers||{})},...options});const value=await response.json();if(!response.ok)throw new Error(value.error||`Request failed (${response.status})`);return value};
+marketApi("/api/market/bootstrap").then(value=>{document.getElementById("market-item-count").textContent=String(value.item_count||0)}).catch(()=>{document.getElementById("market-item-count").textContent="—"});
+document.getElementById("market-add-item").addEventListener("click",()=>{location.href="/ebay-room?new_item=1"});

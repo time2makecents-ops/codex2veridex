@@ -12,7 +12,7 @@
     <div class="app-shell">
       <aside class="rail">
         <div class="brand-block">
-          <div class="brand-mark">V</div>
+          <button id="veridex-action-trigger" class="brand-mark" type="button" aria-label="Open Veridex actions" aria-expanded="false" aria-controls="veridex-action-menu">V</button>
           <div>
             <div class="eyebrow">Local governed AI</div>
             <div class="brand">Veridex</div>
@@ -77,23 +77,35 @@
           </details>
         </nav>
 
-        <div class="local-account">
+        <div class="local-account" hidden>
           <span class="presence-dot"></span>
           <div>
             <strong id="account-name">Local User</strong>
             <span>Single account · saved locally</span>
           </div>
         </div>
+        <button id="rail-collapse" class="rail-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true"><span aria-hidden="true">‹</span><span class="sr-only">Collapse sidebar</span></button>
       </aside>
 
       <main id="chat-panel" class="chat-panel">
         <div id="chat-drop-overlay" class="chat-drop-overlay" hidden aria-hidden="true">
           <div><strong>Drop files to attach</strong><span>They will be included with your next message.</span></div>
         </div>
-        <header class="chat-header">
-          <div>
+        <header class="workspace-toolbar" aria-label="Session actions">
+          <div class="workspace-session">
+            <span class="eyebrow">Current session</span>
             <h1 id="session-title">New session</h1>
+            <span id="toolbar-room-context" class="toolbar-room-context">Lobby</span>
           </div>
+          <nav class="workspace-toolbar-actions" aria-label="Session controls">
+            <input id="file-input" type="file" multiple hidden />
+            <button id="toolbar-add-files" type="button">Add files</button>
+            <button id="toolbar-view-files" type="button">View files</button>
+            <button id="toolbar-navigator" type="button">Navigator</button>
+            <button id="toolbar-save-session" class="toolbar-save" type="button">Save</button>
+            <button id="toolbar-system" type="button">System</button>
+            <button id="toolbar-selling" type="button">Selling</button>
+          </nav>
         </header>
 
         <section id="messages" class="messages" aria-label="Chat transcript">
@@ -105,7 +117,6 @@
         </section>
 
         <footer class="composer-wrap">
-          <div id="file-tray" class="file-tray" aria-label="Session files"></div>
           <section id="nancy-important-mail" class="nancy-important-mail" aria-label="Nancy important mail" aria-live="polite" hidden>
             <div class="nancy-mail-heading"><div><div class="eyebrow">Nancy Mail</div><h2>Important messages</h2></div><span id="nancy-mail-checked"></span></div>
             <div id="nancy-mail-list" class="nancy-mail-list"></div>
@@ -138,17 +149,11 @@
             <span><strong>Animation Studio</strong><small>Build Eternia, generate mouth cues, and prepare verified shots</small></span>
             <button id="open-animation-studio" type="button">Open studio</button>
           </div>
-          <div id="room-file-actions" class="art-actions room-file-actions" hidden>
-            <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
-            <button id="open-room-files" type="button">Files</button>
-          </div>
           <div id="resume-actions" class="art-actions resume-actions" hidden>
             <span><strong>HR Resume Studio</strong><small>Build, tailor, review, and export application materials</small></span>
             <button id="open-resume-studio" type="button">Resume Studio</button>
           </div>
           <form id="composer" class="composer">
-            <input id="file-input" type="file" multiple hidden />
-            <button id="attach-button" class="attach-button" type="button" title="Attach files" aria-label="Attach files">+</button>
             <button id="voice-input" class="voice-input" type="button" title="Dictate a message" aria-label="Dictate a message" aria-pressed="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 0 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-6-4a1 1 0 0 1 2 0v.5a4 4 0 0 0 8 0v-.5a1 1 0 1 1 2 0v.5a6 6 0 0 1-5 5.92V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A6 6 0 0 1 6 12v-.5Z"/></svg>
             </button>
@@ -188,6 +193,44 @@
           <button class="primary-action" type="submit">Review with Nancy</button>
         </footer>
       </form>
+    </dialog>
+    <dialog id="session-files-dialog" class="session-files-dialog" aria-labelledby="session-files-title">
+      <section class="session-files-shell">
+        <header>
+          <div><div class="eyebrow">Session files</div><h2 id="session-files-title">Files</h2><p id="session-files-summary">Files available in this session</p></div>
+          <button id="session-files-close" class="dialog-close" type="button" aria-label="Close session files">&times;</button>
+        </header>
+        <div class="session-files-toolbar" aria-label="File explorer controls">
+          <label>Search<input id="session-files-search" type="search" placeholder="Search files" /></label>
+          <label>Sort<select id="session-files-sort"><option value="recent">Recently added</option><option value="name">Name</option><option value="size">Size</option><option value="type">Type</option></select></label>
+          <div class="session-files-view" role="group" aria-label="File view"><button id="session-files-list-view" type="button" aria-pressed="true">List</button><button id="session-files-grid-view" type="button" aria-pressed="false">Grid</button></div>
+        </div>
+        <div id="session-files-content" class="session-files-content">
+          <div id="session-files-grid" class="session-files-list" aria-label="Session files"></div>
+          <aside id="session-files-preview" class="session-files-preview" aria-live="polite"></aside>
+        </div>
+        <div id="session-files-empty" class="session-files-empty" hidden>
+          <strong>No files in this session yet</strong>
+          <span>Use Add files in the top bar to add files here.</span>
+        </div>
+      </section>
+    </dialog>
+    <dialog id="contained-chat-dialog" class="contained-chat-dialog" aria-labelledby="contained-chat-title">
+      <section class="contained-chat-shell">
+        <header>
+          <div>
+            <div id="contained-chat-eyebrow" class="eyebrow">Navigator · Control Room</div>
+            <h2 id="contained-chat-title">Navigator</h2>
+            <p id="contained-chat-context">Consulting from your current room without changing rooms.</p>
+          </div>
+          <button id="contained-chat-close" class="dialog-close" type="button" aria-label="Close advisor chat">&times;</button>
+        </header>
+        <div id="contained-chat-messages" class="contained-chat-messages" aria-live="polite"></div>
+        <form id="contained-chat-form" class="contained-chat-composer">
+          <textarea id="contained-chat-input" rows="2" placeholder="Ask Navigator…" aria-label="Message advisor"></textarea>
+          <button id="contained-chat-send" class="primary-action" type="submit">Send</button>
+        </form>
+      </section>
     </dialog>
     <dialog id="address-book-dialog" class="address-book-dialog" aria-labelledby="address-book-title">
       <section class="address-book-shell">
@@ -777,6 +820,8 @@
       </div>
       <div class="governance-section"><h3>Source provenance</h3><div id="governance-provenance" class="governance-rule-list"></div></div>
     </aside>
+    <dialog id="system-log-dialog" class="system-log-dialog" aria-labelledby="system-log-title"><section><header><div><div class="eyebrow">Veridex system</div><h2 id="system-log-title">System log</h2><p>Room changes and operational notices are kept here instead of in your working conversation.</p></div><button id="system-log-close" class="dialog-close" type="button" aria-label="Close system log">×</button></header><div id="system-log-list" class="system-log-list"></div></section></dialog>
+    <button id="open-system-log" type="button" hidden aria-hidden="true">Open system log</button>
     <div id="governance-scrim" class="governance-scrim" hidden></div>
     <aside id="administration-panel" class="administration-panel" hidden aria-label="Infrastructure administration">
       <div class="administration-header">
@@ -825,7 +870,7 @@
       </div>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script src="/app.js" defer></script>
-    <script src="/veridex_actions.js?v=20261031-1" defer></script>
+    <script src="/app.js?v=20261031-9" defer></script>
+    <script src="/veridex_actions.js?v=20261031-6" defer></script>
   </body>
 </html>
