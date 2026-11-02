@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional
 
-from gmail_gateway import GmailGateway, GmailGatewayError, LOCAL_ENV, _load_env_file
+from gmail_gateway import GmailGateway, GmailGatewayError, LOCAL_ENV, _load_env_file, _default_env
 
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -334,7 +334,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Connect Veridex to a local Gmail account")
     parser.add_argument("--import-env", type=Path, help="One-time source for OAuth client configuration")
     parser.add_argument("--configure-only", action="store_true")
-    parser.add_argument("--workspace-id", help="Store the Gmail grant only for this workspace")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--workspace-id", help="Store the Gmail grant for this workspace account")
+    scope.add_argument("--shared", action="store_true", help="Reconnect the shared corporate Gmail account")
     parser.add_argument("--account-email", default="", help="Optional Google account hint")
     args = parser.parse_args()
     try:
@@ -344,15 +346,16 @@ def main() -> int:
         if args.configure_only:
             return 0
         env = None
-        if args.workspace_id:
+        if args.workspace_id or args.shared:
             from connected_accounts import ConnectedAccounts
 
             root = Path(__file__).resolve().parent
             data_root = Path(os.environ.get("VERIDEX_DATA_DIR", str(root / "data"))).resolve()
-            env = ConnectedAccounts(data_root, root).gmail_env(args.workspace_id, account_email=args.account_email)
+            accounts = ConnectedAccounts(data_root, root, shared_workspace_id=_default_env().get("VERIDEX_SHARED_ACCOUNTS_WORKSPACE_ID", ""))
+            env = accounts.shared_gmail_env() if args.shared else accounts.gmail_env(args.workspace_id, account_email=args.account_email)
         status = connect(env)
         if args.workspace_id:
-            ConnectedAccounts(data_root, root).assign_gmail(args.workspace_id, str(status.get("account_email") or ""))
+            accounts.assign_gmail(args.workspace_id, str(status.get("account_email") or ""))
         print(f"Connected Veridex Gmail as {status.get('account_email')}.", flush=True)
         return 0
     except (GmailGatewayError, OSError) as exc:

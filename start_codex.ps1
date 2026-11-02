@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$PrintRoute,
+    [switch]$CheckSetup,
+    [string]$SetupRoot = "",
     [string]$RouteConfigFile = "",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$CodexArguments
@@ -118,8 +120,30 @@ if ($PrintRoute) {
 }
 
 $codex = Get-Command codex -ErrorAction Stop
+$setupPython = Get-Command python -ErrorAction Stop
+if (-not $SetupRoot) {
+    $SetupRoot = Join-Path $env:USERPROFILE "codex-personal-setup"
+    $setupState = Join-Path (Split-Path -Parent $codexConfig) ".personal-setup\state.json"
+    if (Test-Path -LiteralPath $setupState) {
+        # Windows PowerShell 5 cannot parse JSON objects with an empty property
+        # name; Python also handles the installer's root-table settings record.
+        $installedSource = & $setupPython.Source -c 'import json,sys; print(json.load(open(sys.argv[1], encoding=''utf-8'')).get(''source'', ''''))' $setupState
+        if ($LASTEXITCODE -ne 0) { throw "Personal setup state could not be read." }
+        if ($installedSource) { $SetupRoot = [string]$installedSource }
+    }
+}
+$setupScript = Join-Path $SetupRoot "setup.py"
+if (Test-Path -LiteralPath $setupScript) {
+    & $setupPython.Source $setupScript diagnose --workspace $workspace --verify-prompt --check-remote --brief
+    if ($LASTEXITCODE -ne 0) { throw "Personal setup diagnostic failed. Resolve rule loading before starting Codex." }
+} elseif ($CheckSetup) {
+    throw "Personal setup bundle not found. Install it or provide -SetupRoot."
+} else {
+    Write-Warning "Personal setup bundle not found; instruction loading has not been verified."
+}
+if ($CheckSetup) { return }
 Write-Host "Starting a fresh Codex session in $workspace"
-Write-Host "Personal rules: $codexConfig"
+Write-Host "Model configuration: $codexConfig"
 Write-Host "Workspace rules: $(Join-Path $workspace 'AGENTS.md')"
 Write-Host "Configured terminal route: $configuredModel / $configuredReasoning ($routeSource)"
 Write-Warning "Codex permissions: danger-full-access; approval prompts: disabled."

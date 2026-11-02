@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+dependencies { implementation 'com.google.android.gms:play-services-code-scanner:16.1.0' }
+
+android {
+    namespace 'local.veridex.capture'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'local.veridex.capture'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1'
+    }
+}

@@ -22,11 +22,11 @@ identity metadata alone is not a mismatch.
 
 | Development phase | Required terminal model | Reasoning |
 | --- | --- | --- |
-| Planning and architecture | `gpt-5.6-sol` | high |
-| Coding, review, and diagnosis | `gpt-5.6-sol` | high |
-| Standalone, long, or batched execution of completed tests | `gpt-5.6-luna` | low |
-| Failed or ambiguous test diagnosis | `gpt-5.6-sol` | high |
-| Final acceptance, commit, and release | `gpt-5.6-sol` | high |
+| Planning and architecture | `gpt-6.1-sol` | high |
+| Coding, review, and diagnosis | `gpt-6.1-sol` | high |
+| Standalone, long, or batched execution of completed tests | `gpt-6-luna` | low |
+| Failed or ambiguous test diagnosis | `gpt-6.1-sol` | high |
+| Final acceptance, commit, and release | `gpt-6.1-sol` | high |
 
 A narrow deterministic test may run on the active Sol/high development route
 when a separate handoff would cost more than the test. Use Luna/low for

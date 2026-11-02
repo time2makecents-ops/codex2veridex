@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -8,6 +11,126 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for attachment checks")
+    def test_betting_image_upload_paste_and_session_switch(self) -> None:
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        upload = script[script.index("async function uploadFiles("):script.index('el("file-input").addEventListener("change"')]
+        paste = script[script.index("function pasteBettingImages("):script.index('el("chat-panel").addEventListener("paste"')]
+        program = r"""
+const assert = require('node:assert/strict'), vm = require('node:vm');
+const state = {workspace:{workspace_id:'ws_original'},session:{session_id:'s_original',active_room:'betting'},files:[],selectedFiles:new Set()};
+const calls=[], errors=[], input={value:'selected'};
+const context={File, URLSearchParams, state, document:{querySelector:()=>null},
+  el:()=>input, render:()=>{}, showError:e=>errors.push(e),
+  api:async(url,options)=>{calls.push({url,options});const file={file_id:'file_'+calls.length};return {file,files:[...state.files,file]};}};
+vm.createContext(context); vm.runInContext(SOURCE,context);
+(async()=>{
+ const png=new File(['png'],'screenshot.png',{type:'image/png'});
+ const jpg=new File(['jpg'],'photo.jpg',{type:'image/jpeg'});
+ await context.uploadFiles([png,jpg],'betting');
+ assert.equal(calls.length,2); assert.equal(state.selectedFiles.size,2);
+ assert.equal(calls[0].options.body,png); assert.equal(input.value,'');
+ assert.ok(calls.every(c=>c.url.includes('workspace_id=ws_original')&&c.url.includes('session_id=s_original')));
+ await context.uploadFiles([new File(['pdf'],'test.pdf',{type:'application/pdf'})],'betting');
+ assert.equal(calls.length,2); assert.match(errors.pop(),/PNG/);
+ let prevented=false;
+ context.pasteBettingImages({clipboardData:{files:[]},preventDefault:()=>prevented=true});
+ assert.equal(prevented,false);
+ context.pasteBettingImages({clipboardData:{files:[png]},preventDefault:()=>prevented=true});
+ await new Promise(setImmediate);
+ assert.equal(prevented,true); assert.equal(calls.length,3);
+ context.api=async(url,options)=>{calls.push({url,options});state.workspace={workspace_id:'ws_other'};state.session={session_id:'s_other',active_room:'betting'};state.files=[];state.selectedFiles.clear();return {file:{file_id:'wrong_session'},files:[{file_id:'wrong_session'}]};};
+ await context.uploadFiles([png,jpg],'betting');
+ assert.equal(calls.length,4); assert.equal(state.files.length,0); assert.equal(state.selectedFiles.size,0);
+ assert.equal(state.uploading,false); assert.match(errors.pop(),/original session/);
+ state.session.active_room='lobby'; prevented=false;
+ context.pasteBettingImages({clipboardData:{files:[png]},preventDefault:()=>prevented=true});
+ assert.equal(prevented,false); assert.equal(calls.length,4);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run([shutil.which("node"), "-e", "const SOURCE = " + json.dumps(upload + "\n" + paste) + ";\n" + program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_sidebar_menus_scroll_inside_the_viewport(self) -> None:
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+        nav = (ROOT / "web" / "veridex_global_nav.js").read_text(encoding="utf-8")
+        actions = (ROOT / "web" / "veridex_actions.js").read_text(encoding="utf-8")
+        menus = styles.split('.rail-menus {', 1)[1].split('}', 1)[0]
+        self.assertIn('flex: 1 1 auto', menus)
+        self.assertIn('overflow-y: auto', menus)
+        self.assertIn('padding-bottom: 16px', menus)
+        self.assertIn('.rail-menu { flex: 0 0 auto;', styles)
+        self.assertIn('.veridex-global-nav .rail-menu{flex:0 0 auto}', nav)
+        self.assertIn('height:100dvh;overflow:hidden', nav)
+        self.assertIn('max-height:calc(100dvh - 36px)', actions)
+
+    def test_sidebar_identity_is_removed_and_corporate_gmail_has_reconnect_controls(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        nav = (ROOT / "web" / "veridex_global_nav.js").read_text(encoding="utf-8")
+        self.assertNotIn('class="local-account"', html)
+        self.assertNotIn('class="local-account"', nav)
+        self.assertNotIn('el("account-name")', script)
+        self.assertIn('id="shared-gmail-connect"', html)
+        self.assertIn('id="shared-gmail-refresh"', html)
+        self.assertIn('() => connectGmail(true)', script)
+        self.assertIn('() => connectGmail(false)', script)
+        self.assertIn('account_scope: shared ? "shared" : "workspace"', script)
+
+    def test_connected_accounts_toolbar_and_shared_scope_are_visible(self) -> None:
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        toolbar = html.split('<nav class="workspace-toolbar-actions"', 1)[1].split('</nav>', 1)[0]
+        self.assertIn('id="toolbar-connected-accounts"', toolbar)
+        self.assertIn('el("toolbar-connected-accounts").addEventListener("click", openConnectedAccounts)', script)
+        self.assertIn('value.isolation === "shared_accounts"', script)
+        self.assertIn('Accounts are shared across all workspaces', script)
+        self.assertIn('Reconnecting or disconnecting an account applies everywhere', script)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for navigation checks")
+    def test_workspace_selection_survives_refresh_and_menu_navigation(self) -> None:
+        script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        menu = (ROOT / "web" / "veridex_actions.js").read_text(encoding="utf-8")
+        selection = script[script.index("function applyState("):script.index("  state.workspaces = value.workspaces")]
+        startup = script[script.index("const initialStateQuery ="):script.index("api(initialStateUrl).then")]
+        menu_url = menu[menu.index("  const rootUrl ="):menu.index("  const rootSurface =")]
+        program = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = {
+  URL, URLSearchParams, window: {},
+  state: { messages: [], workspace: null, session: null },
+  location: { href: 'http://localhost:8765/?veridex_menu=accounts#anchor', search: '?veridex_menu=accounts' },
+};
+context.history = { state: null, replaceState(_state, _title, url) {
+  context.location.href = String(url);
+  context.location.search = new URL(url).search;
+}};
+vm.createContext(context);
+vm.runInContext(SELECTION + '\n}', context);
+vm.runInContext(MENU_URL, context);
+vm.runInContext(`applyState({workspace:{workspace_id:'ws_first'},session:{session_id:'s_first'}})`, context);
+vm.runInContext(`applyState({workspace:{workspace_id:'ws_selected'},session:{session_id:'s_selected'}})`, context);
+const selected = new URL(context.location.href);
+assert.equal(selected.searchParams.get('workspace_id'), 'ws_selected');
+assert.equal(selected.searchParams.get('session_id'), 's_selected');
+assert.equal(selected.searchParams.get('veridex_menu'), 'accounts');
+assert.equal(selected.hash, '#anchor');
+const startup = vm.runInContext(STARTUP + '\ninitialStateUrl', context);
+assert.equal(startup, '/api/state?workspace_id=ws_selected&session_id=s_selected');
+const menu = new URL(vm.runInContext(`rootUrl('accounts')`, context), selected);
+assert.equal(menu.searchParams.get('workspace_id'), 'ws_selected');
+assert.equal(menu.searchParams.get('session_id'), 's_selected');
+"""
+        program = "\n".join([
+            "const SELECTION = " + json.dumps(selection) + ";",
+            "const STARTUP = " + json.dumps(startup) + ";",
+            "const MENU_URL = " + json.dumps(menu_url) + ";",
+            program,
+        ])
+        result = subprocess.run([shutil.which("node"), "-e", program], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_veridex_action_menu_uses_workspace_sidebar(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "web" / "veridex_actions.js").read_text(encoding="utf-8")
@@ -15,6 +138,11 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('existingTrigger.closest(".brand-block")', script)
         self.assertIn('document.body.append(shell)', script)
         self.assertIn('panel.addEventListener("click"', script)
+        self.assertIn('data-veridex-action="rooms"', script)
+        self.assertIn('data-veridex-action="workspaces"', script)
+        self.assertIn('data-veridex-action="sessions"', script)
+        self.assertIn('sourceList.querySelectorAll("button.nav-item")', script)
+        self.assertIn('selector.dispatchEvent(new Event("change", { bubbles: true }))', script)
 
     def test_betting_scores_are_available_from_betting_room(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -23,6 +151,21 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('id="betting-league"', html)
         self.assertIn('state.session?.active_room !== "betting"', script)
         self.assertIn('/api/betting/scores?', script)
+        self.assertIn('id="betting-observations-list"', html)
+        self.assertIn('bettingObservations.unshift', script)
+        self.assertIn('bettingObservations.splice', script)
+        self.assertIn('id="betting-phone-request"', html)
+        self.assertIn('id="betting-phone-pair"', html)
+        self.assertIn('id="betting-add-screenshots"', html)
+        self.assertIn('id="betting-image-input"', html)
+        self.assertIn('accept="image/png,image/jpeg,image/webp,image/gif"', html)
+        self.assertIn('el("chat-panel").addEventListener("paste", pasteBettingImages)', script)
+        self.assertIn('thumbnail.src = artImageContentUrl(file)', script)
+        self.assertIn('id="composer-attachments"', html)
+        self.assertIn('Attached to next message:', script)
+        self.assertIn('state.selectedFiles.delete(file.file_id); renderFiles()', script)
+        self.assertIn('/api/phone-pair/qr?', script)
+        self.assertIn('/api/phone-capture/request', script)
 
     def test_startup_health_and_nancy_mail_alert_ui_are_present(self) -> None:
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -85,7 +228,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn('state.rooms.forEach((room)', script)
         self.assertIn('destination.startsWith("page:")', script)
         self.assertIn('await navigateToRoom(page.roomId)', script)
-        self.assertNotIn('data-veridex-action="rooms"', menu)
+        self.assertIn('data-veridex-action="rooms"', menu)
         self.assertIn('data-veridex-action="email"', menu)
         self.assertIn('data-veridex-action="calendar"', menu)
         self.assertIn('data-veridex-action="navigator"', menu)

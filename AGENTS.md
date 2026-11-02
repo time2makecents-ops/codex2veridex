@@ -8,6 +8,7 @@ These instructions apply to the entire repository.
 - Read the relevant sections of `ARCHITECTURE.md` before changing request flow, persistence, routing, rooms, governance, browser bridges, or artifact handling.
 - Follow `DEVELOPMENT_MODEL_POLICY.md` before development begins. State the configured and required model/reasoning once; repeat only if the route changes or mismatches, and pause on a mismatch.
 - Do not reread an unchanged instruction or reference file during the same task.
+- Use `WORKFLOW.md` for task records, handoffs, balanced usage, and cross-computer setup. Keep personal defaults in the global instructions rather than duplicating them here.
 - Treat `governance/navigator_governance_v1.0.0.json` as the committed runtime governance authority. Do not casually duplicate or weaken it elsewhere.
 
 ## Handoff selection

@@ -101,6 +101,35 @@ class StartCodexTests(unittest.TestCase):
                 "../other",
             )
 
+    def test_failed_personal_setup_check_stops_before_starting_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "config.toml").write_text('model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n')
+            (folder / "setup.py").write_text("raise SystemExit(7)\n")
+            result = subprocess.run([
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                str(ROOT / "start_codex.ps1"), "-CheckSetup", "-SetupRoot", str(folder),
+                "-RouteConfigFile", str(folder / "config.toml"),
+            ], cwd=ROOT, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Personal setup diagnostic failed", result.stderr)
+
+    def test_setup_source_can_be_read_from_installer_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "config.toml").write_text('model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n')
+            (folder / "setup.py").write_text('print("setup-check-ran")\n')
+            state = folder / ".personal-setup"
+            state.mkdir()
+            (state / "state.json").write_text(json.dumps({"source": str(folder), "settings": {"": {"model": "gpt-6.1-sol"}}}))
+            result = subprocess.run([
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                str(ROOT / "start_codex.ps1"), "-CheckSetup",
+                "-RouteConfigFile", str(folder / "config.toml"),
+            ], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("setup-check-ran", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

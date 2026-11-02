@@ -219,6 +219,12 @@ function applyState(value, preserveRoute = false) {
   }
   state.workspace = value.workspace;
   state.session = value.session;
+  if (state.workspace?.workspace_id && state.session?.session_id) {
+    const selectedUrl = new URL(location.href);
+    selectedUrl.searchParams.set("workspace_id", state.workspace.workspace_id);
+    selectedUrl.searchParams.set("session_id", state.session.session_id);
+    history.replaceState(history.state, "", selectedUrl);
+  }
   state.workspaces = value.workspaces || [];
   state.sessions = value.sessions || [];
   state.messages = value.messages || [];
@@ -321,7 +327,6 @@ function applyState(value, preserveRoute = false) {
     resetItemSelector();
   }
   if (!preserveRoute) state.route = savedRoute(state.messages);
-  if (value.account) el("account-name").textContent = value.account.display_name || "Local User";
   render();
   state.bootstrapped = true;
   if (wasBootstrapped && !sessionChanged && state.autoRead) {
@@ -1230,6 +1235,36 @@ function formatBytes(size) {
 }
 
 function renderFiles() {
+  const attachments = el("composer-attachments");
+  const selected = state.files.filter((file) => state.selectedFiles.has(file.file_id));
+  const uploadingChat = state.uploading && ["chat", "betting"].includes(state.uploadTarget);
+  attachments.replaceChildren();
+  attachments.hidden = !selected.length && !uploadingChat;
+  if (uploadingChat) {
+    const status = document.createElement("span");
+    status.textContent = "Adding photo or file…";
+    attachments.append(status);
+  }
+  if (selected.length) {
+    const label = document.createElement("strong"); label.textContent = "Attached to next message:";
+    attachments.append(label);
+    selected.forEach((file) => {
+      const item = document.createElement("span"); item.className = "composer-attachment";
+      if (String(file.content_type || "").startsWith("image/")) {
+        const thumbnail = document.createElement("img");
+        thumbnail.className = "composer-attachment-thumbnail";
+        thumbnail.src = artImageContentUrl(file);
+        thumbnail.alt = "";
+        item.append(thumbnail);
+      }
+      const name = document.createElement("span"); name.textContent = file.name || "Attachment";
+      const remove = document.createElement("button"); remove.type = "button";
+      remove.textContent = "Remove"; remove.disabled = state.sending || state.uploading;
+      remove.setAttribute("aria-label", `Remove ${file.name || "attachment"} from message`);
+      remove.addEventListener("click", () => { state.selectedFiles.delete(file.file_id); renderFiles(); });
+      item.append(name, remove); attachments.append(item);
+    });
+  }
   if (el("session-files-dialog")?.open) renderSessionFileLibrary();
 }
 
@@ -1340,10 +1375,30 @@ function renderSessionFileLibrary() {
   attach.addEventListener("click", () => {
     if (attached) state.selectedFiles.delete(selected.file_id);
     else state.selectedFiles.add(selected.file_id);
-    renderSessionFileLibrary();
+    renderFiles();
     showToast(attached ? "File removed from the next message." : "File will be included with your next message.");
   });
   actions.append(open, download, attach);
+  if (/\.(aac|aiff|avi|flac|flv|m4a|m4v|mkv|mov|mp3|mp4|mpeg|mpg|ogg|opus|wav|webm|wma|wmv)$/i.test(selected.name || "")) {
+    const vlc = document.createElement("button");
+    vlc.type = "button";
+    vlc.textContent = "Open in VLC";
+    vlc.title = "Play on the computer running Veridex";
+    vlc.addEventListener("click", async () => {
+      if (!window.confirm("Open this file in VLC on the Veridex computer?")) return;
+      vlc.disabled = true;
+      try {
+        const result = await api("/api/room/files/open-vlc", {method: "POST", body: JSON.stringify({
+          workspace_id: state.workspace.workspace_id, session_id: state.session.session_id,
+          file_id: selected.file_id, confirm: true,
+        })});
+        if (result.status !== "launched") throw new Error(result.message || "VLC did not launch.");
+        vlc.textContent = "Opened in VLC";
+      } catch (error) { showError(error.message || String(error)); }
+      finally { vlc.disabled = false; }
+    });
+    actions.append(vlc);
+  }
   preview.append(hero, actions);
 }
 
@@ -5716,6 +5771,7 @@ function renderRoomFileTools() {
   const room = currentRoom();
   const hasFileLibrary = Boolean(room && !["lobby", "art_department"].includes(room.id));
   el("room-file-actions").hidden = !hasFileLibrary;
+  el("video-tools-open").hidden = state.session?.active_room !== "video_production";
   el("room-file-action-title").textContent = room ? `${room.title} files` : "Room files";
   el("open-room-files").disabled = state.sending || state.uploading || state.switchingRoom;
   if (!hasFileLibrary && el("room-file-dialog").open) closeRoomFileLibrary();
@@ -5784,6 +5840,7 @@ function render() {
   renderRoute();
   renderImportantMailIndicator();
   renderNancyImportantMail();
+  window.renderVideoRoom?.();
 }
 
 function accountRequestBody(extra = {}) {
@@ -5802,7 +5859,15 @@ function renderConnectedAccounts() {
   const ebay = value.ebay || {};
   const ebayNotifications = ebay.notifications || {};
   const sharedGmail = value.shared?.gmail || {};
-  el("connected-accounts-workspace").textContent = `${state.workspace?.label || "This workspace"} · isolated workspace accounts + shared corporate services`;
+  const accountsShared = value.isolation === "shared_accounts";
+  el("connected-accounts-workspace").textContent = accountsShared
+    ? "Accounts are shared across all workspaces"
+    : `${state.workspace?.label || "This workspace"} · isolated workspace accounts + shared corporate services`;
+  el("connected-accounts-scope-note").textContent = accountsShared
+    ? "Account sharing is enabled. Every workspace uses these same connections. Reconnecting or disconnecting an account applies everywhere. External actions still require confirmation."
+    : "Accounts assigned to another workspace remain isolated. Shared Veridex corporate services are available from every workspace.";
+  const activeAccountLabel = accountsShared ? "Available in every workspace" : "Active for this workspace";
+  const assignedAccountLabel = accountsShared ? "Shared account" : "Assigned here";
 
   const sharedGmailState = el("shared-gmail-connection-state");
   sharedGmailState.className = `account-state ${sharedGmail.connected ? "connected" : sharedGmail.configured ? "attention" : ""}`;
@@ -5819,8 +5884,8 @@ function renderConnectedAccounts() {
   el("instagram-username").value = instagram.username || "";
   el("instagram-active-account").hidden = !instagram.assigned;
   el("instagram-active-account").textContent = instagram.connected
-    ? `Active for this workspace: @${instagram.username}`
-    : instagram.assigned ? `Assigned here: @${instagram.username} · sign-in not yet verified` : "";
+    ? `${activeAccountLabel}: @${instagram.username}`
+    : instagram.assigned ? `${assignedAccountLabel}: @${instagram.username} · sign-in not yet verified` : "";
   el("instagram-disconnect").hidden = !instagram.assigned;
 
   const facebookState = el("facebook-connection-state");
@@ -5838,8 +5903,8 @@ function renderConnectedAccounts() {
   gmailState.textContent = gmail.connected ? "Connected" : gmail.assigned ? "Needs attention" : "Not connected";
   el("gmail-active-account").hidden = !gmail.assigned;
   el("gmail-active-account").textContent = gmail.connected
-    ? `Active for this workspace: ${gmail.account_email}`
-    : gmail.assigned ? `Assigned here: ${gmail.account_email || "Google account"} · authorization incomplete` : "";
+    ? `${activeAccountLabel}: ${gmail.account_email}`
+    : gmail.assigned ? `${assignedAccountLabel}: ${gmail.account_email || "Google account"} · authorization incomplete` : "";
   if (gmail.oauth_error) el("connected-accounts-message").textContent = `Google connection failed: ${gmail.oauth_error}`;
   el("gmail-disconnect").hidden = !gmail.assigned;
 
@@ -5851,8 +5916,8 @@ function renderConnectedAccounts() {
   el("ebay-marketplace").value = ebay.marketplace_id || "EBAY_US";
   el("ebay-active-account").hidden = !ebay.assigned;
   el("ebay-active-account").textContent = ebay.connected
-    ? `Active for this workspace: ${ebay.username} · ${ebay.environment} · ${ebay.marketplace_id}`
-    : ebay.assigned ? `Assigned here: ${ebay.username || "eBay seller"} · authorization incomplete` : "";
+    ? `${activeAccountLabel}: ${ebay.username} · ${ebay.environment} · ${ebay.marketplace_id}`
+    : ebay.assigned ? `${assignedAccountLabel}: ${ebay.username || "eBay seller"} · authorization incomplete` : "";
   const ebayNotificationStatus = el("ebay-notification-status");
   ebayNotificationStatus.hidden = !ebay.assigned;
   const automaticNotifications = ebayNotifications.automatic || {};
@@ -5904,7 +5969,7 @@ async function refreshConnectedAccounts(message = "") {
 }
 
 async function openConnectedAccounts() {
-  el("connected-accounts-message").textContent = "Checking this workspace’s account assignments…";
+  el("connected-accounts-message").textContent = "Checking connected accounts…";
   el("connected-accounts-dialog").showModal();
   try { await refreshConnectedAccounts(); }
   catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
@@ -5914,7 +5979,7 @@ async function connectInstagram(event) {
   event.preventDefault();
   const button = event.submitter || event.currentTarget.querySelector("button[type=submit]");
   button.disabled = true;
-  el("connected-accounts-message").textContent = "Opening the dedicated Instagram session for this workspace…";
+  el("connected-accounts-message").textContent = "Opening the dedicated Instagram session…";
   try {
     await api("/api/integrations/instagram/connect", { method: "POST", body: accountRequestBody({ username: el("instagram-username").value.trim() }) });
     await refreshConnectedAccounts("Sign in directly on Instagram in the opened Chrome window, then refresh status here.");
@@ -5944,13 +6009,16 @@ async function integrationAction(path, message) {
   } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
 }
 
-async function connectGmail() {
+async function connectGmail(shared = false) {
+  const button = el(shared ? "shared-gmail-connect" : "gmail-connect");
+  button.disabled = true;
   el("connected-accounts-message").textContent = "Opening Google authorization in your browser…";
   try {
-    await api("/api/integrations/gmail/connect", { method: "POST", body: accountRequestBody({ account_email: el("gmail-account-email").value.trim() }) });
-    const email = el("gmail-account-email").value.trim();
+    const email = shared ? state.connectedAccounts?.shared?.gmail?.account_email || "" : el("gmail-account-email").value.trim();
+    await api("/api/integrations/gmail/connect", { method: "POST", body: accountRequestBody({ account_scope: shared ? "shared" : "workspace", account_email: email }) });
     el("connected-accounts-message").textContent = `Complete Google authorization in the opened browser, then choose Refresh status.${email ? ` If Google shows 403 access_denied, add ${email} under Google Auth Platform → Audience → Test users.` : ""}`;
   } catch (error) { el("connected-accounts-message").textContent = error.message || String(error); }
+  finally { button.disabled = false; }
 }
 
 async function connectEbay() {
@@ -7067,6 +7135,14 @@ async function uploadFiles(fileList, target = "chat") {
     showError("Wait for the current request or upload to finish.");
     return;
   }
+  if (target === "betting") {
+    if (state.session.active_room !== "betting") return;
+    if (files.some((file) => !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) && !/\.(?:png|jpe?g|webp|gif)$/i.test(file.name))) {
+      showError("Choose PNG, JPEG, WebP, or GIF photos and screenshots.");
+      el("betting-image-input").value = "";
+      return;
+    }
+  }
   if (target === "email") {
     const currentSize = state.emailAttachments.reduce((total, file) => total + Number(file.size || 0), 0);
     const addedSize = files.reduce((total, file) => total + Number(file.size || 0), 0);
@@ -7101,21 +7177,32 @@ async function uploadFiles(fileList, target = "chat") {
       files = files.slice(0, availableSlots);
     }
   }
+  const uploadWorkspaceId = state.workspace.workspace_id;
+  const uploadSessionId = state.session.session_id;
+  const uploadRoomId = state.session.active_room;
+  const sameUploadContext = () => state.workspace?.workspace_id === uploadWorkspaceId
+    && state.session?.session_id === uploadSessionId && state.session?.active_room === uploadRoomId;
   state.uploading = true;
   state.uploadTarget = target;
   render();
   try {
     for (const file of files) {
+      if (!sameUploadContext()) break;
       const query = new URLSearchParams({
-        workspace_id: state.workspace.workspace_id,
-        session_id: state.session.session_id,
+        workspace_id: uploadWorkspaceId,
+        session_id: uploadSessionId,
         name: file.name,
       });
+      if (uploadRoomId === "video_production" && target === "chat") query.set("purpose", "video_chat");
       const result = await api(`/api/files?${query}`, {
         method: "POST",
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       });
+      if (!sameUploadContext()) {
+        showError("Upload stopped because the workspace, session, or room changed. Completed files remain in the original session.");
+        break;
+      }
       state.files = result.files || state.files;
       if (result.file?.file_id) {
         if (target === "email") state.emailAttachments.push(result.file);
@@ -7135,6 +7222,7 @@ async function uploadFiles(fileList, target = "chat") {
     state.uploading = false;
     state.uploadTarget = "";
     const inputId = target === "email" ? "email-file-input"
+      : target === "betting" ? "betting-image-input"
       : target === "art" ? "art-reference-input"
         : target === "museum" ? "antiques-camera-input"
           : target === "sell" ? "marketplace-photo-input"
@@ -7152,6 +7240,18 @@ async function uploadFiles(fileList, target = "chat") {
 }
 
 el("file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "chat"));
+el("betting-image-input").addEventListener("change", (event) => uploadFiles(event.target.files, "betting"));
+
+function pasteBettingImages(event) {
+  if (state.session?.active_room !== "betting" || document.querySelector("dialog[open]")) return;
+  let files = [...(event.clipboardData?.files || [])];
+  if (!files.length) files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter(Boolean);
+  files = files.filter((file) => String(file.type || "").startsWith("image/"));
+  if (!files.length) return;
+  event.preventDefault();
+  uploadFiles(files, "betting");
+}
+el("chat-panel").addEventListener("paste", pasteBettingImages);
 el("email-attach-button").addEventListener("click", () => el("email-file-input").click());
 el("email-file-input").addEventListener("change", (event) => uploadFiles(event.target.files, "email"));
 
@@ -7406,6 +7506,61 @@ el("betting-open-trades").addEventListener("click", () => {
   refreshBettingTrades().catch((error) => { el("betting-trade-status").textContent = error.message; });
 });
 el("betting-close-trades").addEventListener("click", () => el("betting-trades-dialog").close());
+let bettingPhoneRequestId = 0;
+let bettingPhoneExpiry = null;
+let bettingPairImageUrl = "";
+el("betting-trades-dialog").addEventListener("close", () => {
+  bettingPhoneRequestId++;
+  clearTimeout(bettingPhoneExpiry);
+  el("betting-phone-code").textContent = "";
+  el("betting-phone-status").textContent = "";
+  if (bettingPairImageUrl) URL.revokeObjectURL(bettingPairImageUrl);
+  bettingPairImageUrl = "";
+  el("betting-pair-qr").hidden = true;
+  el("betting-pair-qr").removeAttribute("src");
+  el("betting-pair-status").textContent = "";
+});
+el("betting-phone-pair").addEventListener("click", async () => {
+  const workspace = state.workspace?.workspace_id;
+  const session = state.session?.session_id;
+  const status = el("betting-pair-status");
+  const qr = el("betting-pair-qr");
+  qr.hidden = true;
+  status.textContent = "Preparing pairing code…";
+  try {
+    const query = new URLSearchParams({ workspace_id: workspace, session_id: session });
+    const response = await fetch(`/api/phone-pair/qr?${query}`, { cache: "no-store" });
+    if (!response.ok) { const result = await response.json(); throw new Error(result.error || "Unable to create pairing code."); }
+    const blob = await response.blob();
+    if (!el("betting-trades-dialog").open || state.workspace?.workspace_id !== workspace || state.session?.session_id !== session) return;
+    if (bettingPairImageUrl) URL.revokeObjectURL(bettingPairImageUrl);
+    bettingPairImageUrl = URL.createObjectURL(blob);
+    qr.src = bettingPairImageUrl;
+    qr.hidden = false;
+    status.textContent = "Open Veridex Capture on your phone and tap Scan pairing code.";
+  } catch (error) { status.textContent = error.message || String(error); }
+});
+el("betting-phone-request").addEventListener("click", async () => {
+  const request = ++bettingPhoneRequestId;
+  const workspace = state.workspace?.workspace_id;
+  const session = state.session?.session_id;
+  clearTimeout(bettingPhoneExpiry);
+  el("betting-phone-code").textContent = "";
+  el("betting-phone-status").textContent = "Creating capture code…";
+  try {
+    const result = await api("/api/phone-capture/request", { method: "POST", body: JSON.stringify({ workspace_id: workspace, session_id: session }) });
+    if (request !== bettingPhoneRequestId || !el("betting-trades-dialog").open || state.workspace?.workspace_id !== workspace || state.session?.session_id !== session) return;
+    el("betting-phone-code").textContent = result.token;
+    el("betting-phone-status").textContent = "Code ready; expires in two minutes.";
+    bettingPhoneExpiry = setTimeout(() => {
+      if (request !== bettingPhoneRequestId) return;
+      el("betting-phone-code").textContent = "";
+      el("betting-phone-status").textContent = "Code expired. Create another to capture.";
+    }, result.expires_in * 1000);
+  } catch (error) {
+    if (request === bettingPhoneRequestId) el("betting-phone-status").textContent = error.message || String(error);
+  }
+});
 el("betting-trade-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget; const data = Object.fromEntries(new FormData(form));
   data.traded_at = new Date(data.traded_at).toISOString(); data.workspace_id = state.workspace.workspace_id; data.session_id = state.session.session_id;
@@ -7445,9 +7600,10 @@ async function refreshBettingScores() {
   }
 }
 el("open-room-files").addEventListener("click", openRoomFileLibrary);
-el("betting-open-scores").addEventListener("click", () => { el("betting-scores-dialog").showModal(); refreshBettingScores(); el("betting-match-status").textContent = "Paste a match link and choose a source to start tracking."; });
+el("betting-add-screenshots").addEventListener("click", () => el("betting-image-input").click());
+el("betting-open-scores").addEventListener("click", () => { el("betting-scores-dialog").showModal(); refreshBettingScores(); updateBettingSources(); });
 el("betting-close-scores").addEventListener("click", () => { bettingScoreRequest++; el("betting-scores-dialog").close(); });
-el("betting-league").addEventListener("change", refreshBettingScores);
+el("betting-league").addEventListener("change", () => { refreshBettingScores(); updateBettingSources(); });
 el("betting-refresh-scores").addEventListener("click", refreshBettingScores);
 let bettingMatchRequest = 0;
 let bettingMatchTimer = null;
@@ -7459,6 +7615,21 @@ function stopBettingMatch() {
   bettingMatchRequest++;
   clearTimeout(bettingMatchTimer);
   bettingMatchTimer = null;
+}
+function updateBettingSources() {
+  const tennis = ["atp", "wta"].includes(el("betting-league").value);
+  const flashscore = tennis || el("betting-league").value === "nfl";
+  stopBettingMatch();
+  bettingMatchUrl = "";
+  bettingMatchObserved = null;
+  bettingMatchError = "";
+  el("betting-match-url").value = "";
+  el("betting-match-url").disabled = !flashscore;
+  el("betting-match-url").placeholder = flashscore ? "Paste a supported game link" : "No game link source configured";
+  el("betting-match-text").textContent = "";
+  el("betting-read-tennislive").hidden = !tennis;
+  el("betting-read-flashscore").hidden = !flashscore;
+  el("betting-match-status").textContent = flashscore ? "Paste a game link and choose a source." : "No game link sources are configured for this league yet.";
 }
 function bettingMatchStatus() {
   if (!bettingMatchObserved) return;
@@ -7502,13 +7673,41 @@ function startBettingMatch(source) {
 ["tennislive", "flashscore"].forEach((source) => {
   el(`betting-read-${source}`).addEventListener("click", () => startBettingMatch(source));
 });
+updateBettingSources();
 el("betting-scores-dialog").addEventListener("close", () => { stopBettingMatch(); bettingMatchUrl = ""; bettingMatchObserved = null; el("betting-match-url").value = ""; el("betting-match-text").textContent = ""; });
+const bettingObservations = [];
+function renderBettingObservations() {
+  const list = el("betting-observations-list");
+  list.replaceChildren();
+  el("betting-observations-empty").hidden = bettingObservations.length > 0;
+  ["robinhood", "google"].forEach((source) => {
+    const latest = bettingObservations.find((observation) => observation.source === source);
+    el(`betting-${source}-result`).textContent = latest ? `${latest.score} · observed ${latest.time.toLocaleTimeString()}` : "No observation recorded";
+  });
+  bettingObservations.forEach((observation) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = `${observation.source === "robinhood" ? "Robinhood" : "Google"} · ${observation.score} · ${observation.time.toLocaleString()}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Delete";
+    button.setAttribute("aria-label", `Delete ${label.textContent}`);
+    button.addEventListener("click", () => {
+      const index = bettingObservations.indexOf(observation);
+      if (index !== -1) bettingObservations.splice(index, 1);
+      renderBettingObservations();
+    });
+    item.append(label, button);
+    list.append(item);
+  });
+}
 ["robinhood", "google"].forEach((source) => {
   el(`betting-${source}-observation`).addEventListener("submit", (event) => {
     event.preventDefault();
     const score = event.currentTarget.elements.score.value.trim();
     if (!score) return;
-    el(`betting-${source}-result`).textContent = `${score} · observed ${new Date().toLocaleTimeString()}`;
+    bettingObservations.unshift({ source, score, time: new Date() });
+    renderBettingObservations();
   });
 });
 window.setInterval(() => { if (!document.hidden) refreshBettingScores(); }, 10000);
@@ -7519,7 +7718,10 @@ document.addEventListener("visibilitychange", () => {
 window.setInterval(bettingMatchStatus, 1000);
 
 el("navigator-status").addEventListener("click", () => setGovernancePanel(el("governance-panel").hidden));
-el("toolbar-add-files").addEventListener("click", () => el("file-input").click());
+el("toolbar-add-files").addEventListener("click", () => {
+  if (state.session?.active_room === "video_production") window.videoRoomAddFiles?.();
+  else el("file-input").click();
+});
 el("toolbar-view-files").addEventListener("click", openSessionFileLibrary);
 el("session-files-close").addEventListener("click", () => el("session-files-dialog").close());
 el("session-files-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("session-files-dialog").close(); });
@@ -7582,6 +7784,7 @@ el("new-workspace").addEventListener("click", async () => {
 });
 
 el("open-connected-accounts").addEventListener("click", openConnectedAccounts);
+el("toolbar-connected-accounts").addEventListener("click", openConnectedAccounts);
 el("open-marketplace-sell").addEventListener("click", openMarketplaceSell);
 el("marketplace-sell-close").addEventListener("click", () => el("marketplace-sell-dialog").close());
 el("marketplace-sell-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("marketplace-sell-dialog").close(); });
@@ -7602,14 +7805,16 @@ el("instagram-verify").addEventListener("click", () => integrationAction("/api/i
 el("instagram-disconnect").addEventListener("click", () => integrationAction("/api/integrations/instagram/disconnect", "Instagram was unassigned. Its local browser profile was preserved."));
 el("facebook-connect").addEventListener("click", connectFacebook);
 el("facebook-refresh").addEventListener("click", () => integrationAction("/api/integrations/facebook/verify", "Facebook status refreshed."));
-el("gmail-connect").addEventListener("click", connectGmail);
+el("gmail-connect").addEventListener("click", () => connectGmail(false));
+el("shared-gmail-connect").addEventListener("click", () => connectGmail(true));
+el("shared-gmail-refresh").addEventListener("click", () => refreshConnectedAccounts("Corporate Gmail status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
 el("gmail-refresh").addEventListener("click", () => refreshConnectedAccounts("Gmail status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
-el("gmail-disconnect").addEventListener("click", () => integrationAction("/api/integrations/gmail/disconnect", "Gmail was unassigned from this workspace."));
+el("gmail-disconnect").addEventListener("click", () => integrationAction("/api/integrations/gmail/disconnect", "Gmail assignment removed."));
 el("ebay-connect").addEventListener("click", connectEbay);
 el("ebay-refresh").addEventListener("click", () => refreshConnectedAccounts("eBay status refreshed.").catch((error) => { el("connected-accounts-message").textContent = error.message || String(error); }));
 el("ebay-notifications-auto").addEventListener("click", toggleEbayAutomaticNotifications);
 el("ebay-notifications-check").addEventListener("click", checkEbayNotifications);
-el("ebay-disconnect").addEventListener("click", () => integrationAction("/api/integrations/ebay/disconnect", "eBay was disconnected from this workspace."));
+el("ebay-disconnect").addEventListener("click", () => integrationAction("/api/integrations/ebay/disconnect", "eBay connection removed."));
 
 el("new-session").addEventListener("click", async () => {
   const title = window.prompt("Session name", "New session")?.trim();

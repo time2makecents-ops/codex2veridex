@@ -17,9 +17,20 @@ class ConnectedAccountError(RuntimeError):
 
 
 class ConnectedAccounts:
-    def __init__(self, data_root: Path, repo_root: Path) -> None:
+    def __init__(self, data_root: Path, repo_root: Path, *, shared_workspace_id: str = "") -> None:
         self.data_root = Path(data_root).resolve()
         self.repo_root = Path(repo_root).resolve()
+        self.shared_workspace_id = str(shared_workspace_id or "").strip()
+
+    def account_workspace_id(self, workspace_id: str) -> str:
+        """Resolve the configured shared account owner after validating the caller."""
+        self._workspace_dir(workspace_id)
+        owner = self.shared_workspace_id or workspace_id
+        self._workspace_dir(owner)
+        return owner
+
+    def account_workspace_dir(self, workspace_id: str) -> Path:
+        return self._workspace_dir(self.account_workspace_id(workspace_id))
 
     def _workspace_dir(self, workspace_id: str) -> Path:
         value = str(workspace_id or "").strip()
@@ -29,7 +40,7 @@ class ConnectedAccounts:
         return path
 
     def _path(self, workspace_id: str) -> Path:
-        return self._workspace_dir(workspace_id) / "integrations" / "connected_accounts.json"
+        return self.account_workspace_dir(workspace_id) / "integrations" / "connected_accounts.json"
 
     def read(self, workspace_id: str) -> Dict[str, Any]:
         path = self._path(workspace_id)
@@ -56,6 +67,7 @@ class ConnectedAccounts:
         return dict(stored)
 
     def assign_instagram(self, workspace_id: str, username: str, *, profile_dir: str = "", debug_port: int = 0) -> Dict[str, Any]:
+        workspace_id = self.account_workspace_id(workspace_id)
         handle = str(username or "").strip().lstrip("@")
         if not handle:
             raise ConnectedAccountError("Instagram username is required.")
@@ -100,7 +112,7 @@ class ConnectedAccounts:
         }
 
     def gmail_env(self, workspace_id: str, *, account_email: str = "") -> Dict[str, str]:
-        workspace_dir = self._workspace_dir(workspace_id)
+        workspace_dir = self.account_workspace_dir(workspace_id)
         base = _default_env()
         stored = self.read(workspace_id).get("gmail")
         gmail = stored if isinstance(stored, dict) else {}
@@ -127,6 +139,7 @@ class ConnectedAccounts:
         return GmailGateway(env=self.gmail_env(workspace_id))
 
     def assign_gmail(self, workspace_id: str, account_email: str) -> Dict[str, Any]:
+        workspace_id = self.account_workspace_id(workspace_id)
         email = str(account_email or "").strip()
         if self.is_shared_gmail_account(email):
             raise ConnectedAccountError(
@@ -168,6 +181,7 @@ class ConnectedAccounts:
         environment: str = "sandbox",
         marketplace_id: str = "EBAY_US",
     ) -> Dict[str, Any]:
+        workspace_id = self.account_workspace_id(workspace_id)
         seller = str(username or "").strip()
         target_environment = str(environment or "sandbox").strip().lower()
         market = str(marketplace_id or "EBAY_US").strip().upper()
@@ -218,7 +232,7 @@ class ConnectedAccounts:
         marketplace_id: str = "",
         required: bool = False,
     ) -> Dict[str, str]:
-        workspace_dir = self._workspace_dir(workspace_id)
+        workspace_dir = self.account_workspace_dir(workspace_id)
         config = self.ebay_config(workspace_id, required=required)
         base = _default_env()
         base["VERIDEX_EBAY_DB_PATH"] = str(workspace_dir / "integrations" / "ebay.db")
@@ -235,7 +249,7 @@ class ConnectedAccounts:
 
     def ebay_notifications(self, workspace_id: str) -> EbayNotificationConsumer:
         self.ebay_config(workspace_id, required=True)
-        return EbayNotificationConsumer(workspace_id, self.ebay_env(workspace_id, required=True))
+        return EbayNotificationConsumer(self.account_workspace_id(workspace_id), self.ebay_env(workspace_id, required=True))
 
     def assigned_ebay_workspace_ids(self) -> list[str]:
         """Return only valid workspaces that explicitly assigned an eBay account."""
@@ -247,6 +261,8 @@ class ConnectedAccounts:
             if not workspace_dir.is_dir() or not (workspace_dir / "workspace.json").is_file():
                 continue
             workspace_id = workspace_dir.name
+            if self.shared_workspace_id and workspace_id != self.shared_workspace_id:
+                continue
             try:
                 config = self.ebay_config(workspace_id)
             except ConnectedAccountError:
@@ -299,7 +315,8 @@ class ConnectedAccounts:
         corporate_gmail = dict(shared_gmail_status or self.shared_gmail().connection_status())
         return {
             "workspace_id": workspace_id,
-            "isolation": "workspace_accounts_plus_shared_corporate_services",
+            "isolation": "shared_accounts" if self.shared_workspace_id else "workspace_accounts_plus_shared_corporate_services",
+            "account_workspace_id": self.account_workspace_id(workspace_id),
             "shared": {
                 "scope": "all_workspaces",
                 "gmail": {**corporate_gmail, "shared": True},

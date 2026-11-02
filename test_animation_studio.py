@@ -37,8 +37,9 @@ class AnimationStudioTests(unittest.TestCase):
                 "mouth_rigs": [{"rig_id": "host-rig", "character": "Host", "base_asset_id": "host", "animation_mode": "jaw_flap", "shapes": {"A": "host", "F": "missing"}, "mouth_x_percent": 54, "mouth_height_percent": 128, "mouth_anchor_x_percent": 42, "mouth_anchor_y_percent": 110, "placement_calibrated": True, "registration_master_asset_id": "host", "registration_canvas_width": 1254, "registration_canvas_height": 1254, "mouth_asset_registrations": {"host": {"left_percent": -2.5, "top_percent": 1.5, "width_percent": 104.4}}}],
                 "lipsync_takes": [{"take_id": "opening-take", "track_id": "voice", "rig_id": "host-rig", "recognizer": "phonetic", "extended_shapes": "HGX", "duration": 0.5, "mouth_cues": [{"start": 0, "end": 0.5, "value": "A"}], "manual_jaw_corrections": [{"correction_id": "fix-1", "time": 0.25, "opening_percent": 115, "blend_seconds": 0.01}]}],
             })
-            first = studio.save_project("workspace_123", project)
-            second = studio.save_project("workspace_123", {**first, "notes": "Pilot cold open"})
+            with patch("animation_studio.utc_now", return_value="2026-11-02T12:00:00Z"):
+                first = studio.save_project("workspace_123", project)
+                second = studio.save_project("workspace_123", {**first, "notes": "Pilot cold open"})
             self.assertEqual(first["project_version"], 1)
             self.assertEqual(second["project_version"], 2)
             self.assertEqual(second["frame_rate"], 24)
@@ -100,6 +101,26 @@ class AnimationStudioTests(unittest.TestCase):
                 result = studio.launch_editor("gimp", source)
             opened.assert_called_once_with(["C:/Tools/gimp-3.exe", str(source.resolve())], shell=False)
             self.assertEqual(result["status"], "launched")
+
+    def test_vlc_detection_and_local_media_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "VideoLAN/VLC/vlc.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"test executable")
+            source = root / "clip with spaces.mp4"
+            source.write_bytes(b"test media")
+            studio = AnimationStudio(root)
+            with patch.dict(os.environ, {"ProgramFiles": str(root)}), patch("animation_studio.shutil.which", return_value=None):
+                self.assertEqual(studio.tools()["vlc"]["path"], str(executable))
+                with patch("animation_studio.subprocess.Popen", return_value=type("Process", (), {"pid": 123})()) as launch:
+                    result = studio.launch_editor("vlc", source)
+                launch.assert_called_once_with([str(executable), str(source.resolve())], shell=False)
+                self.assertEqual(result["process_id"], 123)
+                playlist = root / "remote.m3u"
+                playlist.write_text("https://example.invalid/video")
+                with self.assertRaises(ValueError):
+                    studio.launch_editor("vlc", playlist)
 
     def test_launch_editor_opens_image_in_synfig(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

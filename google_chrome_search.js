@@ -944,7 +944,7 @@ async function main() {
     if (!Object.hasOwn(hosts, source)) throw new Error("Unknown match source.");
     const url = String(process.argv[4] || "");
     const requested = new URL(url);
-    const pathPattern = source === "tennislive" ? /^\/(?:atp|wta)\/match\/[^/]+\/[^/]+\/?$/i : /^\/game\/tennis\/[^/]+\/[^/]+\/?$/i;
+    const pathPattern = source === "tennislive" ? /^\/(?:atp|wta)\/match\/[^/]+\/[^/]+\/?$/i : /^\/game\/(?:tennis|football)\/[^/]+\/[^/]+\/?$/i;
     if (requested.protocol !== "https:" || requested.host !== hosts[source] || requested.username || requested.password || !pathPattern.test(requested.pathname)) throw new Error("Invalid match source URL.");
     await ensureChrome(url);
     const page = await evaluatePage(url, `(() => ({ url: location.href, title: document.title, text: String((document.querySelector(${JSON.stringify(source === "tennislive" ? "#progress" : "main")}) || document.body)?.innerText || "").slice(0, 6000) }))()`, 1800);

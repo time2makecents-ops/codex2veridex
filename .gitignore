@@ -12,3 +12,7 @@ tmp/
 output/
 node_modules/
 .wrangler/
+tools/android-capture/.gradle/
+tools/android-capture/build/
+tools/android-capture/app/build/
+tools/android-capture/local.properties

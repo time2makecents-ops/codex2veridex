@@ -31,6 +31,14 @@ governance boundary without requiring onboarding or account discovery.
 
 ## Request lifecycle
 
+Video Production uses `video.action` and `POST /api/video/action` for the same
+room/session-scoped status, launch, job, cancellation and local-control adapters.
+`video_tools.py` extends the existing application registry, uses argument-list
+subprocesses and restricts MLT resources/services. OBS connects only to the
+authenticated loopback WebSocket; passwords are not persisted. Optional Audacity
+control runs fixed commands on an empty project, never caller-supplied commands.
+Generated job outputs are probed and saved through the existing artifact store.
+
 1. The user submits a message in a workspace session.
 2. The server saves the user message immediately.
 3. The deterministic room router handles explicit navigation and room-directory
@@ -61,6 +69,14 @@ written to that session's `session.json`.
 Video Production uses the same governed room and room-file abstractions. Beta's
 room-specific prompt covers production planning and post-production while keeping
 planned edits separate from execution-backed, artifact-verified renders or exports.
+
+Room-file playback uses `POST /api/room/files/open-vlc` with workspace, session,
+file ID, and explicit confirmation. The server derives the active room, resolves
+the file from its workspace room library, verifies its path/size/hash against the
+artifact ledger, and launches the detected VLC executable through the existing
+local-tool abstraction. It requires full computer access and accepts no caller
+executable, arbitrary path, URL, playlist, or additional command arguments. A
+launch result records process startup, not proof of successful decoding/playback.
 
 Animation Studio is a separate Beta-directed room so reusable animation assets and
 voice-performance work do not blur into final editing and delivery. Its workspace
@@ -186,7 +202,15 @@ Each workspace owns `governance_state.json`, `artifact_ledger.ndjson`, `governan
 append-only `governance_incidents.ndjson`. A session may temporarily own
 `pending_governance.json` while waiting for a gate resolution.
 
-Connected services have two explicit scopes. Instagram, eBay, and optional
+An optional `VERIDEX_SHARED_ACCOUNTS_WORKSPACE_ID` setting temporarily resolves
+all workspace account operations through one existing owner workspace in
+`ConnectedAccounts`. The requesting workspace is still validated. Assignment
+reads/writes, OAuth grants/logs, Gmail/eBay databases, and notification controls
+resolve to the owner; notification polling is deduplicated and retains the owner's
+relay binding. Removing the setting restores the original scopes without moving
+token stores. Session, room, artifact, and confirmation boundaries are unchanged.
+
+Connected services normally have two explicit scopes. Instagram, eBay, and optional
 workspace Gmail assignments remain isolated beneath one workspace. The Veridex
 corporate Gmail token store beneath `data/integrations/` is shared across all
 workspaces and is selected only by a corporate/shared account request or as the
@@ -219,6 +243,17 @@ status, uses the existing governed room transition for Control Room or My Office
 and marks only the alert IDs displayed before a successful Office transition.
 
 ## File and computer access
+
+Video room intake uses `POST /api/video/upload` with workspace/session/name,
+bounded incremental reads and a temporary memory-mapped file passed to the
+existing canonical save/ledger flow. The active room is checked again under the
+store lock before registration. New video chat attachments use `source=video_chat`
+and are omitted from room-library listings while remaining session attachments
+and ledger records. Other rooms and legacy room-file discovery retain their rules.
+The file-ID content endpoint supports single HTTP byte ranges and fixed-size
+streaming instead of reading complete media into memory. The media workspace
+reuses the existing transcript/composer DOM in a nonmodal floating window and
+restores it on leaving Video Production; no second chat store is introduced.
 
 Browser attachments are saved inside the active session directory, recorded in
 `files.json`, and passed to Codex by verified local path. Image attachments also

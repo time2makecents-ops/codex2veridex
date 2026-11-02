@@ -26,6 +26,12 @@ and does not read from or write to `C:\Office-App`.
 No workspace data, chat logs, secrets, or user accounts are copied from another
 application. The first launch creates a fresh local account and workspace.
 
+For a task-oriented overview, see [App functionality](APP_FUNCTIONALITY.md).
+For conversation follow-ups, verification status, and recorded fixes, see
+[Issue and resolution log](ISSUE_LOG.md).
+For Codex setup, task records, agent usage, and moving between computers, see
+[Working workflow](WORKFLOW.md).
+
 ## Run
 
 ```powershell
@@ -522,8 +528,8 @@ long task history forward. Keep only plugin bundles that are actively useful.
 ### Start a fully configured terminal session
 
 A current-user PowerShell profile command starts Codex in this repository so
-the personal `config.toml`, this workspace's `AGENTS.md`, and the development
-model policy are discovered automatically. Open a new PowerShell terminal and
+the model configuration, global `AGENTS.md`, this workspace's `AGENTS.md`, and
+the development model policy are available. Open a new PowerShell terminal and
 run:
 
 ```powershell
@@ -542,8 +548,12 @@ the route without starting another session, run:
 .\start_codex.ps1 -PrintRoute
 ```
 
-The launcher validates that the required rule files exist before starting. It
-also starts Codex with `danger-full-access` and approval mode `never`, so the
+The launcher validates required files and, when the personal setup bundle is
+installed, checks instruction inclusion in a fresh local Codex prompt and reports
+the shared setup version and remote-update status. Run `./start_codex.ps1 -CheckSetup`
+to perform that check without starting an interactive session. A file-presence
+check alone is not proof of instruction loading; the CLI check also does not prove
+desktop or cloud behavior. The launcher starts Codex with `danger-full-access` and approval mode `never`, so the
 session has unrestricted local filesystem access and does not pause for command
 approval. Use this command only for this trusted workspace; the launcher prints
 a permission warning on every start.
@@ -560,6 +570,19 @@ handoff number supplied in the next message. The stable index is
 `handoffs/README.md`.
 
 ## Gmail for Nancy
+
+### Temporary shared accounts
+
+Set `VERIDEX_SHARED_ACCOUNTS_WORKSPACE_ID` in ignored `.env.local` to the workspace
+that owns the accounts, then restart Veridex. Every workspace reuses that owner's
+Gmail, eBay, and Instagram assignments and existing token stores. Corporate Gmail
+and the dedicated browser sessions remain available everywhere. The top toolbar's
+**Connected accounts** button shows the shared connections; reconnecting,
+unassigning, or changing automatic eBay checks applies everywhere in this mode.
+The eBay notification consumer runs only once under the owner workspace, preserving
+the relay's workspace binding. Workspace content and rooms remain separate, and
+external actions still require confirmation. Remove the setting and restart to
+restore account separation; account stores are never copied or moved.
 
 Nancy supports two deliberately separate account scopes:
 
@@ -588,8 +611,9 @@ prompt asking whether to speak to Navigator. **Yes** explicitly enters the Contr
 Room; **No** closes the prompt without changing rooms. Facebook and Instagram checks
 never launch profiles or attempt login automatically.
 
-An account assigned to one workspace is never exposed to another, and the
-corporate account cannot be claimed by a single workspace. Every Gmail result
+Without the temporary shared-accounts setting above, an account assigned to one
+workspace is not exposed to another. The corporate account is shared and cannot
+be claimed by a single workspace. Every Gmail result
 records both `account_scope` and `account_email` as evidence. Veridex does not
 read another application's token database at runtime. Configure the OAuth
 client values in the ignored `.env.local`, then connect the corporate account
@@ -606,6 +630,12 @@ The browser authorization must use the account configured by
 same unified Veridex Chrome profile used by the application and explicit Google
 work, not the Windows default browser profile. Passwords and OAuth tokens are
 never written to source or returned in chat responses.
+
+You can also use **Connected accounts → Veridex corporate Gmail → Connect /
+reconnect Gmail**, then **Refresh status** after Google's authorization completes.
+This reconnects the shared corporate token store without replacing the other
+Gmail account. Valid grants refresh automatically; Google sign-in, consent, and
+security checks still require the operator when Google requests them.
 
 The dedicated Google search profile is also repository-wide. Google Drive is
 not yet implemented as a Veridex runtime gateway, so Veridex must not claim
@@ -625,11 +655,16 @@ active room.
 When the Betting room has been created through Infrastructure administration,
 Slick provides a live scores window and a workspace-scoped manual trade journal.
 The scoreboard requests unofficial ESPN scores for NFL, NBA, MLB, NHL, ATP and
-WTA; coverage and latency vary. Paste a Flashscore USA or TennisLive tennis match
-link to read its rendered page through the dedicated Veridex browser. Tracking
+WTA; coverage and latency vary. Paste a Flashscore USA tennis or football game
+link, or a TennisLive tennis match link, to read its rendered page through the dedicated Veridex browser. Tracking
 refreshes while the scores window is visible and labels stale or failed reads.
 Manual Robinhood and Google observations record when the user entered them,
 not when those providers updated their feeds.
+
+Use **Add photos / screenshots** in Betting to select PNG, JPEG, WebP, or GIF
+images. You can also drag images onto the chat or paste a copied screenshot with
+**Ctrl+V** while the Betting chat is focused. Thumbnails show what is attached to
+the next message; **Remove** detaches an image without deleting the saved file.
 
 The journal records manual buys and sells, fees, and trade times. It calculates
 average-cost positions and realized results from recorded transactions; it does
@@ -707,11 +742,55 @@ confirmation and affects only that item.
 
 ### Video Production
 
+The room opens a media-first workspace with searchable gallery/list views,
+media-type and export filters, and a source player for browser-supported video,
+audio and images. **Add files** in the top toolbar (or dropping files onto the
+workspace) imports room media without selecting it for chat. Video room intake
+streams to a temporary file with a configurable `VERIDEX_VIDEO_UPLOAD_MB` limit
+(2048 MB by default). Uploads show progress and can be cancelled; a room change
+before registration rejects the unfinished intake.
+
+**Chat with Beta** opens a movable, resizable, non-blocking chat window using the
+existing session transcript and message composer. **Attach** beside its text box
+adds files to the next message; new chat-only uploads stay out of the room media
+library. **Attach to chat** on a room file links that file into the session rather
+than uploading it again. Closing chat preserves the conversation and draft.
+Native video seeking uses byte-range streaming. Unsupported browser formats
+offer VLC or conversion through Production tools. Timeline editing and a composed
+Project preview are not part of this workspace slice.
+
+**Production tools** in this room opens the local app panel for Kdenlive, Shotcut,
+Audacity, HandBrake, OBS, and VLC. Refresh detects applications and supported
+automation separately. Select a room file to open it, or open an app without a
+file. **Import saved result** uploads an externally saved result into the current
+room; saving in another editor does not import automatically.
+
+HandBrake conversion uses the separately installed official HandBrakeCLI and a
+Fast 1080p30 preset. Shotcut and Kdenlive rendering accepts a restricted MLT
+project containing only verified room resources and supported services; open more
+complex/native projects in the editor and import their finished exports. Jobs
+show elapsed time and allow cancellation; outputs are probed then ledgered as
+new files. Jobs are in-memory and are not resumed after backend restarts.
+
+OBS controls require its authenticated local WebSocket server on port 4455.
+Enter the password only in the panel; it is not stored. Recording starts only
+after confirmation. Streaming is not exposed. Audacity automation requires the
+optional local mod-script-pipe module and an empty project. Its fixed
+normalization/export operation leaves originals unchanged. Scripting is not
+enabled automatically; timeouts require attention in Audacity and may prevent
+another audio operation until its pending command finishes.
+
 Video Production is directed by Beta. It provides governed chat and room-scoped
 files for scripting, footage review, edit planning, post-production, captions,
 export specifications, and delivery. This foundation does not include an embedded
 timeline or render interface; Beta must distinguish proposed work from completed,
 artifact-verified edits and exports.
+
+For local playback, open the room's **Files** library, select an audio or video
+file, and choose **Open in VLC**. Confirm to launch VLC on the computer running
+Veridex (including when you are using Veridex from a phone). Full computer access
+is required. VLC is detected from PATH or standard Windows/macOS install locations;
+an unavailable player is reported rather than downloaded automatically.
 
 ### Animation Studio
 
@@ -722,7 +801,7 @@ commercial-safe 1920x1080, 24 fps, 2.5D cut-out production with desk and band
 sets plus reusable host, co-host, guest, and band templates.
 
 The studio detects Synfig Studio, Rhubarb Lip Sync, FFmpeg, GIMP,
-Audacity, Kdenlive, and Glaxnimate on the local computer and reports unavailable
+Audacity, VLC media player, Kdenlive, and Glaxnimate on the local computer and reports unavailable
 tools truthfully.
 Rhubarb 1.14.0 is installed in the private `.runtime/tools/rhubarb/` tree with
 its archive hash and install manifest. Project plans can be saved explicitly

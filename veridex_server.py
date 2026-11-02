@@ -6,12 +6,14 @@ import argparse
 import base64
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import mimetypes
 import os
 import re
 import secrets
+import socket
 import shutil
 import subprocess
 import sys
@@ -24,13 +26,17 @@ from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
+import qrcode
 
 from art_studio import ArtJobManager, ArtProviderError, ArtStudio, validate_image_bytes
 from animation_studio import AnimationStudio, ROOM_ID as ANIMATION_STUDIO_ROOM_ID
+import video_tools
+from video_media import byte_range, receive_upload
 from antiques_department import AntiquesDepartment, ROOM_ID as ANTIQUES_ROOM_ID
 from background_monitor import BackgroundMonitor
 from betting_scores import scores as betting_scores
 from betting_trades import add_trade as add_betting_trade, list_trades as list_betting_trades, positions as betting_positions
+from tools.phone_capture import CaptureRequests
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
 from gmail_gateway import GmailGateway, GmailGatewayError
@@ -196,7 +202,7 @@ ITEM_SELECTION_JOBS = ArtJobManager(workers=1, prefix="itemsearch", label="Museu
 PRICE_SEARCH_JOBS = PriceSearchJobManager(workers=2)
 MUSEUM_VISUAL = MuseumVisualAnalyzer(DATA_ROOT)
 GMAIL = GmailGateway()
-ACCOUNTS = ConnectedAccounts(DATA_ROOT, ROOT)
+ACCOUNTS = ConnectedAccounts(DATA_ROOT, ROOT, shared_workspace_id=os.environ.get("VERIDEX_SHARED_ACCOUNTS_WORKSPACE_ID", ""))
 MAX_UPLOAD_BYTES = max(1, int(os.environ.get("VERIDEX_MAX_UPLOAD_MB", "50"))) * 1024 * 1024
 MAX_ZIP_UPLOAD_BYTES = max(MAX_UPLOAD_BYTES, max(1, int(os.environ.get("VERIDEX_MAX_ZIP_UPLOAD_MB", "250"))) * 1024 * 1024)
 MAX_GMAIL_ATTACHMENT_BYTES = max(1, int(os.environ.get("VERIDEX_GMAIL_MAX_ATTACHMENT_MB", "20"))) * 1024 * 1024
@@ -815,6 +821,34 @@ def prepare_facebook_marketplace_group(workspace_id: str, draft_id: str, group_i
     return {"result": result, "draft": FACEBOOK_MARKETPLACE.public_draft(updated), "group": group}
 
 
+def start_gmail_connection(workspace_id: str, session_id: str, *, account_email: str = "", account_scope: str = "") -> Dict[str, Any]:
+    workspace_context(workspace_id, session_id)
+    shared = gmail_account_scope(requested_scope=account_scope) == "shared"
+    gmail_env = ACCOUNTS.shared_gmail_env() if shared else ACCOUNTS.gmail_env(workspace_id, account_email=account_email)
+    if not gmail_env.get("GOOGLE_OAUTH_CLIENT_ID") or not gmail_env.get("GOOGLE_OAUTH_CLIENT_SECRET"):
+        raise GmailGatewayError("Google OAuth client configuration is missing. Add it once in Veridex's local setup.")
+    if len(str(gmail_env.get("VERIDEX_INTEGRATION_ENCRYPTION_KEY") or "")) < 32:
+        raise GmailGatewayError("Veridex's local Gmail encryption key is missing or invalid.")
+    command = [sys.executable, str(ROOT / "gmail_oauth.py")]
+    if shared:
+        command.append("--shared")
+        log_path = DATA_ROOT / "integrations" / "gmail_oauth.log"
+    else:
+        command.extend(["--workspace-id", workspace_id])
+        if account_email:
+            command.extend(["--account-email", account_email])
+        log_path = ACCOUNTS.account_workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as oauth_log:
+        subprocess.Popen(
+            command, cwd=str(ROOT), stdin=subprocess.DEVNULL,
+            stdout=oauth_log, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    return {"ok": True, "status": "authorization_started", "account_scope": "shared" if shared else "workspace",
+            "message": "Complete Google authorization in the dedicated Veridex browser, then refresh status."}
+
+
 def workspace_gmail(workspace_id: str) -> GmailGateway:
     config = ACCOUNTS.read(workspace_id).get("gmail")
     if not isinstance(config, dict) or not config.get("assigned"):
@@ -899,7 +933,7 @@ def ebay_item_chat_messages(workspace_id: str, session_id: str, item_id: str) ->
 
 
 def ebay_automatic_notification_status(workspace_id: str) -> Dict[str, Any]:
-    status = EBAY_NOTIFICATION_POLLER.status(workspace_id)
+    status = EBAY_NOTIFICATION_POLLER.status(ACCOUNTS.account_workspace_id(workspace_id))
     status["workspace_enabled"] = ACCOUNTS.ebay_automatic_notifications_enabled(workspace_id)
     return status
 
@@ -1085,6 +1119,31 @@ def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str,
     if include_path:
         keys.append("path")
     return {key: row[key] for key in keys if key in row}
+
+
+def verify_chat_attachments(workspace_id: str, attachments: list[Dict[str, Any]]) -> None:
+    if not attachments:
+        return
+    ledger = {str(row.get("file_id") or ""): row for row in STORE.list_artifact_ledger(workspace_id)}
+    workspace_root = STORE.workspace_dir(workspace_id).resolve()
+    for attachment in attachments:
+        record = ledger.get(str(attachment.get("file_id") or ""))
+        path = Path(str(attachment.get("path") or "")).resolve()
+        if not record or not path.is_relative_to(workspace_root) or not path.is_file():
+            raise ValueError("An attachment could not be verified in the artifact ledger.")
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        if (record.get("workspace_id") != workspace_id
+                or record.get("artifact_number") != attachment.get("artifact_number")
+                or not attachment.get("artifact_number")
+                or Path(str(record.get("path") or "")).resolve() != path
+                or record.get("size") != size or attachment.get("size") != size
+                or record.get("sha256") != digest.hexdigest()
+                or attachment.get("sha256") != digest.hexdigest()):
+            raise ValueError("An attachment does not match its artifact ledger record.")
 
 
 def public_art_image(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -1960,7 +2019,6 @@ def gmail_chat_response(
     draft_override: Optional[Dict[str, Any]] = None,
     attachments: Optional[list[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    ephemeral = bool(extra.pop("ephemeral", False))
     pending = STORE.pending_email(workspace_id, session_id) if GMAIL_CONFIRM_RE.search(str(prompt or "")) else {}
     requested_scope = str(pending.get("account_scope") or "") if pending else ""
     try:
@@ -2520,10 +2578,62 @@ def generate_animation_lipsync(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def launch_room_media(payload: Dict[str, Any]) -> Dict[str, Any]:
+    workspace_id = str(payload.get("workspace_id") or "").strip()
+    session_id = str(payload.get("session_id") or "").strip()
+    workspace_context(workspace_id, session_id)
+    room_id = room_file_library_id(STORE.find_session(session_id).get("active_room"))
+    if access_mode() != "full":
+        raise ValueError("Full computer access is required to open VLC on this computer.")
+    file_id = str(payload.get("file_id") or "").strip()
+    source = next((row for row in STORE.list_room_files(workspace_id, room_id)
+                   if str(row.get("file_id")) == file_id), None)
+    if not source:
+        raise ValueError("Select a file from the active room's Files library.")
+    if payload.get("confirm") is not True:
+        return {"status": "confirmation_required", "message": "Open this file in VLC on the Veridex computer?"}
+    verify_chat_attachments(workspace_id, [source])
+    launched = ANIMATION.launch_editor("vlc", Path(str(source["path"])))
+    return {**launched, "file": public_room_file(source)}
+
+
+def video_action(payload: Dict[str, Any]) -> Dict[str, Any]:
+    ws, session = workspace_from_args(payload)
+    if STORE.find_session(session).get("active_room") != VIDEO_PRODUCTION_ROOM_ID:
+        raise ValueError("Navigate to Video Production first")
+    action = str(payload.get("action") or "status")
+    scope = (ws, session)
+    if action == "status":
+        with video_tools.LOCK:
+            jobs = [video_tools.status(scope, key) for key, row in video_tools.JOBS.items() if row['scope'] == scope]
+        return {"tools": video_tools.inventory(), "jobs": jobs}
+    if action == "job_status": return video_tools.status(scope, str(payload.get("job_id") or ""))
+    if access_mode() != "full": raise ValueError("Full computer access is required")
+    if payload.get("confirm") is not True: return {"status": "confirmation_required"}
+    if action == "cancel": return video_tools.status(scope, str(payload.get("job_id") or ""), cancel=True)
+    if action == "audio_test": return video_tools.audacity_test()
+    if action.startswith("obs_"):
+        return video_tools.obs(action[4:], str(payload.get("password") or ""), str(payload.get("scene") or ""))
+    rows = STORE.list_room_files(ws, VIDEO_PRODUCTION_ROOM_ID)
+    source = next((r for r in rows if r['file_id'] == payload.get('file_id')), None)
+    if payload.get('file_id') and not source: raise ValueError('File is not in this room')
+    if source: verify_chat_attachments(ws, [source])
+    tool = str(payload.get("tool") or "")
+    if action == "open": return video_tools.launch(tool, Path(source['path']) if source else None)
+    if not source: raise ValueError("Select a verified Video Production room file")
+    if action != "job": raise ValueError("Unsupported video action")
+    for row in rows: verify_chat_attachments(ws, [row])
+    def complete(path):
+        return public_file(STORE.save_file(ws, session, path.name, path.read_bytes(), "audio/wav" if path.suffix == '.wav' else "video/mp4", source="generated", kind="generated_document", scope="room", scope_ref=VIDEO_PRODUCTION_ROOM_ID, description=f"{tool} production output", metadata={"video": {"source_file_id": source['file_id'], "tool": tool}}))
+    return video_tools.job(scope, tool, Path(source['path']), STORE.workspace_dir(ws) / "video_production" / "staging", {str(Path(r['path']).resolve()) for r in rows}, complete)
+
+
 def launch_animation_editor(payload: Dict[str, Any]) -> Dict[str, Any]:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     animation_context(workspace_id, session_id)
+    if str(payload.get("tool") or "").lower() == "vlc":
+        return launch_room_media(payload)
     if not payload.get("confirm"):
         return {"status": "confirmation_required", "message": "Confirm opening the selected file in the local editor."}
     source = animation_source_file(
@@ -3904,6 +4014,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     attachments = STORE.resolve_files(workspace_id, session_id, attachment_ids)
     if len(attachments) != len(set(str(file_id) for file_id in attachment_ids)):
         raise ValueError("one or more attached files are unavailable in this session")
+    verify_chat_attachments(workspace_id, attachments)
     if structured_email_draft:
         validate_email_attachments(attachments)
     if not text and not attachments and not structured_email_draft:
@@ -4207,6 +4318,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "content_type": row["content_type"],
             "size": row["size"],
             "local_path": row["path"],
+            "artifact_number": row["artifact_number"],
+            "sha256": row["sha256"],
+            "ledger_verified": True,
         }
         for row in attachments
     ]
@@ -4224,6 +4338,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "active_persona": str(session.get("active_persona") or ""),
         }
     context["available_rooms"] = rooms_payload()
+    if active_room == VIDEO_PRODUCTION_ROOM_ID:
+        context["video_tools"] = {"tools": video_tools.inventory(), "gateway": "video.action", "actions": ["status", "open", "job", "job_status", "cancel", "obs_status", "obs_scenes", "obs_scene", "obs_start", "obs_stop", "audio_test"]}
     context["governance"] = governance_status(workspace_id, session_id)
     context["persistent_workspace_memos"] = STORE.list_governance_memos(workspace_id)
     if active_room == "hr_department" and task_type == "resume_generation":
@@ -4643,16 +4759,23 @@ TOOLS = [
     {"name": "antiques.case_get", "description": "Read one saved Antiques research case and its revisions."},
     {"name": "antiques.settings_get", "description": "Read Antiques valuation settings."},
     {"name": "antiques.settings_update", "description": "Update editable Antiques valuation settings."},
+    {"name": "video.action", "description": "Video room: installed tools, confirmed open, jobs, cancellation, OBS recording controls and audio setup. Pass action, workspace_id, session_id, tool and file_id; mutations require confirm=true."},
     {"name": "office.governance_status", "description": "Read Navigator status, rule source, gates, and pending requirements."},
     {"name": "office.governance_incident_list", "description": "List append-only governance incidents for a workspace."},
     {"name": "office.compliance_check", "description": "Run a deterministic compliance status check."},
 ]
 
 
+PHONE_CAPTURE_REQUESTS = CaptureRequests()
+
+
 class VeridexHandler(BaseHTTPRequestHandler):
     server_version = "CodexVeridex/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
+        if self.path.startswith("/pair?"):
+            print(f"{self.address_string()} - pairing request [URL redacted]")
+            return
         print(f"{self.address_string()} - {fmt % args}")
 
     def _is_remote_host(self) -> bool:
@@ -4725,6 +4848,37 @@ class VeridexHandler(BaseHTTPRequestHandler):
             raise ValueError(f"file exceeds the {maximum // (1024 * 1024)} MB upload limit")
         return self.rfile.read(length)
 
+    def _stream_media_file(self, row):
+        path = Path(str(row["path"]))
+        size = path.stat().st_size
+        requested = self.headers.get("Range", "")
+        try:
+            start, end = byte_range(requested, size)
+        except ValueError:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if requested else HTTPStatus.OK)
+        self.send_header("Content-Type", str(row.get("content_type") or "application/octet-stream"))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(max(0, end - start + 1)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Disposition", "inline")
+        if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        try:
+            with path.open("rb") as content:
+                content.seek(start)
+                remaining = end - start + 1
+                while remaining > 0:
+                    block = content.read(min(1024 * 1024, remaining))
+                    if not block: break
+                    self.wfile.write(block); remaining -= len(block)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _legacy_authorized(self) -> bool:
         expected = str(os.environ.get("VERIDEX_CODEX_TOKEN") or "").strip()
         if not expected:
@@ -4778,6 +4932,31 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "service": "codex2veridex", "data_root": str(DATA_ROOT), **runtime_status()})
             elif parsed.path == "/api/market/bootstrap":
                 self._json(market_bootstrap_response())
+            elif parsed.path == "/api/phone-pair/qr":
+                if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                    raise ValueError("Open the pairing code on the Veridex PC.")
+                workspace_id = str(query.get("workspace_id", [""])[0]).strip()
+                session_id = str(query.get("session_id", [""])[0]).strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room first.")
+                if self.server.server_address[0] not in {"0.0.0.0", "::"}:
+                    raise ValueError("Start Veridex in LAN mode before pairing.")
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                    probe.connect(("8.8.8.8", 80))
+                    address = probe.getsockname()[0]
+                if not ipaddress.ip_address(address).is_private:
+                    raise ValueError("No private network address is available.")
+                url = f"http://{address}:{self.server.server_address[1]}/pair?token={remote_access_state()['pairing_token']}"
+                output = io.BytesIO()
+                qrcode.make(url).save(output, format="PNG")
+                body = output.getvalue()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
             elif parsed.path == "/api/betting/scores":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 session_id = str(query.get("session_id", [""])[0]).strip()
@@ -4938,16 +5117,20 @@ class VeridexHandler(BaseHTTPRequestHandler):
                         "scope": "dedicated_repository_profile",
                         "error": str(exc),
                     }
-                oauth_log = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
-                if not value["gmail"].get("connected") and oauth_log.is_file():
-                    try:
-                        lines = [line.strip() for line in oauth_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
-                        failure = next((line for line in reversed(lines) if line.startswith("Gmail connection failed:")), "")
-                        if failure:
-                            value["gmail"]["oauth_error"] = failure.removeprefix("Gmail connection failed:").strip()
-                    except OSError:
-                        pass
-                ebay_oauth_log = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
+                gmail_logs = [
+                    (value["gmail"], ACCOUNTS.account_workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"),
+                    (value["shared"]["gmail"], DATA_ROOT / "integrations" / "gmail_oauth.log"),
+                ]
+                for gmail_status, oauth_log in gmail_logs:
+                    if not gmail_status.get("connected") and oauth_log.is_file():
+                        try:
+                            lines = [line.strip() for line in oauth_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                            failure = next((line for line in reversed(lines) if line.startswith("Gmail connection failed:")), "")
+                            if failure:
+                                gmail_status["oauth_error"] = failure.removeprefix("Gmail connection failed:").strip()
+                        except OSError:
+                            pass
+                ebay_oauth_log = ACCOUNTS.account_workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
                 if not value["ebay"].get("connected") and ebay_oauth_log.is_file():
                     try:
                         lines = [line.strip() for line in ebay_oauth_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
@@ -5022,14 +5205,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 if not matches:
                     raise KeyError("Unknown file")
                 row = matches[0]
-                body = Path(str(row["path"])).read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", str(row.get("content_type") or "application/octet-stream"))
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Content-Disposition", f'inline; filename="{Path(str(row.get("name") or "file")).name}"')
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                self._stream_media_file(row)
             elif parsed.path == "/api/governance":
                 workspace_id = str(query.get("workspace_id", [""])[0])
                 session_id = str(query.get("session_id", [""])[0])
@@ -5057,6 +5233,19 @@ class VeridexHandler(BaseHTTPRequestHandler):
             if not self._remote_authorized():
                 self._reject_remote()
                 return
+            if parsed.path == "/api/phone-capture/image":
+                workspace_id, session_id = PHONE_CAPTURE_REQUESTS.consume(self.headers.get("X-Capture-Token", ""))
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room before capturing.")
+                content = self._raw_body(MAX_UPLOAD_BYTES)
+                with Image.open(io.BytesIO(content)) as image:
+                    if image.format != "PNG":
+                        raise ValueError("Capture must be a PNG image.")
+                    image.verify()
+                saved = STORE.save_file(workspace_id, session_id, "phone-capture.png", content, "image/png", source="phone_capture")
+                self._json({"file": public_file(saved)}, HTTPStatus.CREATED)
+                return
             if parsed.path == "/api/files":
                 query = parse_qs(parsed.query)
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
@@ -5069,6 +5258,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     filename,
                     content,
                     str(self.headers.get("Content-Type") or "application/octet-stream"),
+                    source="video_chat" if query.get("purpose", [""])[0] == "video_chat" else "upload",
+                    expected_room=VIDEO_PRODUCTION_ROOM_ID if query.get("purpose", [""])[0] == "video_chat" else "",
                 )
                 self._json({"file": saved, "files": STORE.list_files(workspace_id, session_id)}, HTTPStatus.CREATED)
                 return
@@ -5095,7 +5286,29 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 extracted = SELLER_INTAKE.extract_zip(item_id, filename, content)
                 self._json({"extracted": extracted, "item": SELLER_INTAKE.get_item(item_id)}, HTTPStatus.CREATED)
                 return
+            if parsed.path == "/api/video/upload":
+                query = parse_qs(parsed.query)
+                ws = query.get("workspace_id", [""])[0]
+                session = query.get("session_id", [""])[0]
+                workspace_context(ws, session)
+                if STORE.find_session(session).get("active_room") != VIDEO_PRODUCTION_ROOM_ID:
+                    raise ValueError("Navigate to Video Production before room intake")
+                length = int(self.headers.get("Content-Length") or 0)
+                maximum = max(1, int(os.environ.get("VERIDEX_VIDEO_UPLOAD_MB", "2048"))) * 1024 * 1024
+                saved = receive_upload(self.rfile, length, maximum, lambda content: STORE.save_file(ws, session,
+                    query.get("name", [""])[0], content, self.headers.get("Content-Type", "application/octet-stream"),
+                    source="video_room", scope="room", scope_ref=VIDEO_PRODUCTION_ROOM_ID, expected_room=VIDEO_PRODUCTION_ROOM_ID))
+                self._json({"file": public_room_file(saved)}, HTTPStatus.CREATED)
+                return
             payload = self._body()
+            if parsed.path == "/api/phone-capture/request":
+                workspace_id = str(payload.get("workspace_id") or "").strip()
+                session_id = str(payload.get("session_id") or "").strip()
+                workspace_context(workspace_id, session_id)
+                if STORE.find_session(session_id).get("active_room") != "betting":
+                    raise ValueError("Navigate to the Betting room before capturing.")
+                self._json({"token": PHONE_CAPTURE_REQUESTS.create(workspace_id, session_id), "expires_in": 120}, HTTPStatus.CREATED)
+                return
             if parsed.path == "/api/betting/trades":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -5389,29 +5602,12 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 BACKGROUND_MONITOR.wake()
                 self._json({"ok": True, "instagram": {"assigned": False, "connected": False, "username": ""}})
             elif parsed.path == "/api/integrations/gmail/connect":
-                workspace_id = str(payload.get("workspace_id") or "").strip()
-                workspace_context(workspace_id, str(payload.get("session_id") or ""))
-                account_email = str(payload.get("account_email") or "").strip()
-                gmail_env = ACCOUNTS.gmail_env(workspace_id, account_email=account_email)
-                if not gmail_env.get("GOOGLE_OAUTH_CLIENT_ID") or not gmail_env.get("GOOGLE_OAUTH_CLIENT_SECRET"):
-                    raise GmailGatewayError("Google OAuth client configuration is missing. Add it once in Veridex's local setup, then connect the workspace account here.")
-                if len(str(gmail_env.get("VERIDEX_INTEGRATION_ENCRYPTION_KEY") or "")) < 32:
-                    raise GmailGatewayError("Veridex's local Gmail encryption key is missing or invalid.")
-                command = [sys.executable, str(ROOT / "gmail_oauth.py"), "--workspace-id", workspace_id]
-                if account_email:
-                    command.extend(["--account-email", account_email])
-                log_path = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "gmail_oauth.log"
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                with log_path.open("w", encoding="utf-8") as oauth_log:
-                    subprocess.Popen(
-                        command,
-                        cwd=str(ROOT),
-                        stdin=subprocess.DEVNULL,
-                        stdout=oauth_log,
-                        stderr=subprocess.STDOUT,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                self._json({"ok": True, "status": "authorization_started", "message": "Complete Google authorization in the browser, then refresh status."})
+                self._json(start_gmail_connection(
+                    str(payload.get("workspace_id") or "").strip(),
+                    str(payload.get("session_id") or ""),
+                    account_email=str(payload.get("account_email") or "").strip(),
+                    account_scope=str(payload.get("account_scope") or ""),
+                ))
             elif parsed.path == "/api/integrations/gmail/disconnect":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 workspace_context(workspace_id, str(payload.get("session_id") or ""))
@@ -5447,7 +5643,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 ]
                 if username:
                     command.extend(["--username", username])
-                log_path = ACCOUNTS._workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
+                log_path = ACCOUNTS.account_workspace_dir(workspace_id) / "integrations" / "ebay_oauth.log"
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 with log_path.open("w", encoding="utf-8") as oauth_log:
                     subprocess.Popen(
@@ -5618,6 +5814,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "file": public_file(linked),
                     "files": [public_file(row) for row in STORE.list_files(workspace_id, session_id)],
                 })
+            elif parsed.path == "/api/video/action":
+                self._json(video_action(payload))
+            elif parsed.path == "/api/room/files/open-vlc":
+                self._json(launch_room_media(payload))
             elif parsed.path == "/api/room/files/attach":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -6105,6 +6305,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 value = {"settings": ANTIQUES.update_settings(workspace_id, args.get("settings") if isinstance(args.get("settings"), dict) else args)}
             else:
                 raise ValueError(f"Unknown tool: {tool}")
+        elif tool == "video.action":
+            value = video_action(args)
         elif tool == "office.governance_status":
             session_id = str(args.get("session_id") or "")
             session = STORE.find_session(session_id) if session_id else None

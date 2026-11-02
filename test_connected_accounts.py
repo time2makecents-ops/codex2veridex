@@ -120,6 +120,48 @@ class ConnectedAccountsTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectedAccountError, "Unknown workspace"):
             self.accounts.read("ws_missing")
 
+    def test_shared_accounts_reuse_owner_assignments_and_databases(self):
+        self.accounts.assign_gmail("ws_one", "seller@example.com")
+        self.accounts.assign_ebay("ws_one", "seller", environment="production")
+        shared = ConnectedAccounts(self.data, self.repo, shared_workspace_id="ws_one")
+        self.assertEqual(shared.read("ws_two"), self.accounts.read("ws_one"))
+        for key in ("VERIDEX_EBAY_DB_PATH", "VERIDEX_EBAY_NOTIFICATIONS_DB_PATH"):
+            self.assertEqual(shared.ebay_env("ws_two")[key], self.accounts.ebay_env("ws_one")[key])
+        self.assertEqual(shared.gmail_env("ws_two"), self.accounts.gmail_env("ws_one"))
+        self.assertEqual(shared.assigned_ebay_workspace_ids(), ["ws_one"])
+        self.assertEqual(shared.ebay_notifications("ws_two").workspace_id, "ws_one")
+        status = shared.public_status("ws_two", shared_gmail_status={"connected": False})
+        self.assertEqual(status["isolation"], "shared_accounts")
+        self.assertEqual(status["account_workspace_id"], "ws_one")
+        self.assertEqual(status["gmail"]["account_email"], "seller@example.com")
+        self.assertEqual(status["ebay"]["username"], "seller")
+        self.assertFalse((self.data / "workspaces/ws_two/integrations/connected_accounts.json").exists())
+
+    def test_shared_assignment_changes_apply_everywhere_and_isolation_can_be_restored(self):
+        shared = ConnectedAccounts(self.data, self.repo, shared_workspace_id="ws_one")
+        shared.assign_instagram("ws_two", "shared-handle")
+        shared.assign_gmail("ws_two", "seller@example.com")
+        shared.assign_ebay("ws_two", "seller", environment="production")
+        shared.assign_ebay("ws_two", "seller", environment="production")
+        self.assertEqual(shared.instagram_config("ws_one")["username"], "shared-handle")
+        shared.set_ebay_automatic_notifications("ws_two", False)
+        self.assertEqual(shared.automatic_ebay_workspace_ids(), [])
+        self.assertEqual(self.accounts.read("ws_two"), {})
+        self.assertTrue(self.accounts.read("ws_one")["gmail"]["assigned"])
+        shared.unassign_gmail("ws_two")
+        shared.unassign_ebay("ws_two")
+        shared.unassign_instagram("ws_two")
+        self.assertEqual(shared.read("ws_one"), {})
+        self.assertEqual(shared.read("ws_two"), {})
+
+    def test_shared_mode_still_rejects_unknown_workspace_and_owner(self):
+        shared = ConnectedAccounts(self.data, self.repo, shared_workspace_id="ws_one")
+        with self.assertRaises(ConnectedAccountError):
+            shared.gmail_env("ws_missing")
+        missing = ConnectedAccounts(self.data, self.repo, shared_workspace_id="ws_missing")
+        with self.assertRaises(ConnectedAccountError):
+            missing.read("ws_two")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,90 @@ from veridex_core import VeridexStore
 
 
 class VeridexServerTests(unittest.TestCase):
+    def test_vlc_launch_requires_confirmed_verified_active_room_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = VeridexStore(Path(directory))
+            initial = store.ensure_default()
+            ws, session = initial["workspace"]["workspace_id"], initial["session"]["session_id"]
+            store.set_room(ws, session, "video_production")
+            source = store.save_file(ws, session, "clip.mp4", b"test video", "video/mp4")
+            payload = {"workspace_id": ws, "session_id": session, "file_id": source["file_id"]}
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "access_mode", return_value="full"), patch.object(veridex_server.ANIMATION, "launch_editor", return_value={"status": "launched", "process_id": 123}) as launch:
+                self.assertEqual(veridex_server.launch_room_media(payload)["status"], "confirmation_required")
+                launch.assert_not_called()
+                result = veridex_server.launch_room_media({**payload, "confirm": True, "path": "C:/untrusted.mp4"})
+                self.assertEqual(result["status"], "launched")
+                launch.assert_called_once_with("vlc", Path(source["path"]))
+                launch.reset_mock()
+                with patch.object(veridex_server, "access_mode", return_value="read_only"), self.assertRaises(ValueError):
+                    veridex_server.launch_room_media({**payload, "confirm": True})
+                Path(source["path"]).write_bytes(b"tampered video")
+                with self.assertRaises(ValueError):
+                    veridex_server.launch_room_media({**payload, "confirm": True})
+                store.set_room(ws, session, "hr_department")
+                with self.assertRaises(ValueError):
+                    veridex_server.launch_room_media({**payload, "confirm": True})
+                store.set_room(ws, session, "animation_studio")
+                with self.assertRaises(ValueError):
+                    veridex_server.launch_animation_editor({**payload, "confirm": True, "tool": "vlc"})
+                launch.assert_not_called()
+
+    def test_betting_photos_are_ledgered_verified_and_forwarded_to_the_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch("veridex_rooms._ROOM_CATALOG_PATH", None), patch(
+            "veridex_rooms.ROOMS", [*veridex_server.ROOMS, {"id": "betting", "title": "Betting", "default_persona": "Slick", "is_active": True}]
+        ):
+            store = VeridexStore(Path(directory))
+            initial = store.ensure_default()
+            workspace_id, session_id = initial["workspace"]["workspace_id"], initial["session"]["session_id"]
+            store.set_room(workspace_id, session_id, "betting")
+            photos = []
+            for name, format_name, mime in [("screenshot.png", "PNG", "image/png"), ("photo.jpg", "JPEG", "image/jpeg")]:
+                content = io.BytesIO()
+                Image.new("RGB", (12, 12), "green").save(content, format=format_name)
+                photos.append(store.save_file(workspace_id, session_id, name, content.getvalue(), mime))
+            with patch.object(veridex_server, "STORE", store), patch.object(veridex_server, "invoke_codex", return_value={
+                "ok": True, "provider": "codex_cli", "model": "gpt-5.6-sol", "reasoning_effort": "high", "task_type": "conversation", "text": "Two test images received.",
+            }) as invoke:
+                veridex_server.verify_chat_attachments(workspace_id, photos)
+                self.assertTrue(all(Path(row["path"]).stat().st_size == row["size"] > 0 and len(row["sha256"]) == 64 for row in photos))
+                veridex_server.chat_response({"workspace_id": workspace_id, "session_id": session_id, "text": "Describe these two images.", "attachment_ids": [p["file_id"] for p in photos]})
+            self.assertEqual(invoke.call_args.args[0]["attachment_paths"], [p["path"] for p in photos])
+            self.assertTrue(all(row["ledger_verified"] for row in invoke.call_args.args[0]["context"]["attached_files"]))
+            self.assertEqual(len(store.list_artifact_ledger(workspace_id)), 2)
+
+    def test_corporate_gmail_reconnect_targets_shared_oauth_without_workspace_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            accounts = Mock()
+            accounts.shared_gmail_env.return_value = {
+                "GOOGLE_OAUTH_CLIENT_ID": "test-client",
+                "GOOGLE_OAUTH_CLIENT_SECRET": "test-secret",
+                "VERIDEX_INTEGRATION_ENCRYPTION_KEY": "x" * 40,
+            }
+            with patch.object(veridex_server, "workspace_context") as context, patch.object(
+                veridex_server, "ACCOUNTS", accounts
+            ), patch.object(veridex_server, "DATA_ROOT", Path(directory)), patch.object(
+                veridex_server.subprocess, "Popen"
+            ) as popen:
+                result = veridex_server.start_gmail_connection(
+                    "ws_test", "sess_test", account_scope="shared", account_email="other@example.com",
+                )
+            context.assert_called_once_with("ws_test", "sess_test")
+            command = popen.call_args.args[0]
+            self.assertIn("--shared", command)
+            self.assertNotIn("--workspace-id", command)
+            self.assertNotIn("other@example.com", command)
+            accounts.gmail_env.assert_not_called()
+            self.assertEqual(result["account_scope"], "shared")
+            self.assertTrue((Path(directory) / "integrations/gmail_oauth.log").is_file())
+
+    def test_corporate_gmail_reconnect_rejects_invalid_session_before_launch(self) -> None:
+        with patch.object(veridex_server, "workspace_context", side_effect=KeyError("Unknown session")), patch.object(
+            veridex_server.subprocess, "Popen"
+        ) as popen:
+            with self.assertRaises(KeyError):
+                veridex_server.start_gmail_connection("ws_test", "sess_wrong", account_scope="shared")
+        popen.assert_not_called()
+
     def test_instagram_connect_opens_profile_without_receiving_a_password(self) -> None:
         accounts = Mock()
         accounts.instagram_env.return_value = {"INSTAGRAM_USERNAME": "provenancepending"}
@@ -646,6 +730,21 @@ class VeridexServerTests(unittest.TestCase):
             self.assertEqual(rows[0]["attachments"][0]["name"], "service.py")
             self.assertEqual(invoke.call_args.args[0]["attachment_paths"], [attached["path"]])
             self.assertEqual(invoke.call_args.args[0]["context"]["attached_files"][0]["name"], "service.py")
+            evidence = invoke.call_args.args[0]["context"]["attached_files"][0]
+            self.assertEqual(evidence["artifact_number"], attached["artifact_number"])
+            self.assertEqual(evidence["sha256"], attached["sha256"])
+            self.assertTrue(evidence["ledger_verified"])
+
+    def test_chat_attachment_verification_rejects_changed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = VeridexStore(Path(temporary))
+            initial = store.ensure_default()
+            workspace_id = initial["workspace"]["workspace_id"]
+            session_id = initial["session"]["session_id"]
+            attached = store.save_file(workspace_id, session_id, "photo.jpg", b"original", "image/jpeg")
+            Path(attached["path"]).write_bytes(b"changed")
+            with patch.object(veridex_server, "STORE", store), self.assertRaisesRegex(ValueError, "artifact ledger"):
+                veridex_server.verify_chat_attachments(workspace_id, [attached])
 
     def test_lobby_hello_routes_to_gemini_and_persists_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

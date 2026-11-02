@@ -58,6 +58,25 @@ class LargeInlinePayloadHookTests(unittest.TestCase):
 
         self.assertIsNone(decision)
 
+    def test_exact_size_limit_is_allowed(self):
+        event = self.gmail_event({"body": {"base64_url_content": "A" * HOOK.MAX_INLINE_BINARY_CHARS}})
+        self.assertIsNone(HOOK.decision_for_event(event))
+
+    def test_serialized_tool_input_and_data_urls_are_counted(self):
+        event = self.gmail_event(json.dumps({
+            "attachments": [{"data": "data:application/octet-stream;base64," + "A" * (HOOK.MAX_INLINE_BINARY_CHARS + 1)}],
+        }))
+        self.assertEqual(HOOK.decision_for_event(event)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_allowed_command_line_request_outputs_nothing(self):
+        completed = subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=json.dumps(self.gmail_event({"attachment_ids": ["file_test"]})),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+
     def test_ignores_non_gmail_tools(self):
         decision = HOOK.decision_for_event(
             {

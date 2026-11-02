@@ -6,7 +6,8 @@
     <meta name="color-scheme" content="light" />
     <title>Codex + Veridex</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2318251d'/%3E%3Cpath d='M8 7h5l3 12 3-12h5l-6 19h-4z' fill='%233dd06f'/%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20261101-5" />
+    <link rel="stylesheet" href="/video_room.css?v=1" />
   </head>
   <body>
     <div class="app-shell">
@@ -77,13 +78,6 @@
           </details>
         </nav>
 
-        <div class="local-account" hidden>
-          <span class="presence-dot"></span>
-          <div>
-            <strong id="account-name">Local User</strong>
-            <span>Single account · saved locally</span>
-          </div>
-        </div>
         <button id="rail-collapse" class="rail-collapse" type="button" aria-label="Collapse sidebar" aria-expanded="true"><span aria-hidden="true">‹</span><span class="sr-only">Collapse sidebar</span></button>
       </aside>
 
@@ -98,6 +92,7 @@
             <span id="toolbar-room-context" class="toolbar-room-context">Lobby</span>
           </div>
           <nav class="workspace-toolbar-actions" aria-label="Session controls">
+            <button id="toolbar-connected-accounts" type="button">Connected accounts</button>
             <input id="file-input" type="file" multiple hidden />
             <button id="toolbar-add-files" type="button">Add files</button>
             <button id="toolbar-view-files" type="button">View files</button>
@@ -120,11 +115,14 @@
           <div id="room-file-actions" class="art-actions room-file-actions" hidden>
             <span><strong id="room-file-action-title">Room files</strong><small>Browse files created or added across this room</small></span>
             <button id="open-room-files" type="button">Files</button>
+            <button id="video-tools-open" type="button" hidden>Production tools</button>
           </div>
           <div id="betting-actions" class="art-actions" hidden>
-            <span><strong>Betting · Slick</strong><small>Follow live games and match scores</small></span>
+            <span><strong>Betting · Slick</strong><small>Add photos, drop images here, or paste a screenshot with Ctrl+V.</small></span>
             <button id="betting-open-scores" type="button">Live scores</button>
             <button id="betting-open-trades" type="button">Trade journal</button>
+            <input id="betting-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+            <button id="betting-add-screenshots" type="button">Add photos / screenshots</button>
           </div>
           <section id="nancy-important-mail" class="nancy-important-mail" aria-label="Nancy important mail" aria-live="polite" hidden>
             <div class="nancy-mail-heading"><div><div class="eyebrow">Nancy Mail</div><h2>Important messages</h2></div><span id="nancy-mail-checked"></span></div>
@@ -162,6 +160,7 @@
             <span><strong>HR Resume Studio</strong><small>Build, tailor, review, and export application materials</small></span>
             <button id="open-resume-studio" type="button">Resume Studio</button>
           </div>
+          <div id="composer-attachments" class="composer-attachments" aria-live="polite" hidden></div>
           <form id="composer" class="composer">
             <button id="voice-input" class="voice-input" type="button" title="Dictate a message" aria-label="Dictate a message" aria-pressed="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 0 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-6-4a1 1 0 0 1 2 0v.5a4 4 0 0 0 8 0v-.5a1 1 0 1 1 2 0v.5a6 6 0 0 1-5 5.92V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A6 6 0 0 1 6 12v-.5Z"/></svg>
@@ -747,13 +746,18 @@
           <div><div class="eyebrow">Account scopes</div><h2>Connected accounts</h2><p id="connected-accounts-workspace">Workspace accounts plus shared Veridex corporate services.</p></div>
           <button id="connected-accounts-close" type="button" aria-label="Close connected accounts">×</button>
         </header>
-        <div class="account-isolation-note"><span aria-hidden="true">◎</span><p><strong>Scoped access</strong>Accounts assigned to another workspace remain isolated. Shared Veridex corporate services are available from every workspace and are labeled explicitly.</p></div>
+        <div class="account-isolation-note"><span aria-hidden="true">◎</span><p id="connected-accounts-scope-note"><strong>Scoped access</strong>Accounts assigned to another workspace remain isolated. Shared Veridex corporate services are available from every workspace and are labeled explicitly.</p></div>
         <section class="connected-account-card" aria-labelledby="shared-gmail-account-title">
           <div class="connected-account-heading">
             <div><span class="account-monogram gmail">G</span><div><h3 id="shared-gmail-account-title">Veridex corporate Gmail</h3><p>Shared across all workspaces</p></div></div>
             <span id="shared-gmail-connection-state" class="account-state">Not connected</span>
           </div>
           <div id="shared-gmail-active-account" class="active-account" hidden></div>
+          <div class="connected-account-actions shared-gmail-actions">
+            <button id="shared-gmail-connect" class="primary-action" type="button">Connect / reconnect Gmail</button>
+            <button id="shared-gmail-refresh" type="button">Refresh status</button>
+          </div>
+          <p class="field-note">Reconnect if Veridex cannot access corporate mail. Complete Google's sign-in or consent prompt in the dedicated browser, then refresh status. Veridex reuses the saved authorization when it is valid.</p>
           <p class="field-note">Name “Veridex Corp” or this address in a request to use the shared mailbox. Workspace Gmail remains the default when one is assigned.</p>
         </section>
         <section class="connected-account-card" aria-labelledby="instagram-account-title">
@@ -881,6 +885,7 @@
     <dialog id="betting-trades-dialog" class="betting-scores-dialog" aria-labelledby="betting-trades-title"><div class="betting-scores-shell">
       <header><div><div class="eyebrow">Betting · Slick</div><h2 id="betting-trades-title">Trade journal</h2></div><button id="betting-close-trades" type="button" aria-label="Close trade journal">×</button></header>
       <p>Record Kalshi trades manually. Prices are dollars per contract; this journal does not place orders.</p>
+      <section class="betting-comparison" aria-labelledby="betting-phone-title"><h3 id="betting-phone-title">Phone capture</h3><p>Pair the Android companion by scanning the code on this screen. Keep it private.</p><button id="betting-phone-pair" type="button">Show pairing QR code</button><p id="betting-pair-status" role="status"></p><img id="betting-pair-qr" alt="One-time phone pairing QR code" hidden width="240" height="240"><p>Capture is still in development.</p><button id="betting-phone-request" type="button">Create capture code</button><p id="betting-phone-status" role="status"></p><output id="betting-phone-code" aria-label="Capture code"></output></section>
       <form id="betting-trade-form" class="betting-trade-form"><label>Market or ticker<input name="market" required maxlength="200"></label><label>Side<select name="side"><option value="yes">Yes</option><option value="no">No</option></select></label><label>Action<select name="action"><option value="buy">Buy</option><option value="sell">Sell</option></select></label><label>Contracts<input name="quantity" type="number" min="0.01" step="0.01" required></label><label>Price per contract ($)<input name="price" type="number" min="0" max="1" step="0.0001" required></label><label>Fees ($)<input name="fees" type="number" min="0" step="0.01" value="0" required></label><label>Trade time<input name="traded_at" type="datetime-local" required></label><button type="submit">Record trade</button></form>
       <p id="betting-trade-status" role="status"></p><h3>Recorded positions</h3><p>Average cost includes recorded fees. Results exclude settlement and current market prices.</p><div id="betting-positions-list" class="betting-score-list"></div><h3>Recent trades</h3><div id="betting-trade-list" class="betting-score-list"></div>
     </div></dialog>
@@ -890,15 +895,17 @@
         <div class="betting-score-controls"><label>League <select id="betting-league"><option value="nfl">NFL</option><option value="nba">NBA</option><option value="mlb">MLB</option><option value="nhl">NHL</option><option value="atp">Tennis · ATP</option><option value="wta">Tennis · WTA</option></select></label><button id="betting-refresh-scores" type="button">Refresh</button></div>
         <p>Refreshes every 10 seconds while open. Scores may lag behind the game.</p>
         <p id="betting-score-status" role="status"></p><div id="betting-score-list" class="betting-score-list"></div>
-        <section class="betting-comparison" aria-labelledby="betting-match-title"><h3 id="betting-match-title">Track a tennis match</h3><p>Paste a match page link, then choose its source. The selected page refreshes while this window is open. Scores can lag.</p><label for="betting-match-url">Match page link</label><input id="betting-match-url" type="url" placeholder="https://www.flashscoreusa.com/game/tennis/…" autocomplete="off"><div class="betting-score-controls"><button id="betting-read-flashscore" type="button">Track Flashscore</button><button id="betting-read-tennislive" type="button">Track TennisLive</button></div><p id="betting-match-status" role="status"></p><pre id="betting-match-text" class="betting-match-text"></pre></section>
+        <section class="betting-comparison" aria-labelledby="betting-match-title"><h3 id="betting-match-title">Track game</h3><p>Paste a match page link, then choose its source. The selected page refreshes while this window is open. Scores can lag.</p><label for="betting-match-url">Match page link</label><input id="betting-match-url" type="url" placeholder="https://www.flashscoreusa.com/game/tennis/…" autocomplete="off"><div class="betting-score-controls"><button id="betting-read-flashscore" type="button">Track Flashscore</button><button id="betting-read-tennislive" type="button">Track TennisLive</button></div><p id="betting-match-status" role="status"></p><pre id="betting-match-text" class="betting-match-text"></pre></section>
         <section class="betting-comparison" aria-labelledby="betting-comparison-title"><h3 id="betting-comparison-title">Compare your screens</h3><p>Enter the same match score from each screen. Times record when you clicked, not when the source updated. Observations stay on this page until it is refreshed.</p><div class="betting-comparison-grid">
           <form id="betting-robinhood-observation"><label>Robinhood score<input name="score" required maxlength="100" placeholder="e.g. Aboian 1–0 Dellien"></label><button type="submit">Record Robinhood</button><output id="betting-robinhood-result">No observation recorded</output></form>
           <form id="betting-google-observation"><label>Google score<input name="score" required maxlength="100" placeholder="Same match and score format"></label><button type="submit">Record Google</button><output id="betting-google-result">No observation recorded</output></form>
-        </div></section>
+        </div><h3>Recorded observations</h3><p id="betting-observations-empty">No observations recorded.</p><ul id="betting-observations-list" class="betting-observations-list" aria-label="Recorded observations"></ul></section>
       </div>
     </dialog>
     <div id="toast" class="toast" role="status"></div>
-    <script src="/app.js?v=20261031-9" defer></script>
-    <script src="/veridex_actions.js?v=20261031-6" defer></script>
+    <script src="/app.js?v=20261101-7" defer></script>
+    <script src="/video_tools.js?v=1" defer></script>
+    <script src="/video_room.js?v=1" defer></script>
+    <script src="/veridex_actions.js?v=20261101-3" defer></script>
   </body>
 </html>

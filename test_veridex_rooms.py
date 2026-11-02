@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
-from veridex_rooms import resolve_room, room_directory_text, route_room_request, rooms_payload
+from veridex_rooms import ROOMS, configure_room_catalog, resolve_room, room_directory_text, route_room_request, rooms_payload
 
 
 class VeridexRoomTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Server imports may configure a real catalog during full discovery.
+        # These unit tests exercise the built-in registry independently of it.
+        catalog = patch("veridex_rooms._ROOM_CATALOG_PATH", None)
+        catalog.start()
+        self.addCleanup(catalog.stop)
+
+    def test_configured_catalog_can_add_a_room_without_changing_builtins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rooms.json"
+            path.write_text(json.dumps({"rooms": [*ROOMS, {
+                "id": "test_room", "title": "Test Room",
+                "default_persona": "Test Guide", "is_active": True,
+            }]}), encoding="utf-8")
+            configure_room_catalog(path)
+            self.assertEqual(len(rooms_payload()), 22)
+            self.assertEqual(route_room_request("go to Test Room")["room"]["id"], "test_room")
+            self.assertEqual(len(ROOMS), 21)
+            configure_room_catalog(None)
+            self.assertEqual(len(rooms_payload()), 21)
+
     def test_registry_matches_expected_governed_rooms(self) -> None:
         rooms = rooms_payload()
         self.assertEqual(len(rooms), 21)

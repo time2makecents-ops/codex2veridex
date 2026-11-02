@@ -479,11 +479,14 @@ class VeridexStore:
         description: str = "",
         uploaded_by_session_id: str = "",
         metadata: Dict[str, Any] | None = None,
+        expected_room: str = "",
     ) -> Dict[str, Any]:
         with self._lock:
             session = self.find_session(session_id)
             if session.get("workspace_id") != workspace_id:
                 raise KeyError("Session does not belong to workspace")
+            if expected_room and session.get("active_room") != expected_room:
+                raise ValueError("The room changed before this upload could be saved")
             safe_name = self._safe_path_component(filename, "")
             if not safe_name:
                 raise ValueError("filename is required")
@@ -791,6 +794,8 @@ class VeridexStore:
         rows: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for ledger in self.list_artifact_ledger(workspace_id):
+            if ledger.get("source") == "video_chat":
+                continue
             file_id = str(ledger.get("file_id") or "")
             if not file_id or file_id in seen:
                 continue

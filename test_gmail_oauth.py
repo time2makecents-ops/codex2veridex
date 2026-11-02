@@ -9,6 +9,17 @@ import gmail_oauth
 
 
 class GmailOauthBrowserTests(unittest.TestCase):
+    def test_shared_command_uses_corporate_store_and_never_assigns_workspace(self) -> None:
+        with patch("sys.argv", ["gmail_oauth.py", "--shared"]), patch(
+            "connected_accounts.ConnectedAccounts"
+        ) as factory, patch.object(gmail_oauth, "connect", return_value={"account_email": "corp@example.com"}) as connect:
+            env = {"VERIDEX_GOOGLE_ACCOUNT": "corp@example.com", "VERIDEX_GMAIL_DB_PATH": "shared-gmail.db"}
+            factory.return_value.shared_gmail_env.return_value = env
+            self.assertEqual(gmail_oauth.main(), 0)
+        connect.assert_called_once_with(env)
+        factory.return_value.gmail_env.assert_not_called()
+        factory.return_value.assign_gmail.assert_not_called()
+
     def test_unified_veridex_browser_takes_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             gmail_oauth, "_debug_json", side_effect=[{"Browser": "Chrome"}, {"id": "oauth-tab"}]

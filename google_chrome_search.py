@@ -198,9 +198,9 @@ def read_betting_match(source: str, url: str) -> Dict[str, Any]:
     hosts = {"tennislive": "www.tennislive.net", "flashscore": "www.flashscoreusa.com"}
     if parsed.scheme != "https" or parsed.netloc != hosts[source] or parsed.username or parsed.password:
         raise ValueError("Use an HTTPS match link from the selected source.")
-    paths = {"tennislive": r"/(?:atp|wta)/match/[^/]+/[^/]+/?", "flashscore": r"/game/tennis/[^/]+/[^/]+/?"}
+    paths = {"tennislive": r"/(?:atp|wta)/match/[^/]+/[^/]+/?", "flashscore": r"/game/(?:tennis|football)/[^/]+/[^/]+/?"}
     if not re.fullmatch(paths[source], parsed.path, re.IGNORECASE):
-        raise ValueError("Use a tennis match page, not a general website link.")
+        raise ValueError("Use a supported game page, not a general website link.")
     return _run("betting-match", source, url, timeout=30)
 
 

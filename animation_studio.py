@@ -19,6 +19,7 @@ from xml.sax.saxutils import escape as xml_escape
 ROOM_ID = "animation_studio"
 SCHEMA_VERSION = 11
 SUPPORTED_AUDIO = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+SUPPORTED_MEDIA = SUPPORTED_AUDIO | {".aiff", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".opus", ".webm", ".wma", ".wmv"}
 SUPPORTED_IMAGES = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 SUPPORTED_SYNFIG_DOCUMENTS = {".sif", ".sifz", ".sfg"}
 SUPPORTED_RENDERS = {".avi", ".gif", ".jpeg", ".jpg", ".mkv", ".mov", ".mp4", ".png", ".webm", ".webp"}
@@ -437,6 +438,13 @@ class AnimationStudio:
         program_files = Path(os.environ.get("ProgramFiles") or "C:/Program Files")
         program_files_x86 = Path(os.environ.get("ProgramFiles(x86)") or "C:/Program Files (x86)")
         commands = {
+            "vlc": (
+                ("vlc",),
+                (program_files / "VideoLAN/VLC/vlc.exe", program_files_x86 / "VideoLAN/VLC/vlc.exe",
+                 local_programs / "VideoLAN/VLC/vlc.exe", Path("/Applications/VLC.app/Contents/MacOS/VLC")),
+                "VLC media player",
+                "Local audio and video playback",
+            ),
             "rhubarb": (
                 ("rhubarb",),
                 (repository_root / ".runtime/tools/rhubarb/1.14.0/app/Rhubarb-Lip-Sync-1.14.0-Windows/rhubarb.exe",),
@@ -467,7 +475,11 @@ class AnimationStudio:
                 "Synfig Studio",
                 "Bitmap cut-out movement, scene compositing, and character timing",
             ),
-            "kdenlive": (("kdenlive",), (), "Kdenlive", "Final edit, audio, captions, and delivery"),
+            "kdenlive": (("kdenlive",), (local_programs / "Kdenlive/bin/kdenlive.exe", program_files / "Kdenlive/bin/kdenlive.exe"), "Kdenlive", "Timeline editing and rendering"),
+            "shotcut": (("shotcut",), (local_programs / "Shotcut/shotcut.exe", program_files / "Shotcut/shotcut.exe"), "Shotcut", "Timeline editing and rendering"),
+            "handbrake": (("HandBrake",), (program_files / "HandBrake/HandBrake.exe",), "HandBrake", "Delivery conversion and compression"),
+            "handbrake_cli": (("HandBrakeCLI",), (program_files / "HandBrake/HandBrakeCLI.exe", local_programs / "HandBrakeCLI/HandBrakeCLI.exe"), "HandBrake CLI", "Automated conversion"),
+            "obs": (("obs64", "obs"), (program_files / "obs-studio/bin/64bit/obs64.exe",), "OBS Studio", "Recording and scenes"),
             "glaxnimate": (("glaxnimate",), (), "Glaxnimate", "Vector titles, bumpers, and overlays"),
         }
         result: Dict[str, Dict[str, Any]] = {}
@@ -480,14 +492,19 @@ class AnimationStudio:
             if not path:
                 path = next((str(candidate) for candidate in candidates if candidate.is_file()), "")
             result[key] = {"name": label, "available": bool(path), "path": path or "", "purpose": purpose}
+        for key in ("ffmpeg", "ffprobe"):
+            candidates = [Path(result[t]["path"]).parent / (key + (".exe" if os.name == "nt" else "")) for t in ("kdenlive", "shotcut") if result[t]["path"]]
+            found = shutil.which(key) or next((str(p) for p in candidates if p.is_file()), "")
+            if key not in result or not result[key]["available"]:
+                result[key] = {"name": key, "available": bool(found), "path": found, "purpose": "Media processing and verification"}
         return result
 
     def launch_editor(self, tool_key: str, source_path: Path) -> Dict[str, Any]:
         key = str(tool_key or "").lower()
-        if key not in {"gimp", "audacity", "synfig"}:
-            raise ValueError("Only GIMP, Audacity, and Synfig can be launched from Animation Studio.")
+        if key not in {"gimp", "audacity", "synfig", "vlc"}:
+            raise ValueError("Only GIMP, Audacity, Synfig, and VLC can be launched.")
         source = Path(source_path).resolve()
-        allowed = SUPPORTED_IMAGES if key == "gimp" else SUPPORTED_SYNFIG_DOCUMENTS if key == "synfig" else SUPPORTED_AUDIO
+        allowed = SUPPORTED_IMAGES if key == "gimp" else SUPPORTED_SYNFIG_DOCUMENTS if key == "synfig" else SUPPORTED_MEDIA if key == "vlc" else SUPPORTED_AUDIO
         if not source.is_file() or source.suffix.lower() not in allowed:
             raise ValueError(f"The selected file is not supported by {key.title()}.")
         tool = self.tools().get(key) or {}
@@ -769,7 +786,9 @@ class AnimationStudio:
                     projects.append(normalize_project(value))
             except (OSError, json.JSONDecodeError, ValueError):
                 continue
-        return sorted(projects, key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+        return sorted(projects, key=lambda row: (
+            str(row.get("updated_at") or ""), int(row.get("project_version") or 0)
+        ), reverse=True)
 
     def save_project(self, workspace_id: str, value: Dict[str, Any]) -> Dict[str, Any]:
         project = normalize_project(value)

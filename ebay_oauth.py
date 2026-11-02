@@ -20,6 +20,7 @@ from typing import Dict
 
 from connected_accounts import ConnectedAccounts
 from ebay_gateway import EbayGateway, EbayGatewayError
+from gmail_gateway import _default_env
 
 
 ROOT = Path(__file__).resolve().parent
@@ -223,7 +224,7 @@ def main() -> int:
     try:
         data_root = Path(os.environ.get("VERIDEX_DATA_DIR", str(ROOT / "data"))).resolve()
         status = connect(
-            ConnectedAccounts(data_root, ROOT),
+            ConnectedAccounts(data_root, ROOT, shared_workspace_id=_default_env().get("VERIDEX_SHARED_ACCOUNTS_WORKSPACE_ID", "")),
             args.workspace_id,
             username=args.username,
             environment=args.environment,
