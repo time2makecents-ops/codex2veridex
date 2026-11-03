@@ -4,6 +4,7 @@ These instructions apply to the entire repository.
 
 ## Sources of truth
 
+- At the start of a Codex session, check the shared personal setup repository, [time2makecents-ops/codex-personal-setup](https://github.com/time2makecents-ops/codex-personal-setup), for current personal rules, settings, commands, and port assignments. Prefer starting with `codexxx`, which performs the update and rule-loading checks; reuse its result rather than repeating checks. For an existing session or an unconfigured computer, follow [CODEX_SETUP.md](CODEX_SETUP.md). Report offline freshness honestly; do not allocate new ports without a current registry.
 - Read only the relevant sections of `README.md` for supported behavior, setup, and operator commands.
 - Read the relevant sections of `ARCHITECTURE.md` before changing request flow, persistence, routing, rooms, governance, browser bridges, or artifact handling.
 - Follow `DEVELOPMENT_MODEL_POLICY.md` before development begins. State the configured and required model/reasoning once; repeat only if the route changes or mismatches, and pause on a mismatch.

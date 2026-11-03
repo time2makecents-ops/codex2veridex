@@ -38,6 +38,11 @@ universal token-saving mode. Use usage measurements when the client exposes them
 
 ## Move between computers
 
+Start with [CODEX_SETUP.md](CODEX_SETUP.md) for the shared GitHub setup repository,
+the portable `codexxx` PowerShell command, and first-time workstation installation.
+Personal policies, reusable commands, and port assignments belong in that shared
+repository; this Veridex checkout points to it rather than maintaining copies.
+
 The personal setup source is a separate `codex-personal-setup` repository, normally
 at `~/codex-personal-setup`. Its setup tool installs global guidance, custom skills,
 and routine agent definitions while preserving unrelated configuration. Run:
