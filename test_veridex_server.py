@@ -1563,7 +1563,7 @@ class VeridexServerTests(unittest.TestCase):
                 )
                 self.assertEqual(request["context"]["artifact_storage_policy"]["scope"], "room")
                 self.assertEqual(request["context"]["artifact_storage_policy"]["scope_ref"], "art_department")
-                (output / "ant-drummer.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"generated")
+                Image.new("RGB", (32,32), "blue").save(output / "ant-drummer.png")
                 return {
                     "ok": True,
                     "provider": "codex_cli",
@@ -1576,7 +1576,7 @@ class VeridexServerTests(unittest.TestCase):
 
             with patch.object(veridex_server, "STORE", store), patch.object(
                 veridex_server, "invoke_codex", side_effect=generate
-            ):
+            ) as invoke, patch.object(veridex_server, "codex_art_provider", return_value={"configured": True}):
                 result = veridex_server.chat_response(
                     {
                         "workspace_id": workspace_id,
@@ -1584,6 +1584,17 @@ class VeridexServerTests(unittest.TestCase):
                         "text": "create an image of an ant playing drums in a comic book style",
                     }
                 )
+                self.assertEqual(result["task_type"], "image_precreation")
+                invoke.assert_not_called()
+                draft = result["room_job"]
+                veridex_server.room_job_action({"workspace_id":workspace_id,"session_id":session_id,"action":"submit","room_job_id":draft["request_id"],"version":draft["version"],"confirm":True})
+                jobs = veridex_server.room_jobs()
+                jobs.futures[draft["request_id"]].result(5)
+                completed = jobs.get(workspace_id,"art_department",draft["request_id"])
+                self.assertEqual(completed["status"], "completed", completed.get("error"))
+                result = veridex_server.chat_response({"workspace_id":workspace_id,"session_id":session_id,"text":"where is the image file?"})
+                jobs.pool.shutdown(wait=True)
+
 
             artifact = result["generated_artifacts"][0]
             self.assertTrue(Path(artifact["path"]).is_file())

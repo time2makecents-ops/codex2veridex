@@ -650,6 +650,99 @@ directory. Room navigation and directory requests are handled deterministically
 by Veridex before Codex is called, and every session still has exactly one
 active room.
 
+Every room has the same full-size workspace below the session toolbar, with an
+82-pixel room header on desktop and a 132-pixel header at narrow widths. Room
+actions precede **Chat with [persona]**, which opens the shared movable,
+resizable session chat. Closing chat preserves its conversation and unsent draft.
+Rooms without specialized work surfaces keep the same workspace area. Every
+room also has a **Jobs** list scoped to its workspace and room across sessions;
+only Visual Design currently creates room image jobs.
+
+Existing studio, research, file, and seller actions remain available from each
+room's header. Control Room and Infrastructure both offer **View logs** for room
+changes and operational notices; Infrastructure's administration audit remains
+separate. My Office's **Email** button opens Nancy's existing important-mail,
+compose, and address-book controls. **Calendar · Not implemented** is a disabled
+placeholder; calendar integration is not available. Separate tool pages such as
+Item Intake and the eBay workspace retain their layouts. This layout does not
+add new room dashboards, a video timeline, or change runtime AI model routing.
+
+Floating chat has a centered persona/room title and minimize, maximize/restore,
+and close controls. Reopen minimized or closed chat from the room's Chat button.
+The title-bar model selector starts on automatic task routing, displayed as the
+current model followed by **(default)**. Explicit Sol, Terra, or Luna selections
+open a connected reasoning panel to the right of the model list. Choose Low,
+Medium, High, Extra high, or Max; the model's usual level is marked **(default)**.
+Choosing a level applies that model/reasoning pair to subsequent normal chat
+messages. **Use default** restores automatic model and reasoning routing.
+Gemini's current adapter does not offer adjustable reasoning. Choices stay in this browser page's
+memory per workspace/session/room and reset on reload; they are not saved memory.
+Structured tools keep their dedicated routes. Explicit choices use the committed
+`manual_chat_models` allowlist and fail visibly rather than substitute a model.
+Older runtime governance snapshots inherit that additive allowlist when absent;
+an explicitly empty allowlist disables manual choices.
+
+Gemini is selectable for text-only conversation in any room when configured in
+Veridex's own `.env.local` with `GEMINI_API_KEY`, `GEMINI_MODEL`, and
+`VERIDEX_GEMINI_ENABLED`. The selector shows **Not configured** otherwise.
+The adapter does not read another application's configuration. It does not
+support attachments, local tools, generated files, or research tasks; choose
+Default or Codex for those. No provider billing is enabled by this selector.
+
+### Visual Design image requests
+
+Ask the room owner to create an image to open a numbered draft. Review the
+brief and assumptions, then choose **Send to room** or **Keep editing**. Every
+new or revised brief presents this choice. **Keep editing** enters pre-creation
+mode; relevant clarification questions may appear there, followed by the same
+choice again. **Return to normal chat** ends refinement. PNG, JPEG, and WebP
+creation requests are recognized as image requests. If an older untracked image
+request was handled as ordinary chat, saying **Send to room** recovers its
+original brief into a numbered draft and shows the actual buttons without
+starting production. Repeating that for an already accepted request reports its
+status without rerunning it. The Send button submits the reviewed request ID and
+version with explicit confirmation; stale controls are suppressed and duplicate
+pending clicks are ignored. Production starts only after validation. The chat
+model selection does not change the room's image-production route.
+
+Open **Jobs** for the brief, request ID, attempt history, status, results, and
+production cancellation. Chat remains usable while a job runs. Completed jobs
+offer Accept, Revise, Create variants, Resize/export, and Compare versions;
+**Ask Systems** prepares a diagnostic question. A retry retains the request ID;
+a revision receives a new linked ID. Restarted work is marked Interrupted and
+requires an explicit retry. Existing standalone Art Studio workflows remain
+available. The Jobs popup leaves Video Production's media workspace in place.
+
+The room **Jobs** toggle opens a modeless popup beside the sidebar; closing it
+does not close active workspace tabs. Sort by newest (default), oldest, name
+ascending/descending, type (status), or source. Type choices put completed,
+draft, running, or another selected status first; other jobs stay in the list.
+Single-click selects a job; double-click or Enter opens its details at the right.
+On narrow screens, details replace
+the list and provide Back/Close controls. Unsent image drafts remain in chat and
+are not listed until **Save as draft**. Older drafts created before this control
+remain visible in Jobs. Typing **send** or clicking **Send to room** opens
+**Do you want to send to room?** with **Yes** and **No, keep editing**. Yes submits
+the checked version once; No or Escape leaves it unsubmitted. **Save as draft**
+saves without sending or opening the send confirmation. Saving as draft cancels
+cancellable work, shows a stopping
+state until acknowledged, and retains the brief and attempts in Jobs. Resume
+requires a new explicit Yes. Completion archives a job from workspace tabs and
+notifies chat; failures and interrupted jobs remain visible.
+
+The image history combines chat jobs and Art Studio history. Verified historical
+Studio outputs are imported idempotently; unavailable original settings are
+labeled. Existing provider selection and execution remain in Art Studio. Image
+edit/retouch requests and attachments create a separate edit draft linked to the
+source, preserving the original; recovery of an untracked edit uses the latest
+matching request without substituting an older completed job. Rename completed
+images from Jobs or Studio; this changes the friendly filename only. Set the
+initial filename in the send confirmation or Art Studio before generation. The
+canonical path, bytes, and immutable artifact ledger remain unchanged. The
+filename or thumbnail opens a preview; Download is a separate action with the
+friendly filename. Technical IDs, hashes, and paths are hidden in collapsed
+details.
+
 ### Betting · Slick
 
 When the Betting room has been created through Infrastructure administration,

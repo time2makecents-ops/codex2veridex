@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from veridex_governance import GovernanceRegistry
 from veridex_rooms import room_by_id, rooms_payload
+from image_names import image_name
 
 
 DEFAULT_ACCOUNT = {"user_id": "local-user", "display_name": "Local User"}
@@ -524,7 +525,7 @@ class VeridexStore:
                 "kind": file_kind,
                 "scope": file_scope,
                 "scope_ref": file_scope_ref,
-                "room_id": str(session.get("active_room") or "lobby"),
+                "room_id": file_scope_ref if file_scope=='room' else str(session.get("active_room") or "lobby"),
                 "description": str(description or ""),
                 "metadata": dict(metadata or {}),
                 "uploaded_by_session_id": str(uploaded_by_session_id or session_id),
@@ -766,7 +767,31 @@ class VeridexStore:
         rows = self._read_json(self.files_manifest_path(workspace_id, session_id), [])
         if not isinstance(rows, list):
             return []
-        return [row for row in rows if isinstance(row, dict) and Path(str(row.get("path") or "")).is_file()]
+        return [self.image_label(workspace_id,row) for row in rows if isinstance(row, dict) and Path(str(row.get("path") or "")).is_file()]
+
+    def image_label(self, workspace_id, row):
+        labels = self._read_json(self.workspace_dir(workspace_id) / 'image_names.json', {})
+        name = labels.get(str(row.get('file_id')), {}).get('name') or row.get('name','')
+        return {**row, 'display_name':name}
+
+    def rename_image(self, workspace_id, session_id, file_id, name):
+        with self._lock:
+            session=self.find_session(session_id)
+            if session.get('workspace_id') != workspace_id or session.get('active_room') != 'art_department':
+                raise ValueError('Rename images from their Visual Design workspace')
+            row=next((row for row in self.list_generated_images(workspace_id) if row['file_id']==file_id),None)
+            if not row: raise ValueError('Image is unavailable in this workspace')
+            path=Path(row['path']);digest=hashlib.sha256(path.read_bytes()).hexdigest()
+            ledger=next((item for item in self.list_artifact_ledger(workspace_id) if item['file_id']==file_id),{})
+            if digest!=ledger.get('sha256') or path.stat().st_size!=ledger.get('size') or str(path.resolve())!=ledger.get('path'):
+                raise ValueError('Image artifact verification failed')
+            value=image_name(name,path.suffix)
+            target=self.workspace_dir(workspace_id)/'image_names.json'
+            labels=self._read_json(target,{})
+            labels[file_id]={'name':value,'updated_at':utc_now()}
+            self._write_json(target,labels)
+            self._append_ndjson(self.workspace_dir(workspace_id)/'image_name_events.ndjson',{'file_id':file_id,'name':value,'at':utc_now()})
+            return self.image_label(workspace_id,row)
 
     def resolve_files(self, workspace_id: str, session_id: str, file_ids: Iterable[str]) -> List[Dict[str, Any]]:
         wanted = {str(file_id) for file_id in file_ids if str(file_id).strip()}
@@ -837,7 +862,7 @@ class VeridexStore:
                 "created_at": str(ledger.get("created_at") or ledger.get("ledgered_at") or ""),
             }
             seen.add(file_id)
-            rows.append(row)
+            rows.append(self.image_label(workspace_id,row))
         return sorted(
             rows,
             key=lambda row: (

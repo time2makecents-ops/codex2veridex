@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote
 
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 import qrcode
@@ -39,6 +39,9 @@ from betting_trades import add_trade as add_betting_trade, list_trades as list_b
 from tools.phone_capture import CaptureRequests
 from codex_gateway import access_mode, invoke_codex, select_model
 from gemini_gateway import gemini_enabled, invoke_gemini
+from chat_models import catalog as chat_model_catalog, resolve_choice as resolve_chat_model, codex_policy as explicit_codex_policy, manual_rules as manual_chat_rules
+from room_jobs import RoomJobs, IMAGE_REQUEST, image_operation, precreation_questions
+from image_names import image_name
 from gmail_gateway import GmailGateway, GmailGatewayError
 from connected_accounts import ConnectedAccountError, ConnectedAccounts
 from ebay_gateway import EbayGateway, EbayGatewayError
@@ -1103,6 +1106,7 @@ def public_file(row: Dict[str, Any], *, include_path: bool = False) -> Dict[str,
         "file_id",
         "artifact_number",
         "name",
+        "display_name",
         "content_type",
         "size",
         "sha256",
@@ -1610,7 +1614,7 @@ def codex_art_assets(
         raise ValueError("Describe the image to create")
     variants = max(1, min(4, int(payload.get("variants") or 1)))
     preset_id = str(payload.get("preset_id") or "photography")
-    expanded = ART.expanded_prompt(prompt, preset_id)
+    expanded = prompt if payload.get('preserve_brief') else ART.expanded_prompt(prompt, preset_id)
     aspect = str(payload.get("aspect") or "square")
     operation = str(payload.get("operation") or "generate")
     negative = str(payload.get("negative_prompt") or "").strip()
@@ -1654,6 +1658,7 @@ def codex_art_assets(
         "attachment_paths": [str(row.get("path") or "") for row in sources if str(row.get("path") or "")],
         "artifact_output_dir": str(output_dir),
         "timeout_seconds": payload.get("timeout_seconds"),
+        "cancel_event": payload.get("cancel_event"),
     })
     assets: list[Dict[str, Any]] = []
     for candidate in sorted(output_dir.rglob("*")):
@@ -1718,7 +1723,153 @@ def art_sources(workspace_id: str, session_id: str, file_ids: list[Any]) -> list
     return rows
 
 
-def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+_ROOM_JOB_SERVICES = {}
+
+
+def room_job_sources(row):
+    ws, session = row['workspace_id'], row['session_id']
+    candidates = {file['file_id']: file for file in [*STORE.list_files(ws,session), *STORE.list_generated_images(ws,'art_department')]}
+    ids = row['brief']['source_file_ids']
+    if not isinstance(ids,list) or len(ids) > 4 or len(ids) != len(set(ids)):
+        raise ValueError('Choose up to four different verified image references')
+    for file_id in ids:
+        if file_id not in candidates: raise ValueError('Reference is unavailable')
+        verify_chat_attachments(ws,[candidates[file_id]])
+    return art_sources(ws,session,ids)
+
+
+def validate_room_job(row, production_review=True):
+    if access_mode() != 'full': raise ValueError('Full computer access is required')
+    brief = row['brief']
+    if re.fullmatch(r'(?:please\s+)?(?:make|create|generate|draw)(?:\s+me)?(?:\s+an?)?\s+(?:image|picture|photo|meme)[.!?\s]*',brief['prompt'],re.I):
+        return {'approved':False,'questions':['What should the image show?']}
+    if brief['operation'] not in {'generate','edit','resize','convert'}: raise ValueError('Unsupported operation')
+    sources = room_job_sources(row)
+    if brief['operation'] in {'edit','resize','convert'} and not sources: raise ValueError('Choose a source image')
+    if brief['operation'] in {'generate','edit'} and not codex_art_provider()['configured']:
+        raise ValueError('Codex image tools are unavailable')
+    check = active_governance_registry().preflight(brief['prompt'], dict(STORE.ensure_governance_state(row['workspace_id']).get('gates') or {}), {})
+    if not check.get('allowed'): raise ValueError('Navigator requires clarification before submission')
+    complex_brief = len(brief['prompt']) > 700 or len(sources) > 1
+    if production_review and complex_brief:
+        policy = select_model('planning')
+        if not active_governance_registry().validate_model_route('planning',policy.model,policy.reasoning_effort).get('allowed'):
+            raise ValueError('Production planning route does not match governance')
+        result = invoke_codex({'task_type':'planning','system_prompt':
+            'Review an image production brief against the original instructions and user clarifications. Do not generate images, run tools, or change files. '
+            'Never silently rewrite requirements. Return only JSON with approved (boolean) and questions (array). Approve only if there are no material conflicts or missing decisions.',
+            'user_prompt':json.dumps({'original_instructions':row['original_instructions'],'clarifications':row['answers'],'brief':brief},ensure_ascii=False),
+            'context':{'current_room':{'id':row['room_id']}},'cancel_event':row.get('_cancel_event')})
+        review = json.loads(str(result.get('text') or ''))
+        if not isinstance(review,dict) or not isinstance(review.get('approved'),bool) or not isinstance(review.get('questions'),list):
+            raise ValueError('Production review did not return a valid decision')
+        return {**review,'model':result.get('model'),'reasoning':result.get('reasoning_effort')}
+    return {'approved':True,'method':'validated original instructions and explicit brief'}
+
+
+def render_room_job(row, cancel_event):
+    sources = room_job_sources(row); brief = row['attempts'][-1]['brief']
+    validate_room_job(row,production_review=False)
+    if brief['operation'] in {'resize','convert'}:
+        assets = [ART.local.apply(brief['operation'],sources,brief.get('options') or {})]
+    else:
+        assets = codex_art_assets(row['workspace_id'],row['session_id'],row['attempts'][-1]['attempt_id'],
+            {**brief,'preserve_brief':True,'preset_id':'photography','cancel_event':cancel_event},sources)
+    files = []
+    for index, asset in enumerate(assets,1):
+        if cancel_event.is_set(): raise RequestCancelled('Production canceled')
+        content = bytes(asset['content']); facts = validate_image_bytes(content)
+        metadata = {**asset.get('metadata',{}),'job_id':row['request_id'], 'attempt_id':row['attempts'][-1]['attempt_id'],
+            'parent_file_ids':brief['source_file_ids'],'width':facts['width'],'height':facts['height']}
+        filename=image_name(brief.get('output_name'),asset.get('extension','.png'),f"image-{row['number']:06d}",index,len(assets))
+        saved = STORE.save_file(row['workspace_id'],row['session_id'],filename,content,
+            asset.get('content_type') or facts['content_type'],source='generated',kind='generated_image',scope='room',scope_ref=row['room_id'],metadata={'art':metadata})
+        verify_chat_attachments(row['workspace_id'],[saved])
+        files.append({**public_art_image(saved),'path':saved['path'],'source_session_id':row['session_id']})
+    route = {key:assets[0].get('metadata',{}).get(key,'local') for key in ('provider','model')}
+    return {'files':files,'route':route}
+
+
+def room_jobs():
+    key = str(STORE.root)
+    with STORE._lock:
+        if key not in _ROOM_JOB_SERVICES: _ROOM_JOB_SERVICES[key] = RoomJobs(STORE,render_room_job,validate_room_job)
+        _ROOM_JOB_SERVICES[key].external_cancel=lambda row:ART_JOBS.cancel(row['external_job_id'])
+        return _ROOM_JOB_SERVICES[key]
+
+
+def public_room_job(row):
+    row=dict(row)
+    row['files']=[STORE.image_label(row['workspace_id'],file) for file in row.get('files',[])]
+    candidates={file['file_id']:file for file in [*STORE.list_files(row['workspace_id'],row['session_id']),*STORE.list_generated_images(row['workspace_id'],'art_department')]}
+    row['references']=[{**public_file(candidates[file_id]),'source_session_id':candidates[file_id].get('source_session_id') or row['session_id']} for file_id in row['brief']['source_file_ids'] if file_id in candidates]
+    return row
+
+
+def sync_art_history(ws):
+    files=STORE.list_generated_images(ws,'art_department')
+    verified=[]
+    for file in files:
+        try:verify_chat_attachments(ws,[file])
+        except ValueError:continue
+        verified.append({**public_art_image(file),'path':file['path']})
+    room_jobs().import_art_images(ws,verified)
+
+
+def art_job_status(job_id,args=None):
+    try:return ART_JOBS.get(job_id)
+    except KeyError:
+        ws,session=workspace_from_args(args or {})
+        row=next((row for row in room_jobs().list(ws,'art_department') if row.get('external_job_id')==job_id),None)
+        if not row:raise ValueError('Art Studio job is unavailable in this workspace')
+        status='canceled' if row['status']=='draft' else 'failed' if row['status']=='interrupted' else row['status']
+        return {'job_id':job_id,'status':status,'progress':row.get('progress',0),'message':row.get('error') or status,'error':row.get('error',''),'result':{'kind':'images','files':public_room_job(row)['files']}}
+
+
+def room_job_action(payload):
+    ws, session = workspace_from_args(payload)
+    current = STORE.find_session(session); room = current['active_room']
+    service = room_jobs(); action = str(payload.get('action') or 'list'); request_id = str(payload.get('room_job_id') or '')
+    if action == 'list':
+        if room=='art_department':sync_art_history(ws)
+        rows=[public_room_job(row) for row in service.list(ws,room)]
+        return {'jobs':[row for row in rows if row['listed']], 'workspace_jobs':[row for row in rows if row['workspace_visible']],
+            'current_draft':next((row for row in rows if row['status']=='draft' and row['session_id']==session),None)}
+    if action == 'create':
+        row = service.create(ws,session,room,current.get('active_persona') or 'Creative Director',payload.get('prompt',''),payload.get('source_file_ids') or [],
+            str(payload.get('parent_request_id') or ''),str(payload.get('operation') or 'generate'),str(payload.get('client_id') or ''))
+    elif action == 'get': row = service.get(ws,room,request_id)
+    elif action == 'update': row = service.update(ws,room,request_id,int(payload.get('version',0)),payload.get('brief') or {})
+    elif action == 'prepare_send':
+        row=service.get(ws,room,request_id)
+        if row['status'] not in {'draft','failed','interrupted','canceled'}:raise ValueError('This request has already been submitted')
+        return {'job':public_room_job(row),'confirmation_required':True}
+    elif action in {'submit','retry'}:
+        existing=service.get(ws,room,request_id)
+        if existing.get('origin')=='art_studio':
+            with STORE._lock:
+                existing=service.get(ws,room,request_id)
+                if payload.get('confirm') is not True:raise ValueError('Confirm Yes to submit this image')
+                if existing['status'] not in {'draft','failed','interrupted','canceled'}:return {'job':public_room_job(existing)}
+                if existing['version']!=int(payload.get('version',0)):raise ValueError('The brief changed; review its latest version')
+                studio_payload={**existing['studio_payload'],**existing['brief'], 'workspace_id':ws,'session_id':existing['session_id']}
+                existing.update(status='submitting',listed=True,workspace_visible=True)
+                service._save(existing,'studio_resubmission_started')
+            try:submit_art_job(studio_payload,room_request_id=request_id)
+            except Exception:
+                with STORE._lock:
+                    existing=service.get(ws,room,request_id);existing['status']='draft';service._save(existing,'submission_rejected')
+                raise
+            row=service.get(ws,room,request_id)
+        else:row = service.submit(ws,room,request_id,int(payload.get('version',0)),payload.get('confirm') is True,action=='retry')
+    elif action == 'save_draft':row=service.save_draft(ws,room,request_id)
+    elif action == 'cancel': row = service.cancel(ws,room,request_id)
+    elif action == 'accept': row = service.accept(ws,room,request_id)
+    else: raise ValueError('Unsupported room job action')
+    return {'job':public_room_job(row)}
+
+
+def submit_art_job(payload: Dict[str, Any], *, room_request_id='') -> Dict[str, Any]:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     art_context(workspace_id, session_id)
@@ -1727,6 +1878,7 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     safe_payload = dict(payload)
     safe_payload.pop("workspace_id", None)
     safe_payload.pop("session_id", None)
+    image_name(safe_payload.get('output_name'),fallback='artwork')
 
     def runner(job_id: str, progress: Any, canceled: Any) -> Dict[str, Any]:
         operation = str(safe_payload.get("operation") or "generate")
@@ -1773,6 +1925,7 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         else:
             progress(35, "Generating variants")
             generation_payload = dict(safe_payload)
+            generation_payload['cancel_event']=ART_JOBS.cancel_event(job_id)
             if generation_payload.get("improve_prompt") and not ART.cloudflare.configured() and codex_art_provider()["configured"]:
                 if not str(generation_payload.get("prompt") or "").strip():
                     raise ValueError("Describe the image to create")
@@ -1808,7 +1961,7 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "height": facts["height"],
                 "job_id": job_id,
             }
-            filename = f"{prompt_slug}_{index}{str(asset.get('extension') or '.png')}"
+            filename = image_name(safe_payload.get('output_name'),str(asset.get('extension') or '.png'),prompt_slug,index,len(assets)) if safe_payload.get('output_name') else f"{prompt_slug}_{index}{str(asset.get('extension') or '.png')}"
             saved = STORE.save_file(
                 workspace_id,
                 session_id,
@@ -1827,7 +1980,15 @@ def submit_art_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         progress(96, "Updating Visual Design")
         return {"kind": "images", "files": files}
 
-    return ART_JOBS.submit(safe_payload, runner)
+    def observe(job):
+        if job['status']=='completed':
+            files=job.get('result',{}).get('files',[])
+            resolved=STORE.resolve_files(workspace_id,session_id,[file['file_id'] for file in files])
+            verify_chat_attachments(workspace_id,resolved)
+            job['result']['files']=[{**public_art_image(file),'path':file['path'],'source_session_id':session_id} for file in resolved]
+        room_jobs().track_art_job(workspace_id,session_id,'Creative Director',safe_payload,job,room_request_id)
+    if safe_payload.get('operation') in {'improve_prompt','critique'}:return ART_JOBS.submit(safe_payload,runner)
+    return ART_JOBS.submit(safe_payload, runner, on_change=observe)
 
 
 def delivery_alerts(workspace_id: str = "", session_id: str = "") -> list[Dict[str, Any]]:
@@ -3995,6 +4156,9 @@ def maybe_admin_chat_response(
 def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     text = str(payload.get("text") or "").strip()
     governance = active_governance_registry()
+    chat_model = str(payload.get('chat_model') or 'default')
+    if chat_model != 'default' and chat_model not in manual_chat_rules(governance):
+        raise ValueError('Unknown chat model selection')
     workspace_id = str(payload.get("workspace_id") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
     request_id = str(payload.get("request_id") or "").strip()
@@ -4071,6 +4235,69 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             preflight,
             user_prompt,
         )
+    image_review_requested = bool(re.fullmatch(r'(?:please\s+)?(?:send(?:\s+to\s+(?:the\s+)?room)?|keep\s+editing|continue\s+pre-creation)[.!?]*',user_prompt.strip(' \t\r\n*_`'),re.I))
+    image_send_requested = image_review_requested and bool(re.match(r'(?:please\s+)?send\b',user_prompt.strip(' \t\r\n*_`'),re.I))
+    requested_image_operation=image_operation(user_prompt,any(str(file.get('content_type','')).startswith('image/') for file in attachments))
+    recovered_image_source = None
+    fallback_image_draft=None
+    if not contained_assistant and active_room == 'art_department' and image_review_requested:
+        recovered_image_source = next((message for message in reversed(previous) if message.get('role')=='user' and message.get('room')==active_room and image_operation(str(message.get('text') or ''),any(str(file.get('content_type','')).startswith('image/') for file in message.get('attachments',[])))),None)
+        if not recovered_image_source:
+            fallback_image_draft=next((row for row in room_jobs().list(workspace_id,active_room) if row['session_id']==session_id and row['status']=='draft'),None)
+        if not recovered_image_source and not fallback_image_draft and not payload.get('image_draft_id'):
+            return local_chat_response(workspace_id,session_id,user_message,'There is no image draft selected. Describe the image, attach the image to edit, or open a saved draft from Jobs.',active_persona,'image_draft_missing')
+    if not contained_assistant and active_room == 'art_department' and (requested_image_operation or payload.get('image_draft_id') or recovered_image_source or fallback_image_draft):
+        service = room_jobs()
+        draft_id = str(payload.get('image_draft_id') or '')
+        if draft_id and image_review_requested:
+            row = service.get(workspace_id,active_room,draft_id)
+            if row['session_id'] != session_id: raise ValueError('Continue this draft from its originating session')
+        elif image_review_requested and recovered_image_source:
+            source = recovered_image_source
+            source_id = str(source.get('request_id') or source['message_id'])
+            row = service.create(workspace_id,session_id,active_room,active_persona,str(source['text']),
+                [file['file_id'] for file in source.get('attachments',[])],client_id=source_id,
+                operation=image_operation(str(source['text']),bool(source.get('attachments'))) or 'generate')
+        elif fallback_image_draft:
+            row=fallback_image_draft
+        elif draft_id:
+            row = service.get(workspace_id,active_room,draft_id)
+            if row['session_id'] != session_id: raise ValueError('Continue this draft from its originating session')
+            brief = {**row['brief'], 'prompt':row['brief']['prompt'] + '\nUser clarification: ' + user_prompt,
+                'source_file_ids':list(dict.fromkeys([*row['brief']['source_file_ids'], *attachment_ids]))}
+            if requested_image_operation=='edit':brief['operation']='edit'
+            row = service.update(workspace_id,active_room,draft_id,row['version'],brief)
+        else:
+            row = service.create(workspace_id,session_id,active_room,active_persona,user_prompt,attachment_ids,client_id=request_id,operation=requested_image_operation or 'generate')
+        if row['status'] != 'draft':
+            return local_chat_response(workspace_id,session_id,user_message,
+                f"Request #{row['number']:06d} is {row['status'].replace('_',' ')}. Open its room job for status and results; production has not been started again.",
+                active_persona,'room_job_status',room_job=row,message_metadata={'room_job_id':row['request_id']})
+        return local_chat_response(workspace_id,session_id,user_message,
+            f"Request #{row['number']:06d} — here is what I understand you want to create:\n\n{row['brief']['prompt']}\n\n"
+            f"Assumptions: {row['brief']['assumptions']}\n"
+            + ('Pre-creation questions: ' + ' '.join(precreation_questions(row['brief']['prompt'])) + '\n' if draft_id and not image_review_requested and precreation_questions(row['brief']['prompt']) else '') +
+            "Send this brief to the room, or keep editing? Choose a button below. Nothing has been sent to production.",
+            active_persona,'image_precreation',room_job=row,room_job_confirmation=public_room_job(row) if image_send_requested else None,
+            message_metadata={'room_job_id':row['request_id'],'image_draft':True,'image_draft_version':row['version']})
+    diagnostic_id = re.search(r'\brj_[a-f0-9]{32}\b', user_prompt)
+    diagnostic_number = re.search(r'(?:\b(?:request|job)\s*#?\s*|#)(\d+)\b',user_prompt,re.I)
+    if (diagnostic_id or diagnostic_number) and active_room in {'control_room','infrastructure_room','art_department'}:
+        if diagnostic_id:
+            job = room_jobs().get(workspace_id,'art_department',diagnostic_id.group())
+        else:
+            job = next((row for row in room_jobs().list(workspace_id,'art_department') if row['number']==int(diagnostic_number.group(1))),None)
+            if not job: raise ValueError('This request number is unavailable in the current workspace')
+        summary = f"Request #{job['number']:06d}: {job['status']}. Attempts: {len(job['attempts'])}. " + (job['error'] or 'No error recorded.') + ' Diagnostic: ' + json.dumps(job.get('diagnostic',{}))
+        return local_chat_response(workspace_id,session_id,user_message,summary,active_persona,'room_job_diagnostic',message_metadata={'room_job_id':job['request_id']})
+    if not contained_assistant and active_room == 'art_department' and re.search(r'\bwhere\b.{0,60}\b(image|file|meme)\b',user_prompt,re.I):
+        outputs = [row for row in room_jobs().list(workspace_id,active_room) if row['session_id'] == session_id and row['status']=='completed']
+        if outputs:
+            files = outputs[0]['files']; verify_chat_attachments(workspace_id,files)
+            text = generated_artifact_report(files)
+        else:
+            files = []; text = 'No verified image is recorded for this session’s room requests. An earlier claim of completion without a verified artifact should not be treated as a created file.'
+        return local_chat_response(workspace_id,session_id,user_message,text,active_persona,'room_job_file_lookup',generated_artifacts=files,message_metadata={'generated_artifacts':files})
     if preflight.get("resolved_pending") and not contained_assistant:
         STORE.clear_pending_governance(workspace_id, session_id)
         resolution = preflight.get("resolution") if isinstance(preflight.get("resolution"), dict) else {}
@@ -4300,7 +4527,10 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     if explicit_google_search:
         task_type = "search_deep"
     policy = select_model(task_type)
-    route_check = governance.validate_model_route(task_type, policy.model, policy.reasoning_effort)
+    selection = resolve_chat_model(governance, chat_model, task_type, bool(attachments), str(payload.get('chat_reasoning') or ''))
+    if selection and selection['provider'] == 'codex_cli':
+        policy = explicit_codex_policy(task_type, selection)
+    route_check = {'allowed': True} if selection else governance.validate_model_route(task_type, policy.model, policy.reasoning_effort)
     if not route_check.get("allowed"):
         route_block = {
             "allowed": False,
@@ -4310,6 +4540,13 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "incident": True,
         }
         return navigator_intervention_response(workspace_id, session_id, user_message, route_block, governed_prompt)
+    if re.search(r'\b(?:what|which)\b.{0,25}\b(?:ai\s+)?model\b.{0,30}\b(?:using|use|selected|running)\b',user_prompt,re.I):
+        route_model = selection['model'] if selection else policy.model
+        route_effort = selection['reasoning'] if selection else policy.reasoning_effort
+        last = next((message for message in reversed(previous) if message.get('role')=='assistant' and message.get('room')==active_room and message.get('model') not in {None,'deterministic'}),None)
+        answer=f"Selected chat route: {route_model} with {route_effort} reasoning ({'automatic default' if not selection else 'your selection'})."
+        if last: answer += f" The last recorded AI reply in this room used {last['model']} with {last.get('reasoning_effort','unknown')} reasoning."
+        return local_chat_response(workspace_id,session_id,user_message,answer,active_persona,'chat_route_identity')
     context = transcript_context(previous)
     context["attached_files"] = [
         {
@@ -4338,6 +4575,10 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "active_persona": str(session.get("active_persona") or ""),
         }
     context["available_rooms"] = rooms_payload()
+    context['chat_route'] = {'provider':selection['provider'] if selection else 'codex_cli','model':selection['model'] if selection else policy.model,'reasoning':selection['reasoning'] if selection else policy.reasoning_effort,'selection':chat_model}
+    context['room_capabilities'] = {'room':room_title,'persona':active_persona,'files':'Session attachments and room-scoped file library',
+        'image_workflow':'Visual Design only: tracked draft, explicit Send to room, independent image production, verified outputs' if active_room == 'art_department' else 'Use explicit navigation to Visual Design for image production',
+        'art_studio':active_room == 'art_department','job_list':'Drafts, briefs, attempts, status and verified results; runtime model choice and tool execution are separate'}
     if active_room == VIDEO_PRODUCTION_ROOM_ID:
         context["video_tools"] = {"tools": video_tools.inventory(), "gateway": "video.action", "actions": ["status", "open", "job", "job_status", "cancel", "obs_status", "obs_scenes", "obs_scene", "obs_start", "obs_stop", "audio_test"]}
     context["governance"] = governance_status(workspace_id, session_id)
@@ -4407,6 +4648,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             )
         context["google_browser_search"] = google_browser_search
     artifact_required = not contained_assistant and governance.requires_file_artifact(governed_prompt, task_type)
+    if selection and selection['provider'] == 'gemini_api' and (artifact_required or explicit_google_search):
+        raise ValueError('Gemini supports text conversation only; choose Default or Codex for tools, files, or Google research')
     artifact_output_dir = (
         STORE.prepare_generated_output_dir(workspace_id, session_id, user_message["message_id"])
         if artifact_required
@@ -4426,6 +4669,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         }
     pre_codex_file_ids = {str(row.get("file_id") or "") for row in STORE.list_files(workspace_id, session_id)}
     codex_request = {
+        "chat_model": chat_model,
+        "chat_reasoning": str(payload.get("chat_reasoning") or ""),
         "task_type": task_type,
         "system_prompt": (
             f"You are the {active_persona}, the Veridex assistant in {room_title}. "
@@ -4434,6 +4679,12 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "When asked to find local files, use the available shell tools and report only verified paths. "
             "Attached files are saved locally and their exact paths are supplied in governed context. "
             "Use the governed context for continuity, but do not claim actions that were not performed."
+            + (
+                " Visual Design has Art Studio, Images, and the room job list. Image creation and revisions require a tracked draft and the user's explicit Send to room action. "
+                "In ordinary owner chat, discuss concepts and pre-creation questions; never invoke image generation or claim to have submitted or completed production. "
+                "The room's independent production workflow creates and verifies images. Model and reasoning information is provided in chat_route and the selected execution route."
+                if active_room == 'art_department' else ''
+            )
             + (
                 " This is a contained advisor consultation. The operator remains in context.operator_room and must not be moved. "
                 "Do not navigate rooms, write files, invoke providers, or take consequential actions; provide guidance and explain the next step instead."
@@ -4479,7 +4730,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "cancel_event": cancel_event,
     }
     try:
-        if should_use_gemini_route(
+        if selection and selection['provider'] == 'gemini_api':
+            result = invoke_gemini(codex_request)
+        elif not selection and should_use_gemini_route(
             active_room=active_room,
             active_persona=active_persona,
             task_type=task_type,
@@ -4498,7 +4751,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     except RequestCancelled:
         raise
     except Exception as exc:
-        if not google_browser_search:
+        if selection or not google_browser_search:
             raise
         evidence_row = google_search_evidence(google_browser_search)
         return local_chat_response(
@@ -4848,7 +5101,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
             raise ValueError(f"file exceeds the {maximum // (1024 * 1024)} MB upload limit")
         return self.rfile.read(length)
 
-    def _stream_media_file(self, row):
+    def _stream_media_file(self, row, download=False):
         path = Path(str(row["path"]))
         size = path.stat().st_size
         requested = self.headers.get("Range", "")
@@ -4865,7 +5118,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(max(0, end - start + 1)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Disposition", "inline")
+        filename=quote(str(row.get('display_name') or row.get('name') or 'image'),safe='')
+        self.send_header("Content-Disposition", ("attachment" if download else "inline")+"; filename*=UTF-8''"+filename)
         if requested: self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
         try:
@@ -5045,6 +5299,10 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
+            elif parsed.path == "/api/room/jobs":
+                self._json(room_job_action({key:value[0] for key,value in query.items()}))
+            elif parsed.path == "/api/chat/models":
+                self._json(chat_model_catalog(active_governance_registry()))
             elif parsed.path == "/api/bootstrap":
                 self._json(state_response(STORE.ensure_default()))
             elif parsed.path == "/api/state":
@@ -5171,7 +5429,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
             elif re.fullmatch(r"/api/antiques/price-search/jobs/[A-Za-z0-9_-]+", parsed.path):
                 self._json(PRICE_SEARCH_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
             elif re.fullmatch(r"/api/art/jobs/[A-Za-z0-9_-]+", parsed.path):
-                self._json(ART_JOBS.get(parsed.path.rsplit("/", 1)[-1]))
+                self._json(art_job_status(parsed.path.rsplit("/", 1)[-1],{key:value[0] for key,value in query.items()}))
             elif parsed.path == "/api/art/images":
                 workspace_id = str(query.get("workspace_id", [""])[0]).strip()
                 self._json({
@@ -5205,7 +5463,7 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 if not matches:
                     raise KeyError("Unknown file")
                 row = matches[0]
-                self._stream_media_file(row)
+                self._stream_media_file(row,query.get('download',[''])[0]=='1')
             elif parsed.path == "/api/governance":
                 workspace_id = str(query.get("workspace_id", [""])[0])
                 session_id = str(query.get("session_id", [""])[0])
@@ -5801,6 +6059,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
                     "deleted": gmail.delete_contact(str(payload.get("contact_id") or "")),
                     "contacts": gmail.list_contacts(),
                 })
+            elif parsed.path == "/api/art/images/rename":
+                ws,session=workspace_from_args(payload)
+                self._json({'image':public_art_image(STORE.rename_image(ws,session,str(payload.get('file_id') or ''),payload.get('name','')))})
             elif parsed.path == "/api/art/images/attach":
                 workspace_id = str(payload.get("workspace_id") or "").strip()
                 session_id = str(payload.get("session_id") or "").strip()
@@ -5895,6 +6156,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 # Briefly wait for registration so the user's first click wins.
                 cancelled = ACTIVE_REQUESTS.cancel(request_id, session_id, wait_seconds=0.75)
                 self._json({"ok": True, "request_id": request_id, "cancel_requested": cancelled})
+            elif parsed.path == "/api/room/jobs":
+                self._json(room_job_action(payload))
             elif parsed.path in {"/api/chat", "/request"}:
                 if parsed.path == "/request" and not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)

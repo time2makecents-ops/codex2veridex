@@ -179,6 +179,12 @@
     "simple": {"model": "gpt-5.6-luna", "reasoning": "low"},
     "governance": {"model": "deterministic", "reasoning": "none"}
   },
+  "manual_chat_models": {
+    "sol": {"provider": "codex_cli", "model": "gpt-6.1-sol", "reasoning": "high", "reasoning_options": ["low", "medium", "high", "xhigh", "max"]},
+    "terra": {"provider": "codex_cli", "model": "gpt-6.1-terra", "reasoning": "medium", "reasoning_options": ["low", "medium", "high", "xhigh", "max"]},
+    "luna": {"provider": "codex_cli", "model": "gpt-6-luna", "reasoning": "low", "reasoning_options": ["low", "medium", "high", "xhigh", "max"]},
+    "gemini": {"provider": "gemini_api", "configured_model": true, "reasoning": "low", "task_types": ["simple", "conversation"]}
+  },
   "terminal_development_policy": {
     "planning_architecture": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true},
     "coding_diagnosis": {"model": "gpt-5.6-sol", "reasoning": "high", "pause_on_mismatch": true},

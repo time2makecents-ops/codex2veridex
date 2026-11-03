@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 TRUTHY = {"1", "true", "yes", "on"}
 FALSY = {"0", "false", "no", "off"}
-DEFAULT_ENV_FILE = Path(r"C:\Office-App\.env.local")
+DEFAULT_ENV_FILE = Path(__file__).resolve().with_name(".env.local")
 DEFAULT_TIMEOUT_SECONDS = 45
 
 
@@ -70,6 +70,8 @@ def _compact_context(context: Any, max_chars: int = 6000) -> str:
         key: context.get(key)
         for key in (
             "current_room",
+            "chat_route",
+            "room_capabilities",
             "computer_access",
             "available_rooms",
             "governance",

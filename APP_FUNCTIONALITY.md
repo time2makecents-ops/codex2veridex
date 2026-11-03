@@ -22,6 +22,23 @@ live session. See [README.md](README.md) for setup and detailed instructions and
 
 ## Rooms and work surfaces
 
+- **Shared room workspace:** Every room uses Video Production's workspace size
+  and header format, with room actions followed by Chat with its persona. The
+  floating chat reuses the session conversation and preserves an unsent draft
+  when closed. Control Room and Infrastructure expose the existing system log.
+  My Office exposes existing email controls; Calendar is explicitly not
+  implemented. Room workspaces include a **Jobs** list scoped to the selected
+  workspace and room across sessions; image job creation is currently available
+  from Visual Design. Separate tool pages keep their existing layouts.
+  Chat includes a centered title, minimize/maximize/restore/close controls, and
+  a model selector starting on automatic routing marked **(default)**. Manual
+  Codex choices and configured text-only Gemini are available for normal chat;
+  choices remain scoped to the current browser page's room/session. Gemini is
+  labeled unavailable when its Veridex connection is not configured.
+  Selecting a Codex model opens a connected reasoning panel with Low, Medium,
+  High, Extra high, and Max choices. The usual model level is marked as default;
+  automatic routing and the current Gemini adapter keep their existing reasoning.
+
 - **Museum / Leo:** Research item photos, examine identifying details, save
   cases, and compare sourced price evidence. Google Lens upload requires consent
   unless the scoped shopping mode is active. Guidance is not an appraisal.
@@ -35,6 +52,34 @@ live session. See [README.md](README.md) for setup and detailed instructions and
   determine what works.
 - **Art Department:** Generate or edit images, manage projects and lineage, and
   use local finishing tools and configured providers.
+- **Visual Design image jobs:** Chat image requests create durable numbered
+  drafts with an `rj_` ID. The owner presents its interpretation and assumptions
+  and shows **Send to room** and **Keep editing** for each new or revised brief.
+  **Keep editing** opens pre-creation refinement, where relevant use, style, or
+  caption questions may be asked before the choices appear again. Refinements
+  retain the draft ID and increment its version. Production runs separately from chat;
+  the room Jobs list shows progress and allows cancellation while chat remains
+  usable. Acknowledgment follows validation, and completion or failure appears
+  in the originating room/session without navigation. One square PNG is the
+  default; requests can specify an aspect, and users can select one to four
+  variants. Follow-ups include accepting, revising, creating variants, resizing
+  or exporting, comparing versions, and asking Systems. Outputs are reported
+  only after path, size, SHA-256, and artifact-ledger checks. One recovered
+  request was produced through the existing Codex media route and its output
+  was independently checked against the artifact ledger in an earlier
+  checkpoint. Current Jobs popup changes passed full automated discovery, but
+  current visual browser QA is pending; refresh Veridex to load the new JS/CSS.
+  No live generation or poster edit was performed for this update. The current
+  layout appearance and other providers remain unverified.
+  The Jobs popup provides date, name, source, and type/status sorting, including
+  Completed first and Draft first, and keyboard/detail navigation. New unsent
+  drafts stay in chat until saved; older drafts remain visible. Typing **send**
+  and the Send button open the same Yes/No confirmation. Save as draft preserves
+  the request without submitting it. Active jobs appear in workspace tabs;
+  completion archives the tab while preserving the job and its results.
+  The image history combines chat jobs and verified Art Studio outputs. Renaming
+  completed images changes friendly metadata only, preserving canonical files
+  and ledger records.
 - **HR Resume Studio:** Maintain career profiles, tailor resumes, review ATS
   considerations, and export documents.
 - **Video Production and Animation Studio:** Use the repository's video review,
@@ -48,6 +93,10 @@ live session. See [README.md](README.md) for setup and detailed instructions and
   Video Production has a searchable room-media workspace, source player, and
   floating Beta chat. Top-toolbar room intake is separate from attachments beside
   the chat input. Timeline editing is still pending.
+  On 2026-11-02, the room, source preview, and Production tools panel were
+  observed in Chrome, and the user confirmed browser video playback. Interactive
+  upload, seeking, chat behavior, native-editor launches, and live export/import
+  still need verification; see ISSUE_LOG.md for the recorded evidence.
 
 ## Collection and sales support
 

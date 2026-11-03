@@ -1141,6 +1141,7 @@ function renderMessages() {
       article.append(role, body);
       renderGmailMessage(row, article, body);
       renderAntiquesMessage(row, article);
+      window.renderRoomJobMessage?.(row, article);
       if (Array.isArray(row.attachments) && row.attachments.length) {
         const attachments = document.createElement("div");
         attachments.className = "message-attachments";
@@ -1221,7 +1222,7 @@ function renderMessages() {
   if (state.sending) {
     const processing = document.createElement("article");
     processing.className = "message assistant processing";
-    processing.textContent = state.stopping ? "Stopping…" : "Veridex is working…";
+    processing.textContent = state.imageHandoff ? "Preparing your image brief…" : state.stopping ? "Stopping…" : "Veridex is working…";
     container.append(processing);
   }
   requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
@@ -1494,13 +1495,13 @@ function renderArtGallery() {
     button.type = "button";
     button.className = `art-gallery-thumb${selected?.file_id === image.file_id ? " active" : ""}`;
     button.setAttribute("aria-pressed", String(selected?.file_id === image.file_id));
-    button.setAttribute("aria-label", `Preview ${image.name || "generated image"}`);
+    button.setAttribute("aria-label", `Preview ${image.display_name || image.name || "generated image"}`);
     const thumbnail = document.createElement("img");
     thumbnail.src = artImageContentUrl(image);
     thumbnail.alt = "";
     thumbnail.loading = "lazy";
     const label = document.createElement("span");
-    label.textContent = image.name || "Generated image";
+    label.textContent = image.display_name || image.name || "Generated image";
     button.append(thumbnail, label);
     button.addEventListener("click", () => {
       state.selectedArtImageId = image.file_id;
@@ -1513,10 +1514,10 @@ function renderArtGallery() {
   const hero = document.createElement("figure");
   const image = document.createElement("img");
   image.src = artImageContentUrl(selected);
-  image.alt = selected.name || "Generated image";
+  image.alt = selected.display_name || selected.name || "Generated image";
   const caption = document.createElement("figcaption");
   const name = document.createElement("h3");
-  name.textContent = selected.name || "Generated image";
+  name.textContent = selected.display_name || selected.name || "Generated image";
   const facts = document.createElement("p");
   facts.textContent = [
     selected.artifact_number ? `Artifact #${selected.artifact_number}` : "Verified artifact",
@@ -1536,7 +1537,7 @@ function renderArtGallery() {
   open.textContent = "Open original";
   const download = document.createElement("a");
   download.href = artImageContentUrl(selected);
-  download.download = selected.name || "generated-image";
+  download.download = selected.display_name || selected.name || "generated-image";
   download.textContent = "Download";
   const attach = document.createElement("button");
   const attached = state.selectedFiles.has(selected.file_id);
@@ -1647,10 +1648,10 @@ function renderArtStudio() {
     button.title = isSelected ? "Preview and remove from this edit" : "Preview and select for editing";
     const preview = document.createElement("img");
     preview.src = artImageContentUrl(image);
-    preview.alt = image.name || "Reference image";
+    preview.alt = image.display_name || image.name || "Reference image";
     const name = document.createElement("span");
     name.className = "art-reference-name";
-    name.textContent = image.name || "Artwork";
+    name.textContent = image.display_name || image.name || "Artwork";
     const stateLabel = document.createElement("strong");
     stateLabel.className = "art-reference-state";
     stateLabel.textContent = isSelected ? "Selected" : "Select";
@@ -1676,7 +1677,7 @@ function renderArtStudio() {
   referenceCandidates.forEach((image) => {
     const option = document.createElement("option");
     option.value = image.file_id;
-    option.textContent = image.name || "Artwork";
+    option.textContent = image.display_name || image.name || "Artwork";
     finishSource.append(option);
   });
   if ([...finishSource.options].some((option) => option.value === previousSource)) finishSource.value = previousSource;
@@ -1696,7 +1697,7 @@ function renderArtStudio() {
   el("art-canvas").hidden = !selected;
   if (selected) {
     el("art-canvas-image").src = artImageContentUrl(selected);
-    el("art-canvas-name").textContent = selected.name || "Artwork";
+    el("art-canvas-name").textContent = selected.display_name || selected.name || "Artwork";
     el("art-canvas-facts").textContent = [selected.provider, selected.model, selected.width && selected.height ? `${selected.width}×${selected.height}` : "", selected.artifact_number ? `Artifact #${selected.artifact_number}` : ""].filter(Boolean).join(" · ");
   }
   const variantStrip = el("art-variant-strip");
@@ -1707,7 +1708,7 @@ function renderArtStudio() {
     button.className = image.file_id === selected?.file_id ? "active" : "";
     const preview = document.createElement("img");
     preview.src = artImageContentUrl(image);
-    preview.alt = `Select ${image.name || "variant"}`;
+    preview.alt = `Select ${image.display_name || image.name || "variant"}`;
     button.append(preview);
     button.addEventListener("click", () => {
       studio.previewReferenceId = "";
@@ -1752,6 +1753,8 @@ function renderArtStudio() {
   el("art-critique").disabled ||= !selected;
   el("art-use-reference").disabled = !selected;
   el("art-download").disabled = !selected;
+  el("art-rename").disabled = !selected;
+  if(document.activeElement!==el("art-rename-name"))el("art-rename-name").value=selected?.display_name || selected?.name || '';
   el("art-attach").disabled = !selected || state.selectedFiles.has(selected?.file_id);
   el("art-attach").textContent = selected && state.selectedFiles.has(selected.file_id) ? "Attached" : "Attach to chat";
 }
@@ -1783,7 +1786,7 @@ function closeArtStudio() {
 async function pollArtJob(jobId) {
   window.clearTimeout(state.artStudio.pollTimer);
   try {
-    const job = await api(`/api/art/jobs/${encodeURIComponent(jobId)}`);
+    const job = await api(`/api/art/jobs/${encodeURIComponent(jobId)}?`+new URLSearchParams({workspace_id:state.workspace.workspace_id,session_id:state.session.session_id}));
     state.artStudio.activeJob = job;
     renderArtStudio();
     if (["queued", "running", "canceling"].includes(job.status)) {
@@ -1820,6 +1823,7 @@ async function startArtJob(payload) {
       workspace_id: state.workspace.workspace_id,
       session_id: state.session.session_id,
       project_id: state.artStudio.currentProjectId,
+      output_name:el("art-output-name").value.trim(),
       ...payload,
     }) });
     state.artStudio.activeJob = job;
@@ -5788,10 +5792,10 @@ function render() {
     ? "Full computer access · Codex can search and work with local files · transcripts stay here"
     : "Read-only computer access · attach files or restart normally for full access · transcripts stay here";
   const sendButton = el("send-button");
-  sendButton.disabled = state.uploading || state.stopping;
-  sendButton.classList.toggle("stop-button", state.sending);
+  sendButton.disabled = state.uploading || state.stopping || (state.sending && state.imageHandoff);
+  sendButton.classList.toggle("stop-button", state.sending && !state.imageHandoff);
   sendButton.replaceChildren();
-  if (state.sending) {
+  if (state.sending && !state.imageHandoff) {
     const glyph = document.createElement("span");
     glyph.className = "stop-glyph";
     glyph.setAttribute("aria-hidden", "true");
@@ -5840,7 +5844,9 @@ function render() {
   renderRoute();
   renderImportantMailIndicator();
   renderNancyImportantMail();
+  window.renderRoomWorkspace?.();
   window.renderVideoRoom?.();
+  window.renderRoomJobs?.();
 }
 
 function accountRequestBody(extra = {}) {
@@ -6468,6 +6474,7 @@ async function sendMessage(text, { attachments, emailDraft, confirmExternal = fa
   const selectedAttachments = usesChatSelection
     ? state.files.filter((file) => state.selectedFiles.has(file.file_id))
     : attachments;
+  state.imageHandoff = state.session?.active_room === "art_department" && Boolean(window.roomJobs?.draftId() || /\b(make|create|generate|draw|design|render)\b[\s\S]{0,140}\b(image|picture|photo|illustration|artwork|meme|poster|logo|icon|png|jpe?g|webp)s?\b/i.test(text) || (/\b(touch\s*up|retouch|edit|enhance|restore|repair|straighten|crop|remove|replace|clean\s*up)\b/i.test(text) && (selectedAttachments.some(file=>file.content_type?.startsWith('image/')) || /\b(image|picture|photo|poster|frame|artwork|png|jpe?g|webp)s?\b/i.test(text))) || /^(?:please\s+)?(?:send(?:\s+to\s+(?:the\s+)?room)?|keep\s+editing|continue\s+pre-creation)[.!?]*$/i.test(text.trim().replace(/^[*_`]+|[*_`]+$/g,'')));
   state.sending = true;
   state.stopping = false;
   state.activeRequestId = globalThis.crypto?.randomUUID?.() || `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -6478,7 +6485,7 @@ async function sendMessage(text, { attachments, emailDraft, confirmExternal = fa
     attachments: selectedAttachments,
   });
   render();
-  let succeeded = false;
+  let succeeded = false, imageConfirmation=null;
   try {
     const result = await api("/api/chat", {
       method: "POST",
@@ -6487,6 +6494,9 @@ async function sendMessage(text, { attachments, emailDraft, confirmExternal = fa
         session_id: state.session.session_id,
         text,
         request_id: state.activeRequestId,
+        chat_model: window.roomWorkspace?.chatModel() || "default",
+        chat_reasoning: window.roomWorkspace?.chatReasoning() || "",
+        image_draft_id: window.roomJobs?.draftId() || "",
         attachment_ids: selectedAttachments.map((file) => file.file_id),
         email_draft: emailDraft,
         confirm_external: confirmExternal,
@@ -6509,17 +6519,20 @@ async function sendMessage(text, { attachments, emailDraft, confirmExternal = fa
     if (result.task_type === "gmail_send" && state.session?.active_room === "my_office") {
       window.setTimeout(checkDeliveryFailures, 5_000);
     }
+    imageConfirmation=result.room_job_confirmation;
     succeeded = true;
   } catch (error) {
     showError(error.message || String(error));
     await loadState(state.workspace.workspace_id, state.session.session_id, true);
   } finally {
     state.sending = false;
+    state.imageHandoff = false;
     state.stopping = false;
     state.activeRequestId = null;
     render();
     if (!el("email-compose-dialog").open) el("message-input").focus();
   }
+  if(succeeded&&imageConfirmation)await window.roomJobs?.confirm(imageConfirmation);
   return succeeded;
 }
 
@@ -6793,9 +6806,13 @@ el("art-download").addEventListener("click", () => {
   const selected = selectedStudioImage();
   if (!selected) return;
   const link = document.createElement("a");
-  link.href = artImageContentUrl(selected);
-  link.download = selected.name || "veridex-artwork";
+  link.href = artImageContentUrl(selected)+'&download=1';
+  link.download = selected.display_name || selected.name || "veridex-artwork";
   link.click();
+});
+el("art-rename").addEventListener("click",async()=>{
+  const selected=selectedStudioImage();if(!selected)return;
+  try{await api('/api/art/images/rename',{method:'POST',body:JSON.stringify({workspace_id:state.workspace.workspace_id,session_id:state.session.session_id,file_id:selected.file_id,name:el('art-rename-name').value})});await loadArtImages();renderArtStudio();await window.roomJobs?.refresh(true);}catch(error){showError(error.message);}
 });
 el("art-attach").addEventListener("click", async () => {
   const selected = selectedStudioImage();
@@ -7353,6 +7370,7 @@ async function openImportantMail() {
         }),
       }));
     }
+    window.roomWorkspace?.openEmail();
     el("nancy-important-mail").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (error) { showError(error.message || String(error)); }
 }

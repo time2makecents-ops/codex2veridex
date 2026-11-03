@@ -11,6 +11,111 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for floating chat checks')
+    def test_reopening_chat_reveals_latest_reply(self) -> None:
+        source=(ROOT / 'web' / 'room_workspace.js').read_text(encoding='utf-8')
+        opening=source[source.index('  function openChat()'):source.index('  function closeChat()')]
+        program=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm');
+let focused=false;
+const context={chat:{hidden:true,classList:{contains:()=>false}},messages:{scrollTop:0,scrollHeight:1200},document:{getElementById:()=>({focus(){focused=true;}})}};
+vm.createContext(context);vm.runInContext(SOURCE,context);context.openChat();
+assert.equal(context.chat.hidden,false);assert.equal(context.messages.scrollTop,1200);assert.equal(focused,true);
+'''
+        result=subprocess.run([shutil.which('node'),'-e','const SOURCE = '+json.dumps(opening)+';\n'+program],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for room job controls')
+    def test_chat_image_buttons_edit_without_sending_and_submit_reviewed_version(self) -> None:
+        source=(ROOT / 'web' / 'room_jobs.js').read_text(encoding='utf-8')
+        program=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm');
+class Element {
+  constructor(){this.children=[];this.hidden=false;this.classList={add(){},remove(){},toggle(){}};this.nodes={};this.dataset={};this.style={};this.attributes={};this.options=[];this.open=false;this.value='';}
+  append(...nodes){this.children.push(...nodes);} prepend(...nodes){this.children.unshift(...nodes);}
+  querySelector(selector){if(selector.startsWith('form[')||selector==='[data-results]')return null;return this.nodes[selector] ||= new Element();}
+  replaceChildren(...nodes){this.children=nodes;} setAttribute(key,value){this.attributes[key]=value;} contains(){return false;}
+  focus(){} scrollIntoView(){} addEventListener(){} getBoundingClientRect(){return {right:280,bottom:150};}
+  add(option){this.options.push(option);if(!this.value)this.value=option.value;}showModal(){this.open=true;}close(){this.open=false;}remove(){}
+}
+const surface=new Element(),actions=new Element(),composer=new Element(),body=new Element(),mutations=[],errors=[];
+let liveJobs=[];
+let job={request_id:'request_one',number:1,status:'draft',version:2,origin:'chat',created_at:'2026-01-01',brief:{prompt:'Create a test image',output_name:'test-image',operation:'generate',source_file_ids:[],options:{},aspect:'square',variants:1},attempts:[],files:[],references:[]};
+const older={room:'art_department',room_job_id:'request_one',image_draft:true,image_draft_version:1};
+const latest={...older,image_draft_version:2};
+const state={workspace:{workspace_id:'workspace_one'},session:{session_id:'session_one',active_room:'art_department'},messages:[older,latest],sending:false};
+let chatOpened=false;
+const context={state,URLSearchParams,innerWidth:1200,innerHeight:900,formatBytes:()=>'',Option:function(label,value){this.textContent=label;this.value=value;},localStorage:{getItem:()=>null,setItem(){}},setInterval(){},renderMessages(){},showError:e=>errors.push(e),
+  window:{addEventListener(){},roomWorkspace:{showJobs(){},openChat(){chatOpened=true;}}},
+  document:{body,activeElement:null,createElement:()=>new Element(),querySelector(selector){
+    if(selector.includes('[data-overview]'))return surface;
+    if(selector.includes('[data-actions]'))return actions;
+    if(selector.includes('.composer-wrap'))return composer;
+    return new Element();
+  }},
+  api:async(url,options)=>{
+    if(options?.method==='POST'){const body=JSON.parse(options.body);mutations.push(body);if(body.action==='update')job={...job,version:job.version+1,brief:{...job.brief,...body.brief}};if(body.action==='submit')job={...job,status:'queued'};return {job};}
+    return url.startsWith('/api/messages')?{messages:state.messages}:{jobs:liveJobs,workspace_jobs:[]};
+  }
+};
+vm.createContext(context);vm.runInContext(SOURCE,context);
+(async()=>{
+  await new Promise(setImmediate);
+  const staleArticle=new Element();context.window.renderRoomJobMessage(older,staleArticle);
+  assert.deepEqual(staleArticle.children[0].children.map(x=>x.textContent),['Open request']);
+  liveJobs=[{...job,version:3}];await context.window.roomJobs.refresh();
+  const changedArticle=new Element();context.window.renderRoomJobMessage(latest,changedArticle);
+  assert.deepEqual(changedArticle.children[0].children.map(x=>x.textContent),['Open request']);
+  liveJobs=[];await context.window.roomJobs.refresh();
+  const article=new Element();context.window.renderRoomJobMessage(latest,article);
+  const buttons=article.children[0].children;
+  assert.ok(buttons.some(x=>x.textContent==='Send to room'));
+  buttons.find(x=>x.textContent==='Keep editing').onclick();
+  assert.equal(chatOpened,true);assert.equal(context.window.roomJobs.draftId(),'request_one');
+  assert.equal(mutations.length,0);
+  await buttons.find(x=>x.textContent==='Send to room').onclick();
+  const dialog=body.children.find(x=>x.attributes['aria-label']==='Send image to room');
+  assert.equal(dialog.open,true);assert.equal(mutations.filter(x=>x.action==='submit').length,0);
+  await dialog.children.find(x=>x.textContent==='No, keep editing').onclick();
+  assert.equal(dialog.open,false);assert.equal(context.window.roomJobs.draftId(),'request_one');
+  assert.equal(mutations.filter(x=>x.action==='submit').length,0);
+  await buttons.find(x=>x.textContent==='Send to room').onclick();
+  await dialog.children.find(x=>x.textContent==='Yes').onclick();
+  const submissions=mutations.filter(x=>x.action==='submit');assert.equal(submissions.length,1);
+  assert.equal(submissions[0].room_job_id,'request_one');assert.equal(submissions[0].version,2);
+  assert.equal(submissions[0].confirm,true);assert.equal(context.window.roomJobs.draftId(),'');assert.equal(dialog.open,false);
+  liveJobs=[{...job,status:'completed',files:[{file_id:'result_one',name:'result.png',size:10,artifact_number:1}]}];await context.window.roomJobs.refresh();
+  const jobs=actions.children.find(x=>x.textContent==='Jobs');jobs.onclick();
+  const history=body.children.find(x=>x.attributes['aria-label']==='Room jobs');assert.equal(history.hidden,false);
+  const card=history.querySelector('[data-list]').children[0];card.onclick();assert.equal(history.querySelector('[data-detail]').hidden,true);
+  card.ondblclick();assert.equal(history.querySelector('[data-detail]').hidden,false);
+  const sort=history.querySelector('[data-sort]');
+  assert.ok(sort.options.some(option=>option.value==='type:draft'&&option.textContent==='Type: Draft first'));
+  liveJobs=['completed','draft','failed','draft'].map((status,index)=>({...job,request_id:'sorted_'+index,number:index+10,status,created_at:'2026-01-'+String(index+1).padStart(2,'0')}));
+  await context.window.roomJobs.refresh();
+  for(const type of ['completed','draft','failed']){
+    sort.value='type:'+type;sort.onchange();
+    const cards=history.querySelector('[data-list]').children;
+    assert.equal(cards.length,4);
+    assert.ok(cards[0].attributes['aria-label'].endsWith(type));
+    if(type==='draft'){
+      assert.ok(cards[1].attributes['aria-label'].endsWith('draft'));
+      assert.ok(cards[0].attributes['aria-label'].startsWith('Job #000013'));
+    }
+  }
+  jobs.onclick();assert.equal(history.hidden,true);
+  assert.equal(state.sending,false);assert.deepEqual(errors,[]);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+        result=subprocess.run([shutil.which('node'),'-e','const SOURCE = '+json.dumps(source)+';\n'+program],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_room_jobs_load_after_the_workspace_and_before_media(self) -> None:
+        html = (ROOT / 'web' / 'index.html').read_text(encoding='utf-8')
+        self.assertEqual(html.count('src="/room_jobs.js?'),1)
+        self.assertLess(html.index('src="/room_workspace.js?'),html.index('src="/room_jobs.js?'))
+        self.assertLess(html.index('src="/room_jobs.js?'),html.index('src="/video_room.js?'))
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for attachment checks")
     def test_betting_image_upload_paste_and_session_switch(self) -> None:
         script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

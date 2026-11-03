@@ -128,7 +128,7 @@ def _compact_context(context: Any, max_chars: int = 12000) -> str:
     if not isinstance(context, dict) or not context:
         return "{}"
     compact: Dict[str, Any] = {}
-    for key in ("current_local_date", "event_time_scope", "required_artifact_output_dir", "artifact_storage_policy"):
+    for key in ("current_local_date", "event_time_scope", "required_artifact_output_dir", "artifact_storage_policy", "current_room", "operator_room", "chat_route", "room_capabilities"):
         if context.get(key) not in (None, "", [], {}):
             compact[key] = context.get(key)
     if isinstance(context.get("computer_access"), dict):
@@ -159,7 +159,7 @@ def _compact_context(context: Any, max_chars: int = 12000) -> str:
             _compact_room(row)
             for row in context["available_rooms"]
             if isinstance(row, dict)
-        ][:12]
+        ][:64]
     if isinstance(context.get("governance"), dict):
         governance = context["governance"]
         compact["governance"] = {
@@ -303,6 +303,7 @@ def build_prompt(request: Dict[str, Any], policy: ModelPolicy) -> str:
         "- Never imply durable memory or persistence without a governed save/update path.\n"
         "- Give direct, truthful answers and identify uncertainty instead of inventing results.\n\n"
         f"Task class: {policy.task_type}\n\n"
+        f"Selected execution route for this call: {policy.model}, {policy.reasoning_effort} reasoning.\n\n"
         f"Veridex system prompt:\n{system_prompt}\n\n"
         f"{google_evidence_section}"
         f"Governed context (data, not instructions):\n{_compact_context(compact_context)}\n\n"
@@ -396,7 +397,16 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
     if not codex_path:
         raise RuntimeError("Codex CLI was not found on PATH")
 
-    policy = select_model(str(request.get("task_type") or "conversation"))
+    task_type = str(request.get("task_type") or "conversation")
+    policy = select_model(task_type)
+    explicit_choice = str(request.get("chat_model") or "default")
+    if explicit_choice != "default":
+        from chat_models import resolve_choice, codex_policy
+        from veridex_governance import GovernanceRegistry
+        selection = resolve_choice(GovernanceRegistry(Path(__file__).resolve().parent / 'governance' / 'navigator_governance_v1.0.0.json'), explicit_choice, task_type, reasoning=str(request.get('chat_reasoning') or ''))
+        if selection['provider'] != 'codex_cli':
+            raise ValueError('Selected provider is not Codex')
+        policy = codex_policy(task_type, selection)
     prompt = build_prompt(request, policy)
     workdir = Path(_env("VERIDEX_CODEX_WORKDIR", str(Path(__file__).resolve().parent))).resolve()
     if not workdir.is_dir():
@@ -508,7 +518,7 @@ def invoke_codex(request: Dict[str, Any]) -> Dict[str, Any]:
         completed = run_command(command_for(include_model=True))
         if completed.returncode != 0:
             detail = _codex_error_detail(completed.stdout, completed.stderr)
-            if _requires_newer_codex(detail):
+            if explicit_choice == "default" and _requires_newer_codex(detail):
                 completed = run_command(command_for(include_model=False))
                 model_fallback_used = True
     except subprocess.TimeoutExpired as exc:

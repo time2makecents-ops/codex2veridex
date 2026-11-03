@@ -1,22 +1,8 @@
 (() => {
-  const main = document.getElementById('chat-panel');
-  const messages = document.getElementById('messages');
-  const composer = main.querySelector('.composer-wrap');
-  const actions = document.getElementById('room-file-actions');
-  const workspace = document.createElement('section');
-  workspace.className = 'video-workspace'; workspace.hidden = true;
-  workspace.setAttribute('aria-label','Video Production workspace');
-  workspace.innerHTML = `<header class="video-workspace-bar"><div><span class="eyebrow">VIDEO PRODUCTION</span><h2>Media workspace</h2></div><div data-actions></div><button data-chat type="button">Chat with Beta</button></header>
-  <div class="video-workspace-body"><aside class="video-library"><div class="video-library-controls"><input data-search type="search" placeholder="Search room media" aria-label="Search room media"><select data-filter aria-label="Media type"><option value="all">All files</option><option value="video">Videos</option><option value="audio">Audio</option><option value="image">Images</option><option value="document">Documents</option><option value="export">Exports</option></select><button data-view type="button" aria-pressed="false">List view</button><button data-refresh type="button">Refresh</button></div><p data-count></p><div data-gallery class="video-gallery" aria-label="Room media"></div><button data-more type="button" hidden>Show more</button><button data-cancel-upload type="button" hidden>Cancel upload</button></aside>
+  const workspace = window.roomWorkspace.mediaMount;
+  workspace.innerHTML = `  <div class="video-workspace-body"><aside class="video-library"><div class="video-library-controls"><input data-search type="search" placeholder="Search room media" aria-label="Search room media"><select data-filter aria-label="Media type"><option value="all">All files</option><option value="video">Videos</option><option value="audio">Audio</option><option value="image">Images</option><option value="document">Documents</option><option value="export">Exports</option></select><button data-view type="button" aria-pressed="false">List view</button><button data-refresh type="button">Refresh</button></div><p data-count></p><div data-gallery class="video-gallery" aria-label="Room media"></div><button data-more type="button" hidden>Show more</button><button data-cancel-upload type="button" hidden>Cancel upload</button></aside>
   <section class="video-preview" aria-label="Source preview"><div class="video-preview-heading"><strong data-name>Select a file to preview</strong><button data-hide-gallery type="button">Hide gallery</button></div><div data-stage class="video-player-stage"><p>Add footage, audio, images, or documents using Add files above.</p></div><p data-details></p><div data-file-actions class="video-file-actions"></div><p data-notice role="status" aria-live="polite"></p></section></div>
   <input data-room-upload type="file" multiple hidden>`;
-  main.querySelector('.workspace-toolbar').after(workspace);
-  const chat = document.createElement('section');chat.className='video-floating-chat';chat.hidden=true;chat.setAttribute('aria-label','Beta chat');
-  chat.innerHTML='<header data-drag><strong>Beta · Video Production</strong><button data-close type="button" aria-label="Close Beta chat">Close</button></header>';
-  document.body.append(chat);
-  const attach = document.createElement('button');attach.type='button';attach.textContent='Attach';attach.title='Attach files to the next chat message';attach.hidden=true;
-  document.getElementById('composer').prepend(attach);
-  attach.onclick=()=>document.getElementById('file-input').click();
   const q=s=>workspace.querySelector(s);
   let scope='', rows=[], selected='', loading=0, generation=0, active=false, limit=60, request=null;
   let listView=false;
@@ -26,26 +12,7 @@
   const type=file=>String(file.content_type||'').split('/')[0];
   const url=file=>`/api/files/content?${new URLSearchParams({workspace_id:state.workspace.workspace_id,session_id:file.source_session_id||state.session.session_id,file_id:file.file_id})}`;
   const notice=text=>{q('[data-notice]').textContent=text;};
-  function openChat(){chat.hidden=false;document.getElementById('message-input').focus();}
-  function closeChat(){chat.hidden=true;q('[data-chat]').focus();}
-  q('[data-chat]').onclick=openChat;chat.querySelector('[data-close]').onclick=closeChat;
-  chat.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeChat();}});
-  attach.addEventListener('keydown',event=>event.stopPropagation());
-  let drag;
-  chat.querySelector('[data-drag]').addEventListener('pointerdown',event=>{
-    if(event.target.closest('button')||innerWidth<760)return;
-    const rect=chat.getBoundingClientRect();drag={x:event.clientX-rect.left,y:event.clientY-rect.top};event.currentTarget.setPointerCapture(event.pointerId);
-  });
-  chat.querySelector('[data-drag]').addEventListener('pointermove',event=>{
-    if(!drag)return;chat.style.left=Math.max(0,Math.min(innerWidth-chat.offsetWidth,event.clientX-drag.x))+'px';chat.style.top=Math.max(0,Math.min(innerHeight-60,event.clientY-drag.y))+'px';chat.style.right='auto';chat.style.bottom='auto';
-  });
-  chat.querySelector('[data-drag]').addEventListener('pointerup',()=>drag=null);
-  chat.querySelector('[data-drag]').addEventListener('lostpointercapture',()=>drag=null);
-  window.addEventListener('resize',()=>{
-    if(chat.hidden||!chat.style.left||innerWidth<760)return;
-    chat.style.left=Math.max(0,Math.min(parseFloat(chat.style.left),innerWidth-chat.offsetWidth))+'px';
-    chat.style.top=Math.max(0,Math.min(parseFloat(chat.style.top)||0,innerHeight-60))+'px';
-  });
+  const openChat = () => window.roomWorkspace.openChat();
   function preview(){
     const file=rows.find(row=>row.file_id===selected);const stage=q('[data-stage]');
     stage.querySelectorAll('video,audio').forEach(media=>media.pause());stage.replaceChildren();q('[data-file-actions]').replaceChildren();
@@ -111,16 +78,17 @@
   }
   window.videoRoomAddFiles=()=>{if(current())q('[data-room-upload]').click();};q('[data-room-upload]').onchange=event=>upload([...event.target.files]);
   q('[data-cancel-upload]').onclick=()=>request?.abort();
-  workspace.addEventListener('dragover',event=>{event.preventDefault();event.stopPropagation();});
-  workspace.addEventListener('drop',event=>{event.preventDefault();event.stopPropagation();upload([...event.dataTransfer.files]);});
+  const dropSurface=workspace.closest('.room-workspace');
+  dropSurface.addEventListener('dragover',event=>{if(!current())return;event.preventDefault();event.stopPropagation();});
+  dropSurface.addEventListener('drop',event=>{if(!current())return;event.preventDefault();event.stopPropagation();upload([...event.dataTransfer.files]);});
   document.getElementById('toolbar-view-files').addEventListener('click',event=>{if(current()){event.stopImmediatePropagation();q('[data-search]').focus();}},true);
   window.renderVideoRoom=()=>{
     const enabled=state.session?.active_room==='video_production';
     if(enabled){
-      if(!active){active=true;workspace.hidden=false;main.classList.add('video-production-active');q('[data-actions]').append(actions);chat.append(messages,composer);attach.hidden=false;}
-      if(scope!==key()){if(request)request.abort();scope=key();rows=[];selected='';closeChat();preview();refresh();}
+      active=true;
+      if(scope!==key()){if(request)request.abort();scope=key();rows=[];selected='';preview();refresh();}
     }else if(active){
-      active=false;scope='';generation++;loading=0;if(request)request.abort();workspace.hidden=true;chat.hidden=true;main.classList.remove('video-production-active');main.append(messages,composer);composer.prepend(actions);attach.hidden=true;preview();
+      active=false;scope='';generation++;loading=0;if(request)request.abort();preview();
     }
   };
   window.renderVideoRoom();

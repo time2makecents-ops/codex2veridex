@@ -21,9 +21,13 @@ handoff when changing computers or starting an unrelated task.
 ## Usage and delegation
 
 Use DEVELOPMENT_MODEL_POLICY.md for model routing. Keep one main agent and use
-up to two Luna/low routine agents for substantial independent exploration or
-completed tests. Give them only the bounded task context and ask for paths and
-findings or counts/errors. Return failures to Sol/high for diagnosis. Instructions
+Luna/low for routine documentation-only edits from established evidence, with
+the policy's small-follow-up exception and escalation rules. Minimize relevant
+context, output, and repeated checks; model choice alone does not establish
+token savings. Do not start a separate agent for a trivial documentation edit.
+For substantial independent routine exploration or completed tests, use up to
+two Luna/low routine agents. Give them only the bounded task context and ask for
+paths and findings or counts/errors. Return failures to Sol/high for diagnosis. Instructions
 to avoid edits are not a separate read-only sandbox; host permissions still apply.
 
 Batch independent reads, keep output short, reuse evidence, and load only relevant

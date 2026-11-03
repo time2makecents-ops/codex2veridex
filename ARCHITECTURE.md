@@ -31,6 +31,21 @@ governance boundary without requiring onboarding or account discovery.
 
 ## Request lifecycle
 
+The floating session chat sends an optional `chat_model` choice ID with normal
+`POST /api/chat` requests, plus optional `chat_reasoning` for an explicit Codex
+choice. Reasoning must appear in that model's governed `reasoning_options` and
+is revalidated in the gateway before reaching the CLI. Default routing and Gemini
+reject caller-supplied reasoning overrides. Missing/default retains automatic routing. The
+`GET /api/chat/models` catalog exposes model labels and configuration status,
+never credentials. `chat_models.py` resolves explicit IDs against governance's
+`manual_chat_models`; older versioned snapshots without that field use the
+committed additive allowlist, while an explicit empty field remains authoritative.
+Explicit Codex choices are revalidated by the gateway, and unsupported-model
+retry is disabled for them. Explicit Gemini uses only Veridex's configured model,
+permits text conversation, and never falls back to Codex. Existing preflight,
+postflight, artifacts, and room boundaries still apply. Selection is browser-page
+memory scoped to workspace/session/room, not a persistence operation.
+
 Video Production uses `video.action` and `POST /api/video/action` for the same
 room/session-scoped status, launch, job, cancellation and local-control adapters.
 `video_tools.py` extends the existing application registry, uses argument-list
@@ -38,6 +53,67 @@ subprocesses and restricts MLT resources/services. OBS connects only to the
 authenticated loopback WebSocket; passwords are not persisted. Optional Audacity
 control runs fixed commands on an empty project, never caller-supplied commands.
 Generated job outputs are probed and saved through the existing artifact store.
+
+## Visual Design room image jobs
+
+Visual Design chat creates a durable, numbered image draft before production.
+The draft keeps the original instructions, interpretation, assumptions, version,
+and any clarification; complex briefs use the existing stronger planning route
+to approve or ask for clarification, without silently rewriting an approved
+brief. Each new or revised brief shows actual **Send to room** and **Keep
+editing** controls. Keeping editing enters pre-creation mode; relevant questions
+can then be asked, and the choices are shown again. Explicit Send submits the
+request ID, reviewed version, and confirmation; stale controls are suppressed
+and duplicate pending clicks ignored. Refinements use the same draft ID and a
+checked version. PNG, JPEG, and WebP creation requests are recognized. Saying
+**Send to room** after an older untracked request recovers its original brief
+into a durable draft and shows the controls without starting production; if the
+request was already accepted, status is reported without rerunning it.
+Production uses a
+separate route from the selected chat model, with room capabilities and route
+context; it uses existing Codex image tools or local resize/convert operations.
+
+Room jobs are listed by workspace and room across sessions, while creation is
+limited to Visual Design. Each job is stored via atomic JSON replacement at
+`data/workspaces/<workspace>/room_jobs/rj_*.json`; append-only events are stored
+in `events.ndjson`, and a global `room_job_sequence.json` allocates display
+numbers. Version-checked, idempotent submission prevents duplicate starts. A
+retry under the same ID creates an immutable attempt; a revision links a new
+job ID. Jobs run independently from chat, expose progress and cancellation in
+the workspace, and report acceptance only after validation. Completion and
+failure notices return to the originating room/session without changing room
+navigation. Backend restart marks unfinished jobs interrupted; they are not
+automatically rerun. Source files are verified before reading; outputs require
+path, nonzero size, SHA-256, and artifact-ledger verification before completion.
+The default is one square PNG unless an aspect is supplied; one to four variants
+can be selected. Workspace follow-up controls support accept, revise, variants, resize/export,
+version comparison, and routing a question to Systems. This workflow does not
+claim semantic output quality review or migration of all legacy generation;
+standalone ArtStudio retains its existing pipeline.
+
+The modeless Jobs popup lists workspace-scoped jobs independently of active
+workspace tabs. It supports date, name, source, and type/status sorting. Choosing
+a preferred type puts matching jobs first without filtering other jobs; jobs
+within each type sort newest first. Selection and keyboard opening lead to a
+right-side detail view that becomes a back/close detail screen on narrow layouts.
+Chat and Art Studio share image history: verified historical Studio outputs are
+imported idempotently, with unavailable original settings labeled. Existing
+provider choices and execution remain in Art Studio. New unsent drafts are held
+only in chat until saved; legacy requests without an explicit visibility flag
+remain listed, including unfinished drafts. `prepare_send` and `save_draft`
+resolve through the current draft API; send requires confirmation and a checked
+version, while save does not submit or open the send confirmation. Save cancels
+cancellable work and preserves the brief/attempt history without execution.
+There is no automatic rerun after restart.
+
+Image edits and attachments create linked edit drafts that preserve their source;
+recovery selects the latest matching untracked request. Completed-output renames
+use the scoped `/api/art/images/rename` operation and `image_names.json` alias
+metadata with append-only name events. Canonical paths, bytes, and artifact
+ledger entries are immutable. Friendly filenames open previews; Download is a
+separate attachment action. Technical IDs, hashes, and paths remain collapsed.
+
+## General chat lifecycle
 
 1. The user submits a message in a workspace session.
 2. The server saves the user message immediately.
@@ -251,9 +327,14 @@ store lock before registration. New video chat attachments use `source=video_cha
 and are omitted from room-library listings while remaining session attachments
 and ledger records. Other rooms and legacy room-file discovery retain their rules.
 The file-ID content endpoint supports single HTTP byte ranges and fixed-size
-streaming instead of reading complete media into memory. The media workspace
-reuses the existing transcript/composer DOM in a nonmodal floating window and
-restores it on leaving Video Production; no second chat store is introduced.
+streaming instead of reading complete media into memory. The shared room
+workspace in `web/room_workspace.js` owns the room header and one nonmodal
+floating chat for every room. It reuses the existing transcript/composer DOM and
+room action controls; no second chat store is introduced. Room/session changes
+close the floating chat, while closing and reopening it preserves the draft.
+`web/video_room.js` mounts its media surface inside the shared workspace and
+retains Video Production's separate room-media upload path. Floating-chat
+attachments use the existing chat upload path.
 
 Browser attachments are saved inside the active session directory, recorded in
 `files.json`, and passed to Codex by verified local path. Image attachments also

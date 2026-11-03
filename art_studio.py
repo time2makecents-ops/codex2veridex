@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import importlib.util
 import json
@@ -578,21 +579,29 @@ class ArtJobManager:
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._futures: Dict[str, Future[Any]] = {}
         self._cancelled: set[str] = set()
+        self._cancel_events: Dict[str, threading.Event] = {}
+        self._listeners = {}
+        self._settled = {}
         self._lock = threading.RLock()
         self._prefix = re.sub(r"[^A-Za-z0-9_-]+", "", prefix) or "job"
         self._label = str(label or "Job")
         self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"veridex-{self._prefix}")
 
-    def submit(self, payload: Dict[str, Any], runner: Callable[[str, Callable[[int, str], None], Callable[[], bool]], Dict[str, Any]]) -> Dict[str, Any]:
+    def submit(self, payload: Dict[str, Any], runner: Callable[[str, Callable[[int, str], None], Callable[[], bool]], Dict[str, Any]], on_change=None) -> Dict[str, Any]:
         job_id = f"{self._prefix}_{uuid.uuid4().hex[:16]}"
         now = utc_now()
         with self._lock:
             self._jobs[job_id] = {"job_id": job_id, "status": "queued", "progress": 0, "message": "Queued", "created_at": now, "updated_at": now, "operation": str(payload.get("operation") or "generate")}
+            self._cancel_events[job_id]=threading.Event()
+            self._settled[job_id]=threading.Event();self._settled[job_id].set()
+            if on_change:self._listeners[job_id]=on_change
+        self._emit(job_id)
 
         def progress(value: int, message: str) -> None:
             with self._lock:
                 if job_id in self._jobs:
                     self._jobs[job_id].update({"progress": max(0, min(100, int(value))), "message": str(message), "updated_at": utc_now()})
+            self._emit(job_id)
 
         def cancelled() -> bool:
             with self._lock:
@@ -602,26 +611,48 @@ class ArtJobManager:
             progress(5, "Starting")
             with self._lock:
                 self._jobs[job_id]["status"] = "running"
+            self._emit(job_id)
             try:
                 result = runner(job_id, progress, cancelled)
                 with self._lock:
+                    self._settled[job_id].clear()
                     if cancelled():
                         self._jobs[job_id].update({"status": "canceled", "progress": 100, "message": "Canceled", "result": result, "updated_at": utc_now()})
                     else:
                         self._jobs[job_id].update({"status": "completed", "progress": 100, "message": "Complete", "result": result, "updated_at": utc_now()})
             except Exception as exc:
                 with self._lock:
-                    self._jobs[job_id].update({"status": "canceled" if cancelled() else "failed", "progress": 100, "message": "Canceled" if cancelled() else str(exc), "error": "" if cancelled() else str(exc), "updated_at": utc_now()})
+                    self._settled[job_id].clear()
+                    self._jobs[job_id].update({"status": "canceled" if cancelled() else "failed", "progress": 100, "message": "Canceled" if cancelled() else str(exc), "error": "" if cancelled() else str(exc), "error_type":type(exc).__name__,"updated_at": utc_now()})
+            try:
+                self._emit(job_id)
+            except Exception as exc:
+                with self._lock:self._jobs[job_id].update(status='failed',error=str(exc),error_type=type(exc).__name__,message='Could not record the verified result')
+                try:self._emit(job_id)
+                except Exception:pass
+            finally:self._settled[job_id].set()
 
         future = self._executor.submit(work)
         with self._lock:
             self._futures[job_id] = future
         return self.get(job_id)
 
+    def _emit(self,job_id):
+        with self._lock:
+            listener=self._listeners.get(job_id)
+            snapshot=copy.deepcopy(self._jobs[job_id])
+        if listener:listener(snapshot)
+
+    def cancel_event(self,job_id):
+        return self._cancel_events[job_id]
+
     def get(self, job_id: str) -> Dict[str, Any]:
         with self._lock:
             if job_id not in self._jobs:
                 raise KeyError(f"Unknown {self._label} job")
+            settled=self._settled.get(job_id)
+        if settled:settled.wait()
+        with self._lock:
             return dict(self._jobs[job_id])
 
     def wait(self, job_id: str, timeout: float | None = None) -> Dict[str, Any]:
@@ -645,5 +676,7 @@ class ArtJobManager:
             if self._jobs[job_id].get("status") in {"completed", "failed", "canceled"}:
                 return dict(self._jobs[job_id])
             self._cancelled.add(job_id)
+            self._cancel_events[job_id].set()
             self._jobs[job_id].update({"status": "canceling", "message": "Canceling", "updated_at": utc_now()})
-            return dict(self._jobs[job_id])
+        self._emit(job_id)
+        return self.get(job_id)
