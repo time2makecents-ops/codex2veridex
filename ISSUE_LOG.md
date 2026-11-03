@@ -8,6 +8,20 @@ because a related implementation exists. Do not record passwords or tokens here.
 
 ## Resolved with recorded evidence
 
+- **PowerShell profile and dedicated Chrome startup (2026-11-03):** Normal
+  Windows PowerShell blocked the startup profile because no persistent execution
+  policy was set. With user authorization, set `CurrentUser` to `RemoteSigned`.
+  A fresh PowerShell process, without the tool session's inherited `Bypass`,
+  reported `RemoteSigned`, loaded the profile without errors, and exited 0;
+  the user confirmed the fix. Ordinary Chrome was running without Veridex's
+  profile/debugging flags. After the user ran `.\veridex.ps1 google-profile`,
+  `node veridex_browser.js status` reported connected to the configured
+  `veridex_corporate` profile, `Profile 2`, on loopback port 9226. The live page,
+  Estate Sales JavaScript, and Estate Sales CSS returned HTTP 200 and matched
+  repository bytes by SHA-256. This verifies startup, bridge connectivity, and
+  asset delivery; account sign-in and Estate Sales visual behavior remain
+  unverified. See [handoff 8](handoffs/chrome-bridge-estate-sales.md).
+
 - **Estate Sales owner workspace (2026-11-02):** Implemented Boss's business
   and project workspace, linked Intake inventory, version-checked edits,
   approved pricing, quantities and online-stock guards, append-only operations,
@@ -301,6 +315,37 @@ not necessarily fixes requested in this conversation.
   the live browser button remain unverified; no claim of remote playback control
   or video editing is made.
 
+- **Shared image preview and editing (2026-11-03):** Implemented a shared local
+  preview/editor on session View files, room Files, and Visual Design Images, with
+  scoped preview/save/send endpoints, immutable originals, verified PNG derivatives,
+  cross-workspace room delivery, confirmation/Navigator preflight, and idempotent
+  retries. Focused checks passed: nine backend/HTTP tests, five Node DOM scenarios,
+  two focused Web UI tests, and the previously passed Item Intake HTTP test. The
+  base-editor checkpoint passed 515 tests with zero failures/errors and no skips
+  reported; all 16 discovered web JavaScript syntax checks passed. Five Node
+  DOM-interaction scenarios, nine backend/HTTP tests, and two focused Web UI tests
+  passed. A live restart, health check, four exact source-asset SHA checks, and
+  malformed preview/save/send rejection checks passed; they created or modified no
+  live user artifacts and do not verify valid image flows. Desktop/narrow visual QA
+  remains blocked by unavailable native pipe/browser-access host. See
+  [IMAGE_PREVIEW_PLAN.md](IMAGE_PREVIEW_PLAN.md) for behavior and remaining acceptance.
+
+- **Local image background removal (2026-11-03):** Added a Remove background /
+  Restore background preview option across the shared preview surfaces. It uses
+  rembg 2.0.67 and a local U2NET CPU mask, retains source RGB, multiplies the
+  existing alpha, and remains an unsaved preview until Save copy or Save copy and
+  send. The original is immutable; this is not generative AI or a photo upload.
+  Eleven backend tests, one Web UI test, and six Node scenarios passed. Full unittest
+  discovery passed 517 tests, zero failures/errors, with no skips reported. The model
+  at `C:\Users\kgwamadmin\.u2net\u2net.onnx` (175,997,641 bytes) passed upstream
+  MD5 verification. Unmocked CPU inference passed on a synthetic 256x256 fixture,
+  preserving exact source RGB and original bytes while producing a nontrivial alpha
+  mask; first-call fixture time was 8.3 seconds, not a performance guarantee. Live
+  restart, health, and three asset source-hash checks passed. No user photo or browser
+  visual workflow was tested; desktop/narrow QA remains unverified. The model is not
+  bundled and other machines must prepare it separately. See
+  [IMAGE_PREVIEW_PLAN.md](IMAGE_PREVIEW_PLAN.md).
+
 The following have source or documentation evidence, but no verified end-to-end
 result in the visible conversation. They should remain in this section until
 the actual user workflow is checked.
@@ -337,6 +382,31 @@ the actual user workflow is checked.
   alone does not prove Gmail, eBay, or Facebook is signed in.
 
 ## Open or unresolved observations
+
+- **Desktop browser-access host unavailable (2026-11-02):** Read-only diagnosis
+  separated the desktop automation host from Veridex's own Chrome CDP bridge.
+  `node veridex_browser.js status` returned connected for the configured profile
+  and loopback port 9226; `/json/version` responded successfully. The extension
+  is present in that profile with no disable reasons, its native messaging
+  manifest points to an existing executable, and that host process is running
+  under the dedicated Chrome process. Computer Use inventory nevertheless
+  returns no browsers and `The browser access host is unavailable`, including
+  after a clean tool-session reset. The installed browser runtime throws that
+  error when its authenticated access pipe or verifying identity is absent,
+  before connecting to Chrome. The long-lived app-server daemon predates the
+  current desktop-app process; stale desktop/daemon state is a hypothesis, not
+  a verified root cause for the missing transport. No permission guard, profile,
+  native-host registration, or installed runtime was modified. Desktop recovery
+  was not verified. Follow-up on 2026-11-03: the user clarified that the active
+  session is Codex in PowerShell and the desktop app is not running. Computer
+  Use still returned no browsers/apps, a missing browser access host, and a
+  missing native pipe. These failures do not establish a fault in Veridex's
+  separately connected Chrome bridge. That bridge's existing CLI exposes only
+  `status` and `open`; it cannot inspect page layout. Do not require a desktop
+  restart for CLI bridge work. If desktop automation is needed, open the
+  desktop app and verify its connection in that context; the earlier stale
+  daemon hypothesis remains unproven. Official recovery guidance:
+  [Browser extension troubleshooting](https://learn.chatgpt.com/docs/chrome-extension#troubleshooting).
 
 - **Cross-computer Codex setup:** The portable personal setup is implemented
   locally with preview, backup, restore, diagnostics, and shared skills. Private

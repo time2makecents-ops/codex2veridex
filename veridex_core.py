@@ -481,9 +481,18 @@ class VeridexStore:
         uploaded_by_session_id: str = "",
         metadata: Dict[str, Any] | None = None,
         expected_room: str = "",
+        room_only: bool = False,
     ) -> Dict[str, Any]:
         with self._lock:
-            session = self.find_session(session_id)
+            if room_only:
+                if self.get_workspace(workspace_id).get('workspace_id') != workspace_id:
+                    raise ValueError('Invalid destination workspace')
+                destination = room_by_id(scope_ref)
+                if session_id or scope != 'room' or not destination or destination['id'] != scope_ref or scope_ref == 'lobby' or kind != 'generated_image':
+                    raise ValueError('A room-only image requires a valid destination room and no session')
+                session = {'workspace_id': workspace_id, 'active_room': scope_ref}
+            else:
+                session = self.find_session(session_id)
             if session.get("workspace_id") != workspace_id:
                 raise KeyError("Session does not belong to workspace")
             if expected_room and session.get("active_room") != expected_room:
@@ -535,7 +544,7 @@ class VeridexStore:
                 "updated_at": now,
                 "ledgered_at": now,
             }
-            files = self.list_files(workspace_id, session_id)
+            files = [] if room_only else self.list_files(workspace_id, session_id)
             files.append(row)
             self._append_ndjson(
                 self.artifact_ledger_path(workspace_id),
@@ -564,8 +573,9 @@ class VeridexStore:
                     "ledgered_at": row["ledgered_at"],
                 },
             )
-            self._write_json(self.files_manifest_path(workspace_id, session_id), files)
-            self._touch_session(workspace_id, session_id)
+            if not room_only:
+                self._write_json(self.files_manifest_path(workspace_id, session_id), files)
+                self._touch_session(workspace_id, session_id)
             return row
 
     def prepare_generated_output_dir(self, workspace_id: str, session_id: str, request_id: str) -> Path:

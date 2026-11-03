@@ -121,6 +121,7 @@ live session. See [README.md](README.md) for setup and detailed instructions and
   other files into batches; capture photos on a paired phone; edit derived photos
   without overwriting originals; and explicitly send selected material to a
   Veridex session. Research and listings do not start automatically.
+- **General image preview/editing:** Shared previews are available from session View files, room Files, and Visual Design Images. Local Touch up, Remove background/Restore background, and a separate Crop/Rotate/Light/Color/Detail editor create unsaved previews; background removal uses a local U2NET CPU mask, not generative AI; Save copy writes a verified PNG derivative and preserves the original. Send can target another workspace and room without navigation or creating chat/tasks. Visual Design destinations use Images; other rooms use Files. Full unittest discovery passed 517 tests; the earlier 515-test run and base-editor live guard checks are historical. Eleven backend tests, one Web UI test, and six Node scenarios for background removal passed; a synthetic unmocked U2NET inference check also passed. The verified model is prepared on this machine; review on actual user photos and desktop/narrow visual acceptance remain pending; see [IMAGE_PREVIEW_PLAN.md](IMAGE_PREVIEW_PLAN.md).
 - **Market and social workflows:** Prepare local marketplace drafts and use
   existing governed eBay and Facebook handoffs. Facebook and Instagram browser
   integrations depend on the signed-in dedicated browser session. Marketplace

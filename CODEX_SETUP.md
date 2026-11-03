@@ -63,3 +63,14 @@ when updates are reported. Installed copies are not the policy editing authority
 Do not copy credentials, browser profiles, transcripts, or the entire `.codex`
 directory between computers. A successful check on one workstation does not
 verify another workstation's authentication or installed dependencies.
+
+
+## Pending shared setup publication (separate from Veridex app folder)
+
+The canonical `codex-personal-setup` repository currently has two local unpublished changes for HTTPS port 9228: `shared/ports.json` and `bundle-lock.json`. Its dirty-source guard still applies. Publication authorization is unresolved; do not treat a Veridex commit or push as publishing these setup changes, and do not claim a global 9228 reservation before publication. HTTP 9227 is separately published.
+
+- [ ] Resolve explicit authorization for the two-file shared setup publication, then follow that repository's preview/apply and commit/push workflow.
+- [ ] After publication and a clean source checkout, run `codexxx -Check` on this workstation and record its actual result.
+- [ ] On the other workstation, run its setup diagnostic, authenticate Codex/GitHub separately, and confirm its logical machine role and existing port assignments before using it.
+
+The setup repository's 51-test result is historical and was not rerun for this checkpoint. The Veridex app folder is a separate checkout. A Veridex commit/push does not publish shared setup policy or registry files. See `handoffs/workspace-checkpoint.md` for the current repository checkpoint.

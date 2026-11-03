@@ -54,6 +54,32 @@ authenticated loopback WebSocket; passwords are not persisted. Optional Audacity
 control runs fixed commands on an empty project, never caller-supplied commands.
 Generated job outputs are probed and saved through the existing artifact store.
 
+## Shared image preview and editing
+
+`web/image_preview.js` and its stylesheet mount the same client in session View
+files, room Files, and Visual Design Images. Preview and edits are local and
+transient until Save copy. The shared `photo_adjustments.py` engine reuses local
+Item Intake adjustment logic without an `item_id` dependency. Background removal
+uses rembg 2.0.67 with a lazily cached, serialized U2NET CPU mask. The additive
+`recipe.remove_background` boolean applies the mask while retaining source RGB and
+combining it with existing alpha; transparent preview uses a checkerboard. Restore
+background toggles the operation off without dropping other adjustments. Model
+weights are prepared separately with the checksum-verifying helper and are never
+automatically downloaded during editing. Missing or corrupt weights fail closed.
+The Item Intake JPEG wrapper remains unchanged. Static JPEG, PNG, and WebP are
+accepted, with 50 MB source and 40 megapixel edit limits. Saved derivatives are PNG in sRGB; originals remain
+immutable.
+
+`POST /api/room/images/preview` returns PNG bytes without persisting an artifact.
+`POST /api/room/images/save` saves a scoped derivative, and `/send` creates the
+independent room-library copy. `GET /api/room/images/content` serves room copies
+without a session source. Source IDs, hashes, canonical room destinations, paths,
+sizes, and artifact-ledger records are checked. Send requires explicit confirmation
+and Navigator preflight for affected workspaces. Request IDs in ledger metadata make
+save/send idempotent across reloads; a failed send can be retried without duplicating
+the source save. Destinations exclude Lobby; Visual Design uses Images, other rooms
+use Files. Neither navigation nor chat/task creation occurs on send.
+
 ## Visual Design room image jobs
 
 Visual Design chat creates a durable, numbered image draft before production.

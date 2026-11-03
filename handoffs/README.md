@@ -22,7 +22,11 @@ context it needs. Do not read every handoff automatically.
 7. [Current build and research checkpoint](current-build-research-checkpoint.md) - resume
    from the canonical research-record, Google bridge, artist research, and safe-commit checkpoint.
 
-Start a new PowerShell terminal, run `veridex`, and say:
+8. [Chrome bridge and Estate Sales continuation](chrome-bridge-estate-sales.md) — resume from the connected CLI bridge and PowerShell fix; Estate Sales visual QA remains pending.
+
+9. [General image preview and editing](../IMAGE_PREVIEW_PLAN.md) - continue local image preview/editing acceptance; 517-test suite and synthetic U2NET inference passed, real-image and browser QA pending.
+
+Start a new PowerShell terminal, run `codexxx`, and say:
 
 ```text
 list handoffs

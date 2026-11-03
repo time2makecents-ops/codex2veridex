@@ -1270,6 +1270,10 @@ function renderFiles() {
 }
 
 function artImageContentUrl(image) {
+  if (image.source === "room_image_copy") {
+    const query = new URLSearchParams({workspace_id: state.workspace.workspace_id, session_id: state.session.session_id, room_id: state.session.active_room, library: state.files.some(file => file.file_id === image.file_id) ? "session" : "room", file_id: image.file_id, sha256: image.sha256});
+    return `/api/room/images/content?${query}`;
+  }
   const query = new URLSearchParams({
     workspace_id: state.workspace.workspace_id,
     session_id: image.source_session_id || state.session.session_id,
@@ -1330,7 +1334,7 @@ function renderSessionFileLibrary() {
     const metadata = document.createElement("small");
     metadata.textContent = `${roomFileType(file)} · ${formatBytes(Number(file.size || 0))}`;
     button.append(label, metadata);
-    button.addEventListener("click", () => { state.selectedSessionFileId = file.file_id; renderSessionFileLibrary(); });
+    button.addEventListener("click", async () => { if (window.ImagePreviewTools && !await ImagePreviewTools.leave("session")) return; state.selectedSessionFileId = file.file_id; renderSessionFileLibrary(); });
     grid.append(button);
   });
   if (!selected) return;
@@ -1400,6 +1404,7 @@ function renderSessionFileLibrary() {
     });
     actions.append(vlc);
   }
+  window.ImagePreviewTools?.mount(selected, "session", hero, actions);
   preview.append(hero, actions);
 }
 
@@ -1503,7 +1508,8 @@ function renderArtGallery() {
     const label = document.createElement("span");
     label.textContent = image.display_name || image.name || "Generated image";
     button.append(thumbnail, label);
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      if (window.ImagePreviewTools && !await ImagePreviewTools.leave("room")) return;
       state.selectedArtImageId = image.file_id;
       renderArtGallery();
     });
@@ -1549,6 +1555,7 @@ function renderArtGallery() {
     : state.attachingArtImageId === selected.file_id ? "Attachingâ€¦" : "Attach to next message";
   attach.addEventListener("click", () => attachArtImage(selected));
   actions.append(open, download, attach);
+  window.ImagePreviewTools?.mount(selected, "room", hero, actions);
   preview.append(hero, actions);
 }
 
@@ -1559,7 +1566,8 @@ async function openArtGallery() {
   await loadArtImages();
 }
 
-function closeArtGallery() {
+async function closeArtGallery() {
+  if (window.ImagePreviewTools && !await ImagePreviewTools.leave("room")) return;
   const dialog = el("art-gallery-dialog");
   if (dialog.open) dialog.close();
 }
@@ -3890,7 +3898,8 @@ function renderRoomFileLibrary() {
     const label = document.createElement("span");
     label.textContent = file.name || "File";
     button.append(label);
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      if (window.ImagePreviewTools && !await ImagePreviewTools.leave("room")) return;
       state.selectedRoomFileId = file.file_id;
       renderRoomFileLibrary();
     });
@@ -3948,6 +3957,7 @@ function renderRoomFileLibrary() {
     : state.attachingRoomFileId === selected.file_id ? "Attachingâ€¦" : "Attach to next message";
   attach.addEventListener("click", () => attachRoomFile(selected));
   actions.append(open, download, attach);
+  window.ImagePreviewTools?.mount(selected, "room", hero, actions);
   preview.append(hero, actions);
 }
 
@@ -3959,7 +3969,8 @@ async function openRoomFileLibrary() {
   await loadRoomFiles();
 }
 
-function closeRoomFileLibrary() {
+async function closeRoomFileLibrary() {
+  if (window.ImagePreviewTools && !await ImagePreviewTools.leave("room")) return;
   const dialog = el("room-file-dialog");
   if (dialog.open) dialog.close();
 }
@@ -6424,6 +6435,7 @@ async function researchMarketplacePhotos() {
 }
 
 async function loadState(workspaceId = "", sessionId = "", preserveRoute = false) {
+  if ((workspaceId || sessionId) && window.ImagePreviewTools && !await ImagePreviewTools.leaveAll()) return;
   const leavingActiveShoppingSession = Boolean(
     state.antiques?.shopping_mode?.active
     && state.session?.active_room === "antiques_department"
@@ -7314,6 +7326,7 @@ bindFileDrop(el("email-drop-zone"), "email", (active) => {
 
 async function navigateToRoom(roomId) {
   if (!roomId || roomId === state.session?.active_room || state.switchingRoom) return;
+  if (window.ImagePreviewTools && !await ImagePreviewTools.leaveAll()) return;
   state.switchingRoom = true;
   render();
   try {
@@ -7743,9 +7756,9 @@ el("toolbar-add-files").addEventListener("click", () => {
   else el("file-input").click();
 });
 el("toolbar-view-files").addEventListener("click", openSessionFileLibrary);
-el("session-files-close").addEventListener("click", () => el("session-files-dialog").close());
+el("session-files-close").addEventListener("click", async () => { if (!window.ImagePreviewTools || await ImagePreviewTools.leave("session")) el("session-files-dialog").close(); });
 el("session-files-dialog").addEventListener("cancel", (event) => { event.preventDefault(); el("session-files-dialog").close(); });
-el("session-files-search").addEventListener("input", (event) => { state.sessionFileExplorer.query = event.target.value; renderSessionFileLibrary(); });
+el("session-files-search").addEventListener("input", async (event) => { const query=event.target.value; if (window.ImagePreviewTools && !await ImagePreviewTools.leave("session")) { renderSessionFileLibrary(); return; } state.sessionFileExplorer.query = query; renderSessionFileLibrary(); });
 el("session-files-sort").addEventListener("change", (event) => { state.sessionFileExplorer.sort = event.target.value; renderSessionFileLibrary(); });
 el("session-files-list-view").addEventListener("click", () => { state.sessionFileExplorer.view = "list"; renderSessionFileLibrary(); });
 el("session-files-grid-view").addEventListener("click", () => { state.sessionFileExplorer.view = "grid"; renderSessionFileLibrary(); });

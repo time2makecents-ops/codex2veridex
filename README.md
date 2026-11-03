@@ -678,6 +678,39 @@ Choosing a level applies that model/reasoning pair to subsequent normal chat
 messages. **Use default** restores automatic model and reasoning routing.
 Gemini's current adapter does not offer adjustable reasoning. Choices stay in this browser page's
 memory per workspace/session/room and reset on reload; they are not saved memory.
+
+### Shared image preview and editing
+
+Session **View files**, room **Files**, and Visual Design **Images** open the
+shared image preview. **Touch up** applies a local automatic adjustment while
+preserving framing and resolution. **Remove background** previews a transparent
+cutout, and **Restore background** toggles it off while preserving other edits.
+**Revert** returns to the original. **Edit**
+provides local Crop, quarter-turn Rotate, Light, Color, and Detail controls. Slider
+changes preview on release or when **Apply preview** is selected; **Compare with
+original** inspects the source.
+
+Changes remain unsaved until **Save copy**, which creates a PNG in sRGB and leaves
+the original untouched. Crop may change dimensions. Closing, selecting another file,
+searching, or navigating with unsaved edits offers **Save copy**, **Discard**, or
+**Keep editing**; browser exit shows a generic unsaved-work warning.
+
+**Send** defaults to the current workspace and lets you choose another workspace and
+room, except Lobby. Visual Design receives the copy in **Images**; other rooms use
+**Files**. Sending does not navigate, create chat, or start a task. For unsaved edits,
+choose **Save copy and send**. A failed send can retry with the same request ID,
+without saving another source copy.
+
+Supported inputs are static JPEG, PNG, and WebP (50 MB maximum; 40 megapixels for
+editing). Animated or unsupported formats are rejected. Save and send use scoped
+artifact IDs and ledger verification. Full unittest discovery passed 517 tests
+with zero failures/errors and no skips reported; JavaScript syntax checks and six
+Node interaction scenarios passed. Eleven backend tests and one Web UI test for
+background removal passed. A real unmocked U2NET CPU inference check passed on a
+synthetic fixture, and live restart, health, and source-asset checks passed. No user
+photo or browser visual workflow was tested; desktop/narrow visual QA remains
+unverified. See [IMAGE_PREVIEW_PLAN.md](IMAGE_PREVIEW_PLAN.md).
+
 Structured tools keep their dedicated routes. Explicit choices use the committed
 `manual_chat_models` allowlist and fail visibly rather than substitute a model.
 Older runtime governance snapshots inherit that additive allowlist when absent;

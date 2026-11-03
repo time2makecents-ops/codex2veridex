@@ -11,6 +11,14 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required for image preview controls')
+    def test_image_preview_touchup_revert_edit_send_and_unsaved_changes(self):
+        result = subprocess.run(['node', 'test_image_preview_ui.js'], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        script = (ROOT / 'web' / 'app.js').read_text(encoding='utf-8')
+        self.assertEqual(script.count('window.ImagePreviewTools?.mount(selected,'), 3)
+        self.assertIn('/image_preview.js', (ROOT / 'web' / 'index.html').read_text(encoding='utf-8'))
+
     @unittest.skipUnless(shutil.which('node'),'Node.js is required for estate workspace checks')
     def test_estate_workspace_selects_project_items_and_prepares_review_without_submitting(self):
         source=(ROOT/'web'/'estate_sales.js').read_text(encoding='utf-8')
