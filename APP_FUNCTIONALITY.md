@@ -39,6 +39,23 @@ live session. See [README.md](README.md) for setup and detailed instructions and
   High, Extra high, and Max choices. The usual model level is marked as default;
   automatic routing and the current Gemini adapter keep their existing reasoning.
 
+- **Estate Sales / Boss:** Manage a single-owner business profile and service
+  templates, client projects, stages, tasks, and local schedules. Projects can
+  link existing Item Intake batches, items, and photos. Track sale-day activity,
+  closeout, and deterministic cents-based settlement; unknown fees remain unset
+  and no tax rate is assumed. Quantity, approved pricing, and online-live guards
+  gate sale actions. Imports are reviewed, idempotent, and atomic. Reports and
+  QR labels can be exported as ledgered PDF, DOCX, XLSX, or CSV files; calendar
+  exports are ICS. The workspace uses the shared header, floating chat, and Jobs
+  surface with Business, Client & plan, Inventory & pricing, Marketing, Sale day,
+  and Closeout views. Boss chat and Tools create durable draft jobs; review the
+  brief, destination, selected context, and references, then explicitly choose
+  Yes to dispatch. Outputs include marketing, museum pricing research, client
+  email and agreement drafts, finance review, video brief, business/sale/cleanup
+  plans, and online listing briefs. These drafts do not publish, send Gmail,
+  process POS transactions, sync a live calendar, create staff/client accounts,
+  or transfer funds. Existing publishing and Gmail adapters remain separate
+  confirmed workflows. Background jobs leave the active room unchanged.
 - **Museum / Leo:** Research item photos, examine identifying details, save
   cases, and compare sourced price evidence. Google Lens upload requires consent
   unless the scoped shopping mode is active. Guidance is not an appraisal.

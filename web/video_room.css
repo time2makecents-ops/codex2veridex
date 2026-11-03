@@ -122,6 +122,7 @@
 .room-jobs-detail figure,.room-job-workspace figure{margin:14px 0;padding-top:12px;border-top:1px solid #bacbbd}
 .room-jobs-detail figure>img,.room-job-workspace figure>img{display:block;max-width:100%;max-height:300px;object-fit:contain;cursor:zoom-in}
 .room-image-name{display:block;margin:8px 0;background:none;border:0;color:#174b2c;text-decoration:underline;text-align:left;cursor:zoom-in}
+.room-job-confirmation pre,.room-jobs-detail pre,.room-image-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5}
 .room-jobs-detail figure>small,.room-job-workspace figure>small{display:block;margin:6px 0;color:#4d6254}
 .room-jobs-detail details{margin:12px 0;border-top:1px solid #bacbbd;padding-top:10px}
 .room-job-confirmation,.room-image-preview{width:min(620px,calc(100vw - 32px));max-height:85dvh;overflow:auto;padding:22px;background:#f5f7f4;color:#183e29;border:1px solid #9db5a3;box-sizing:border-box}

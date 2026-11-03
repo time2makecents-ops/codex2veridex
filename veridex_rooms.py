@@ -15,6 +15,12 @@ ROOMS: List[Dict[str, Any]] = [
     {"id": "infrastructure_room", "title": "Infrastructure Room", "default_persona": "Infrastructure Manager", "is_active": True},
     {"id": "sales_department", "title": "Sales Department", "default_persona": "Sales Director", "is_active": True},
     {
+        "id": "estate_sales_room", "title": "Estate Sales Room", "default_persona": "Boss", "is_active": True,
+        "purpose": "Coordinate full-service estate-sale projects, from client intake, planning, inventory and pricing through marketing, sale operations, settlement, and client-requested cleanup and removal.",
+        "capabilities": ["client and sale project planning", "linked Intake inventory and approved pricing", "reviewed specialist briefs", "external-payment sale records", "settlement reports", "client-requested cleanup and inventory disposition"],
+        "aliases": ["estate sales", "estate sale", "estate sales room"],
+    },
+    {
         "id": "ebay",
         "title": "eBay",
         "default_persona": "Bob",

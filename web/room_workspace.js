@@ -147,7 +147,7 @@
     jobsVisible=visible;
     const video=currentRoom()?.id==='video_production';
     q('[data-media]').hidden=!video || jobsVisible;
-    q('[data-overview]').hidden=video && !jobsVisible;
+    q('[data-overview]').hidden=currentRoom()?.id==='estate_sales_room' || video && !jobsVisible;
   }
   window.roomWorkspace = {mediaMount:q('[data-media]'), openChat, showJobs, chatModel:() => modelSelections.get(modelScope)?.id || 'default', chatReasoning:() => modelSelections.get(modelScope)?.reasoning || '', openEmail:() => { if (!mail.open) mail.showModal(); }};
   window.renderRoomWorkspace = () => {

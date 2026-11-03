@@ -128,7 +128,7 @@ def _compact_context(context: Any, max_chars: int = 12000) -> str:
     if not isinstance(context, dict) or not context:
         return "{}"
     compact: Dict[str, Any] = {}
-    for key in ("current_local_date", "event_time_scope", "required_artifact_output_dir", "artifact_storage_policy", "current_room", "operator_room", "chat_route", "room_capabilities"):
+    for key in ("current_local_date", "event_time_scope", "required_artifact_output_dir", "artifact_storage_policy", "current_room", "operator_room", "chat_route", "room_capabilities", "estate_business", "estate_sale"):
         if context.get(key) not in (None, "", [], {}):
             compact[key] = context.get(key)
     if isinstance(context.get("computer_access"), dict):

@@ -73,8 +73,9 @@ Production uses a
 separate route from the selected chat model, with room capabilities and route
 context; it uses existing Codex image tools or local resize/convert operations.
 
-Room jobs are listed by workspace and room across sessions, while creation is
-limited to Visual Design. Each job is stored via atomic JSON replacement at
+Room jobs are listed by workspace and room across sessions. Visual Design creates
+image jobs; Estate Sales adds reviewed project workflows described below. Each
+job is stored via atomic JSON replacement at
 `data/workspaces/<workspace>/room_jobs/rj_*.json`; append-only events are stored
 in `events.ndjson`, and a global `room_job_sequence.json` allocates display
 numbers. Version-checked, idempotent submission prevents duplicate starts. A
@@ -141,6 +142,38 @@ use the same validated `VeridexStore.set_room` transition. Only commands with
 explicit navigation intent can change the active room; mentioning another room
 as a topic cannot move the session. The new room and its default persona are
 written to that session's `session.json`.
+
+Normal chat includes the active catalog room's purpose and capabilities in
+`context.current_room`, alongside its ID, title, and persona. This survives
+Codex context compaction so configured room responsibilities reach the assistant;
+these descriptions do not add tools or prove that an action was executed.
+
+Estate Sales is a built-in room seed; catalog loading preserves existing
+administrator overrides. Its single-owner, workspace-scoped business data is
+served by `estate_sales.py` and SQLite beneath ignored `data/estate_sales/`.
+`GET /api/estate-sales` returns the governed room state and `POST /api/estate-sales`
+handles scoped actions. The service keeps client projects, stages, tasks, and
+local schedules linked to existing Item Intake batches/items/photos rather than
+duplicating the inventory catalog. Sales, returns, reservations/releases,
+pickups, expenses, payouts, and client-requested disposition are append-only.
+Settlement uses deterministic integer cents; unset fees stay unknown and no tax
+rate is inferred. Quantity, approved-pricing, and online-live guards protect
+sale actions. Reviewed CSV imports are idempotent and atomic.
+
+Estate Sales shares the room header, floating chat, and Jobs UI and supplies
+Business, Client & plan, Inventory & pricing, Marketing, Sale day, and Closeout
+views. Tools or Boss chat can create durable draft jobs. Before dispatch, the UI
+shows the brief, destination, selected context, and references for explicit Yes
+confirmation. Job metadata includes `project_id`, `destination_room`,
+`task_kind`, and `dispatch_context`; work executes without changing the session's
+active room. The existing image route is reused; specialist non-image outputs
+are Markdown artifacts for marketing, museum pricing research, client email and
+agreement drafts, finance review, video briefs, business/sale/cleanup plans, and
+online listing briefs. PDF, DOCX, XLSX, CSV, QR-label, and ICS exports follow the
+existing artifact ledger verification. These jobs do not add automatic
+publishing, Gmail sends, POS processing, live calendar sync, staff/client
+accounts, or direct transfers. Existing publishing and Gmail integrations remain
+separate confirmed workflows.
 
 Video Production uses the same governed room and room-file abstractions. Beta's
 room-specific prompt covers production planning and post-production while keeping

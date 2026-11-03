@@ -41,6 +41,9 @@ class RoomJobs:
 
     def _defaults(self,row):
         row.setdefault('origin','chat')
+        row.setdefault('project_id','')
+        row.setdefault('destination_room',row['room_id'])
+        row.setdefault('task_kind','image')
         # Legacy requests were already visible before explicit draft saving existed.
         # New unsaved drafts carry listed=False at creation; preserve that choice.
         row.setdefault('listed',True)
@@ -74,7 +77,7 @@ class RoomJobs:
                 return
             text = f"Request #{row['number']:06d}: {row['status'].replace('_', ' ')}."
             if row['status'] == 'completed':
-                text += ' Your image is ready in the room job list.'
+                text += ' Your result is ready in the room job list.'
             elif row['status'] in {'failed', 'interrupted'}:
                 text += ' Open the job details, or ask Systems about this request.'
             elif row['status'] == 'draft':
@@ -112,8 +115,8 @@ class RoomJobs:
             rows = [self.store._read_json(path,{}) for path in self._folder(ws).glob('rj_*.json')]
             return sorted([self._defaults(row) for row in rows if row.get('room_id') == room], key=lambda row:row['number'], reverse=True)
 
-    def create(self, ws, session, room, persona, prompt, source_ids=None, parent_id='', operation='generate', client_id=''):
-        if room != 'art_department':
+    def create(self, ws, session, room, persona, prompt, source_ids=None, parent_id='', operation='generate', client_id='', project_id='', destination_room='', task_kind='image', dispatch_context=None):
+        if room != 'art_department' and not (room=='estate_sales_room' and project_id and destination_room):
             raise ValueError('Image production requests currently belong in Visual Design')
         prompt = str(prompt).strip()
         if not prompt or len(prompt) > 12000:
@@ -134,6 +137,7 @@ class RoomJobs:
                 parent_request_id=parent_id, status='draft', version=1, title=prompt[:90],
                 original_instructions=prompt, answers=[], created_at=utc_now(), attempts=[], files=[], error='', accepted=False,
                 origin='chat',listed=False,workspace_visible=False,progress=0,
+                project_id=project_id,destination_room=destination_room or room,task_kind=task_kind,dispatch_context=copy.deepcopy(dispatch_context or {}),
                 brief=dict(prompt=prompt, source_file_ids=list(source_ids or []), operation=operation,
                     aspect='square', variants=1, options={}, assumptions='One square PNG; preserve supplied source images.'))
             if re.search(r'\blandscape\b',prompt,re.I): row['brief']['aspect']='landscape'
@@ -142,7 +146,7 @@ class RoomJobs:
             if parent:
                 row['brief']['source_file_ids'] = [file['file_id'] for file in parent['files']][:4]
                 row['brief']['aspect'] = parent['brief']['aspect']
-            row['brief']['output_name']=f'image-{number:06d}'
+            row['brief']['output_name']=f'{"image" if task_kind=="image" else task_kind}-{number:06d}'
             self._save(row,'draft_created'); return copy.deepcopy(row)
 
     def update(self, ws, room, request_id, version, brief):
@@ -229,7 +233,7 @@ class RoomJobs:
             with self.lock:
                 row = self.get(ws,room,request_id)
                 row['status'] = 'canceled' if event.is_set() else 'failed'
-                row['error'] = '' if event.is_set() else f"Production failed ({type(exc).__name__}). No completed image was verified."
+                row['error'] = '' if event.is_set() else f"Production failed ({type(exc).__name__}). No completed result was verified."
                 row['diagnostic']={'stage':'production','error_code':type(exc).__name__,'request_id':request_id}
         with self.lock:
             pending=self.get(ws,room,request_id).get('save_draft_pending',False)

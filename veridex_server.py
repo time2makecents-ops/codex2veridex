@@ -42,6 +42,8 @@ from gemini_gateway import gemini_enabled, invoke_gemini
 from chat_models import catalog as chat_model_catalog, resolve_choice as resolve_chat_model, codex_policy as explicit_codex_policy, manual_rules as manual_chat_rules
 from room_jobs import RoomJobs, IMAGE_REQUEST, image_operation, precreation_questions
 from image_names import image_name
+from estate_sales import EstateSales, ROOM as ESTATE_ROOM, SKILLS as ESTATE_SKILLS
+from estate_reports import render as render_estate_report
 from gmail_gateway import GmailGateway, GmailGatewayError
 from connected_accounts import ConnectedAccountError, ConnectedAccounts
 from ebay_gateway import EbayGateway, EbayGatewayError
@@ -1724,6 +1726,217 @@ def art_sources(workspace_id: str, session_id: str, file_ids: list[Any]) -> list
 
 
 _ROOM_JOB_SERVICES = {}
+_ESTATE_SERVICES = {}
+
+
+def estate_service():
+    key=str(STORE.root)
+    with STORE._lock:
+        if key not in _ESTATE_SERVICES:_ESTATE_SERVICES[key]=EstateSales(STORE,SELLER_INTAKE)
+        return _ESTATE_SERVICES[key]
+
+
+def estate_files(ws,session,project):
+    snapshot=estate_service().snapshot(ws,project)
+    document_ids={row.get('file_id') for row in snapshot['records'] if row['kind']=='document'}
+    candidates={row['file_id']:row for row in [*STORE.list_files(ws,session),*STORE.list_room_files(ws,ESTATE_ROOM)]}
+    for job in room_jobs().list(ws,ESTATE_ROOM):
+        if job.get('project_id')!=project:continue
+        for file in job.get('files',[]):
+            for row in STORE.resolve_files(ws,job['session_id'],[file['file_id']]):candidates[row['file_id']]=row
+    return {key:row for key,row in candidates.items() if key in document_ids or row.get('metadata',{}).get('estate_sales',{}).get('project_id')==project}
+
+
+def estate_action(payload):
+    ws,session=workspace_from_args(payload)
+    if STORE.find_session(session)['active_room']!=ESTATE_ROOM:raise ValueError('Open Estate Sales Room first')
+    service=estate_service();action=payload.get('action','state');project=str(payload.get('project_id') or '')
+    value=payload.get('value') or {};version=int(payload.get('version',0))
+    if not isinstance(value,dict):raise ValueError('Invalid form values')
+    result={}
+    if action=='save_business':result['business']=service.save_settings(ws,value,version)
+    elif action=='save_project':
+        if value.get('stage')=='complete' and any(row.get('project_id')==project and row['status'] in {'submitting','queued','running','cancel_requested'} for row in room_jobs().list(ws,ESTATE_ROOM)):raise ValueError('Finish or stop active specialist work before completing the sale')
+        result['project']=service.save_project(ws,value,project,version);project=result['project']['id']
+    elif action=='link_batch':result['batch_id']=service.link_batch(ws,project,str(value.get('batch_id') or ''))
+    elif action=='add_item':result['record']=service.add_item(ws,project,value)
+    elif action=='save_record':
+        if payload.get('kind')=='document' and value.get('file_id'):
+            files=STORE.resolve_files(ws,session,[str(value['file_id'])]);verify_chat_attachments(ws,files)
+            if not files:raise ValueError('Attach an available session file first')
+            other=files[0].get('metadata',{}).get('estate_sales',{}).get('project_id')
+            if other and other!=project:raise ValueError('Document belongs to another project')
+        result['record']=service.save_record(ws,project,str(payload.get('kind')),value,str(payload.get('record_id') or ''),version)
+    elif action=='entry':result['entry']=service.entry(ws,project,value)
+    elif action=='import_sales':
+        if payload.get('confirm') is not True:raise ValueError('Review and confirm the transaction CSV first')
+        result['import']=service.import_sales(ws,project,str(payload.get('csv') or ''))
+    elif action=='report':
+        snap=service.snapshot(ws,project)
+        if payload.get('report_type')=='receipt':
+            receipt=next((row for row in snap['records'] if row['kind']=='entry' and row['type'] in {'sale','return'} and row['id']==payload.get('receipt_id')),None)
+            if not receipt:raise ValueError('Choose a sale or refund transaction for its receipt')
+            snap={**snap,'records':[receipt]}
+        content,extension,mime=render_estate_report(snap,str(payload.get('report_type','inventory')),str(payload.get('format','pdf')))
+        filename=re.sub(r'[^A-Za-z0-9 _-]','',snap['project']['name'])[:70] or 'estate-sale'
+        saved=STORE.save_file(ws,session,filename+'-'+str(payload.get('report_type','inventory'))+extension,content,mime,source='generated',kind='generated_file',scope='room',scope_ref=ESTATE_ROOM,metadata={'estate_sales':{'project_id':project,'report_type':payload.get('report_type','inventory')}})
+        verify_chat_attachments(ws,[saved]);result['file']=public_room_file(saved)
+    elif action=='online_review':
+        snap=service.snapshot(ws,project);items={row['id']:row for row in snap['inventory']};observations=[]
+        for batch in snap['batch_ids']:
+            board=workspace_ebay_room(ws).board(batch)
+            for item in board['items']:
+                if item['item_id'] not in items:continue
+                for link in item.get('ebay_links',[]):
+                    listing=link.get('listing') or {}
+                    if not listing:continue
+                    local=items[item['item_id']]
+                    observations.append({'item_id':item['item_id'],'title':local['title'],'status':listing.get('status','unknown'),'quantity_sold':listing.get('quantity_sold',0),'observed_at':listing.get('last_seen_at',''),'url':listing.get('listing_url',''),'review_needed':listing.get('status')=='active' and local['channel']!='online' and local['available']>0})
+        result['online_observations']=observations
+    elif action=='refresh_brief':
+        request_id=str(payload.get('room_job_id') or '')
+        row=room_jobs().get(ws,ESTATE_ROOM,request_id)
+        if row.get('project_id')!=project or row['version']!=version:raise ValueError('Reopen the latest job for this project')
+        if row['status'] not in {'draft','failed','interrupted','canceled'}:raise ValueError('Only an unsubmitted or stopped brief can be refreshed')
+        snap=service.snapshot(ws,project);previous=row['dispatch_context']
+        fresh=service.brief_context(ws,project,list(previous.get('item_versions',{})))
+        business=service.settings(ws);fresh['business']={key:business.get(key,'') for key in ('name','service_area','services','brand_notes')}
+        fresh.update(project_version=snap['project']['version'],item_versions={item['id']:item['version'] for item in snap['inventory'] if item['id'] in previous.get('item_versions',{})})
+        if 'client' in previous:fresh['client']={key:snap['project'].get(key,'') for key in previous['client']}
+        if 'recorded_finance' in previous:fresh['recorded_finance']=snap['finance']
+        with STORE._lock:
+            row=room_jobs().get(ws,ESTATE_ROOM,request_id)
+            if row['version']!=version or row['status'] not in {'draft','failed','interrupted','canceled'}:raise ValueError('The job changed while refreshing; reopen it')
+            row.update(dispatch_context=fresh,status='draft',error='',version=row['version']+1)
+            room_jobs()._save(row,'project_context_refreshed')
+        result['job']=public_room_job(row)
+    elif action=='draft':
+        kind=str(value.get('task_kind') or '')
+        if kind not in ESTATE_SKILLS:raise ValueError('Choose a supported specialist workflow')
+        destination,task_type,title=ESTATE_SKILLS[kind]
+        if not room_by_id(destination):raise ValueError('The destination room is unavailable')
+        item_ids=value.get('item_ids') or []
+        if not isinstance(item_ids,list) or len(item_ids)>12:raise ValueError('Select at most twelve project items')
+        snap=service.snapshot(ws,project)
+        context=service.brief_context(ws,project,item_ids)
+        business=service.settings(ws)
+        context['business']={key:business.get(key,'') for key in ('name','service_area','services','brand_notes')}
+        context['project_version']=snap['project']['version']
+        context['item_versions']={row['id']:row['version'] for row in snap['inventory'] if row['id'] in item_ids}
+        if value.get('include_client') is True:context['client']={key:snap['project'].get(key,'') for key in ('client_name','client_email','client_phone','address','scope','exclusions','cleanup_instructions','cleanup_requested','removal_requested')}
+        if kind=='finance_review':context['recorded_finance']=snap['finance']
+        source_ids=list(dict.fromkeys(value.get('source_file_ids') or []))
+        allowed=estate_files(ws,session,project)
+        if any(identifier not in allowed for identifier in source_ids):raise ValueError('Select references belonging to this project')
+        if value.get('include_photos') is True:
+            for item in snap['inventory']:
+                if item['id'] not in item_ids:continue
+                for asset in item.get('assets',[]):
+                    if len(source_ids)>=4:break
+                    if not str(asset['content_type']).startswith('image/'):continue
+                    original,path=SELLER_INTAKE.asset_path(asset['asset_id'])
+                    content=path.read_bytes()
+                    if hashlib.sha256(content).hexdigest()!=asset['sha256'] or len(content)!=asset['size']:raise ValueError('Intake reference does not match its source record')
+                    saved=STORE.save_file(ws,session,asset['name'],content,asset['content_type'],source='estate_reference',metadata={'estate_sales':{'project_id':project,'item_id':item['id'],'asset_id':asset['asset_id']}})
+                    verify_chat_attachments(ws,[saved]);source_ids.append(saved['file_id'])
+        if len(source_ids)>4:raise ValueError('Choose at most four attached references')
+        prompt=str(value.get('prompt') or '').strip()
+        if not prompt:raise ValueError('Describe what you want the specialist to produce')
+        parent=str(value.get('parent_request_id') or '')
+        if parent and room_jobs().get(ws,ESTATE_ROOM,parent).get('project_id')!=project:raise ValueError('Revision belongs to another project')
+        row=room_jobs().create(ws,session,ESTATE_ROOM,'Boss',prompt,source_ids,parent_id=parent,client_id=str(payload.get('client_id') or ''),project_id=project,destination_room=destination,task_kind=kind,dispatch_context=context,operation='edit' if kind=='image' and (source_ids or parent) else 'generate')
+        result['job']=public_room_job(row)
+    elif action!='state':raise ValueError('Unsupported estate-sale action')
+    result.update(business=service.settings(ws),projects=service.projects(ws),stages=__import__('estate_sales').STAGES,skills=[{'id':kind,'room':rule[0],'title':rule[2]} for kind,rule in ESTATE_SKILLS.items()])
+    if not project:result['summary']=service.summary(ws)
+    if project:
+        result['snapshot']=service.snapshot(ws,project)
+        result['history']=service.history(ws,project)
+        result['files']=[public_room_file(row) for row in estate_files(ws,session,project).values()]
+        result['jobs']=[public_room_job(row) for row in room_jobs().list(ws,ESTATE_ROOM) if row.get('project_id')==project]
+    return result
+
+
+def validate_estate_job(row,production_review=True):
+    ws,project=row['workspace_id'],row['project_id'];service=estate_service()
+    kind=row.get('task_kind');rule=ESTATE_SKILLS.get(kind)
+    if not rule or row.get('destination_room')!=rule[0] or not room_by_id(rule[0]):raise ValueError('Unsupported specialist route')
+    snapshot=service.snapshot(ws,project);context=row.get('dispatch_context',{})
+    if production_review:
+        if context.get('project_version')!=snapshot['project']['version']:raise ValueError('The project changed; prepare a new reviewed brief')
+        versions={item['id']:item['version'] for item in snapshot['inventory']}
+        if any(versions.get(key)!=version for key,version in context.get('item_versions',{}).items()):raise ValueError('The referenced inventory changed; prepare a new brief')
+    allowed=estate_files(ws,row['session_id'],project)
+    if any(identifier not in allowed for identifier in row['brief']['source_file_ids']):raise ValueError('A reference is outside the project')
+    files=[allowed[identifier] for identifier in row['brief']['source_file_ids']];verify_chat_attachments(ws,files)
+    if access_mode()!='full':raise ValueError('Full computer access is required for production')
+    governance=active_governance_registry()
+    check=governance.preflight(row['brief']['prompt'],dict(STORE.ensure_governance_state(ws).get('gates') or {}),{})
+    if not check.get('allowed'):raise ValueError('Navigator requires clarification')
+    policy=select_model(rule[1])
+    if not governance.validate_model_route(rule[1],policy.model,policy.reasoning_effort).get('allowed'):raise ValueError('Specialist model route is blocked by governance')
+    if kind=='image':return validate_room_job({**row,'project_id':'','room_id':'art_department'},production_review)
+    return {'approved':True,'method':'reviewed project brief and scoped references'}
+
+
+def estate_chat_response(ws,session,user_message,prompt,payload,attachments):
+    project=str(payload.get('estate_project_id') or '')
+    draft_id=str(payload.get('image_draft_id') or '')
+    command=bool(re.fullmatch(r'(?:please\s+)?(?:send(?:\s+to\s+(?:the\s+)?room)?|keep\s+editing)[.!?]*',prompt.strip(' \t\r\n*_`'),re.I))
+    requested=bool(re.search(r'\b(create|prepare|make|design|draft|research|identify|price|plan)\b',prompt,re.I)) and not bool(re.match(r'^\s*(what|why|how|when|where)\b',prompt,re.I))
+    kind=''
+    if requested:
+        for candidate,pattern in [('image',r'\b(flyer|poster|sign|graphic|image|logo)\b'),('pricing_research',r'\b(price|pricing|identify|comps|comparables)\b'),('client_email',r'\b(email|message to.{0,30}client)\b'),('agreement',r'\b(agreement|contract)\b'),('marketing_plan',r'\b(marketing|advertising|campaign|social)\b'),('finance_review',r'\b(finance|settlement|budget)\b'),('cleanup_plan',r'\b(cleanup|removal|clean.up)\b'),('online_listing',r'\b(listing|ebay|marketplace)\b'),('video_brief',r'\b(video|walkthrough footage)\b'),('business_plan',r'\b(business|launch|service package)\b'),('sale_plan',r'\b(sale|walkthrough|operations)\b')]:
+            if re.search(pattern,prompt,re.I):kind=candidate;break
+    if not (kind or command or draft_id):return None
+    if not project:return local_chat_response(ws,session,user_message,'Select a sale project in the Estate Sales workspace before preparing specialist work.','Boss','estate_project_required')
+    snapshot=estate_service().snapshot(ws,project)
+    if draft_id:
+        row=room_jobs().get(ws,ESTATE_ROOM,draft_id)
+        if row.get('project_id')!=project or row['session_id']!=session:raise ValueError('Choose a draft from this project and session')
+        if not command and row['status']=='draft':row=room_jobs().update(ws,ESTATE_ROOM,draft_id,row['version'],{'prompt':row['brief']['prompt']+'\nUser clarification: '+prompt})
+    elif command:
+        row=next((row for row in room_jobs().list(ws,ESTATE_ROOM) if row.get('project_id')==project and row['session_id']==session and row['status']=='draft'),None)
+        if not row:return local_chat_response(ws,session,user_message,'There is no specialist draft selected. Open Tools or describe the deliverable you want.','Boss','estate_draft_missing')
+    else:
+        known=estate_files(ws,session,project)
+        for file in attachments:
+            other=file.get('metadata',{}).get('estate_sales',{}).get('project_id')
+            if other and other!=project:raise ValueError('Attachment belongs to another sale')
+            if file['file_id'] not in known:estate_service().save_record(ws,project,'document',{'title':file['name'],'file_id':file['file_id'],'status':'draft'})
+        row=estate_action({'workspace_id':ws,'session_id':session,'project_id':project,'action':'draft','client_id':str(payload.get('request_id') or ''),'value':{'task_kind':kind,'prompt':prompt,'source_file_ids':[file['file_id'] for file in attachments]}})['job']
+    if row['status']!='draft':return local_chat_response(ws,session,user_message,f"Request #{row['number']:06d} is {row['status']}. No new production was started.",'Boss','room_job_status',room_job=row,message_metadata={'room_job_id':row['request_id']})
+    target=room_by_id(row['destination_room'])
+    send=command and bool(re.match(r'(?:please\s+)?send\b',prompt.strip(' \t\r\n*_`'),re.I))
+    return local_chat_response(ws,session,user_message,f"For {snapshot['project']['name']}, I would ask {target['default_persona']} in {target['title']} to produce:\n\n{row['brief']['prompt']}\n\nReview the selected project context and references before sending. Nothing has started yet.",'Boss','estate_precreation',room_job=row,room_job_confirmation=public_room_job(row) if send else None,message_metadata={'room_job_id':row['request_id'],'production_draft':True,'draft_version':row['version']})
+
+
+def render_estate_job(row,cancel_event):
+    validate_estate_job(row,False)
+    if row['task_kind']=='image':return render_room_job({**row,'room_id':'art_department','_estate_image_execution':True},cancel_event)
+    rule=ESTATE_SKILLS[row['task_kind']];destination=room_by_id(rule[0]);context=row['dispatch_context']
+    sources=estate_files(row['workspace_id'],row['session_id'],row['project_id'])
+    attachments=[sources[key] for key in row['brief']['source_file_ids']]
+    request={'task_type':rule[1],'system_prompt':f"You are {destination['default_persona']} in {destination['title']}, producing {rule[2]} for Boss. Produce a draft deliverable, not a claim that an external action happened. Do not send email, publish, purchase, change accounts, dispose of property, or make client decisions. Use only the approved brief and selected references. Preserve original images. Pricing research must distinguish asking prices from sold evidence and cite actual sources; say when evidence is unavailable. All money figures supplied are recorded calculations; do not invent amounts or rates. Return the deliverable as Markdown text. Do not create files; Veridex saves your result.",
+        'user_prompt':json.dumps({'approved_brief':row['brief']['prompt'],'project_context':context},ensure_ascii=False),
+        'context':{'current_room':{'id':rule[0],'title':destination['title'],'active_persona':destination['default_persona']},'current_local_date':datetime.now().astimezone().date().isoformat()},'attachment_paths':[file['path'] for file in attachments],'cancel_event':cancel_event}
+    explicit_google=wants_google_search(row['brief']['prompt'])
+    search={}
+    if explicit_google:
+        search=search_google(row['brief']['prompt'],cancel_event=cancel_event)
+        request['context']['google_browser_search']=search
+    result=invoke_codex(request)
+    if cancel_event.is_set():raise RequestCancelled('Specialist work canceled')
+    content=str(result.get('text') or '').strip()
+    if not content:raise ValueError('The specialist returned no deliverable')
+    evidence=list(result.get('evidence') or [])
+    if search:evidence.append(google_search_evidence(search))
+    check=active_governance_registry().postflight(content,evidence,request_text=row['brief']['prompt'],task_type=rule[1],current_date=request['context']['current_local_date'],required_search_provider='google_chrome_profile' if explicit_google else '')
+    if not check.get('allowed'):raise ValueError('Navigator could not verify the specialist response')
+    filename=image_name(re.sub(r'\.md$','',row['brief'].get('output_name',''),flags=re.I),'.png',row['task_kind'])[:-4]+'.md'
+    saved=STORE.save_file(row['workspace_id'],row['session_id'],filename,content.encode('utf-8'),'text/markdown',source='generated',kind='generated_file',scope='room',scope_ref=rule[0],metadata={'estate_sales':{'project_id':row['project_id'],'request_id':row['request_id'],'destination_room':rule[0],'evidence':evidence}})
+    verify_chat_attachments(row['workspace_id'],[saved])
+    return {'files':[{**public_room_file(saved),'path':saved['path'],'source_session_id':row['session_id']}],'route':{key:result.get(key) for key in ('provider','model','reasoning_effort')}}
 
 
 def room_job_sources(row):
@@ -1739,6 +1952,7 @@ def room_job_sources(row):
 
 
 def validate_room_job(row, production_review=True):
+    if row.get('project_id'):return validate_estate_job(row,production_review)
     if access_mode() != 'full': raise ValueError('Full computer access is required')
     brief = row['brief']
     if re.fullmatch(r'(?:please\s+)?(?:make|create|generate|draw)(?:\s+me)?(?:\s+an?)?\s+(?:image|picture|photo|meme)[.!?\s]*',brief['prompt'],re.I):
@@ -1768,6 +1982,7 @@ def validate_room_job(row, production_review=True):
 
 
 def render_room_job(row, cancel_event):
+    if row.get('project_id') and not row.get('_estate_image_execution'):return render_estate_job(row,cancel_event)
     sources = room_job_sources(row); brief = row['attempts'][-1]['brief']
     validate_room_job(row,production_review=False)
     if brief['operation'] in {'resize','convert'}:
@@ -1783,7 +1998,7 @@ def render_room_job(row, cancel_event):
             'parent_file_ids':brief['source_file_ids'],'width':facts['width'],'height':facts['height']}
         filename=image_name(brief.get('output_name'),asset.get('extension','.png'),f"image-{row['number']:06d}",index,len(assets))
         saved = STORE.save_file(row['workspace_id'],row['session_id'],filename,content,
-            asset.get('content_type') or facts['content_type'],source='generated',kind='generated_image',scope='room',scope_ref=row['room_id'],metadata={'art':metadata})
+            asset.get('content_type') or facts['content_type'],source='generated',kind='generated_image',scope='room',scope_ref=row['room_id'],metadata={'art':metadata,**({'estate_sales':{'project_id':row['project_id'],'request_id':row['request_id']}} if row.get('project_id') else {})})
         verify_chat_attachments(row['workspace_id'],[saved])
         files.append({**public_art_image(saved),'path':saved['path'],'source_session_id':row['session_id']})
     route = {key:assets[0].get('metadata',{}).get(key,'local') for key in ('provider','model')}
@@ -1802,6 +2017,7 @@ def public_room_job(row):
     row=dict(row)
     row['files']=[STORE.image_label(row['workspace_id'],file) for file in row.get('files',[])]
     candidates={file['file_id']:file for file in [*STORE.list_files(row['workspace_id'],row['session_id']),*STORE.list_generated_images(row['workspace_id'],'art_department')]}
+    if row.get('project_id'):candidates=estate_files(row['workspace_id'],row['session_id'],row['project_id'])
     row['references']=[{**public_file(candidates[file_id]),'source_session_id':candidates[file_id].get('source_session_id') or row['session_id']} for file_id in row['brief']['source_file_ids'] if file_id in candidates]
     return row
 
@@ -4235,6 +4451,9 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             preflight,
             user_prompt,
         )
+    if not contained_assistant and active_room==ESTATE_ROOM:
+        estate_response=estate_chat_response(workspace_id,session_id,user_message,user_prompt,payload,attachments)
+        if estate_response is not None:return estate_response
     image_review_requested = bool(re.fullmatch(r'(?:please\s+)?(?:send(?:\s+to\s+(?:the\s+)?room)?|keep\s+editing|continue\s+pre-creation)[.!?]*',user_prompt.strip(' \t\r\n*_`'),re.I))
     image_send_requested = image_review_requested and bool(re.match(r'(?:please\s+)?send\b',user_prompt.strip(' \t\r\n*_`'),re.I))
     requested_image_operation=image_operation(user_prompt,any(str(file.get('content_type','')).startswith('image/') for file in attachments))
@@ -4566,6 +4785,8 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
         "id": active_room,
         "title": room_title,
         "active_persona": active_persona,
+        "purpose": str((room or {}).get("purpose") or ""),
+        "capabilities": (room or {}).get("capabilities") or [],
     }
     if contained_assistant:
         source_room = room_by_id(session_room) or room_by_id("lobby")
@@ -4575,6 +4796,12 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "active_persona": str(session.get("active_persona") or ""),
         }
     context["available_rooms"] = rooms_payload()
+    if active_room==ESTATE_ROOM:
+        business=estate_service().settings(workspace_id)
+        context['estate_business']={key:business.get(key,'') for key in ('name','service_area','services','brand_notes')}
+        if payload.get('estate_project_id'):
+            sale=estate_service().snapshot(workspace_id,str(payload['estate_project_id']))
+            context['estate_sale']={'project':sale['project'],'recorded_finance':sale['finance'],'inventory_count':len(sale['inventory']),'open_tasks':[row for row in sale['records'] if row['kind']=='task' and row['status']!='done'][:12]}
     context['chat_route'] = {'provider':selection['provider'] if selection else 'codex_cli','model':selection['model'] if selection else policy.model,'reasoning':selection['reasoning'] if selection else policy.reasoning_effort,'selection':chat_model}
     context['room_capabilities'] = {'room':room_title,'persona':active_persona,'files':'Session attachments and room-scoped file library',
         'image_workflow':'Visual Design only: tracked draft, explicit Send to room, independent image production, verified outputs' if active_room == 'art_department' else 'Use explicit navigation to Visual Design for image production',
@@ -4679,6 +4906,7 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
             "When asked to find local files, use the available shell tools and report only verified paths. "
             "Attached files are saved locally and their exact paths are supplied in governed context. "
             "Use the governed context for continuity, but do not claim actions that were not performed."
+            + (" You are Boss coordinating the selected estate-sale project. Specialist production requires a reviewed brief and the explicit Send confirmation. Use the Estate Sales workspace Tools and Jobs workflow; never claim a delegation, publication, payment, or removal without evidence. Chat model selection does not change specialist production routing. Cleanup and removal require the client's recorded request." if active_room==ESTATE_ROOM else '')
             + (
                 " Visual Design has Art Studio, Images, and the room job list. Image creation and revisions require a tracked draft and the user's explicit Send to room action. "
                 "In ordinary owner chat, discuss concepts and pre-creation questions; never invoke image generation or claim to have submitted or completed production. "
@@ -5301,6 +5529,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             elif parsed.path == "/api/room/jobs":
                 self._json(room_job_action({key:value[0] for key,value in query.items()}))
+            elif parsed.path == "/api/estate-sales":
+                self._json(estate_action({key:value[0] for key,value in query.items()}))
             elif parsed.path == "/api/chat/models":
                 self._json(chat_model_catalog(active_governance_registry()))
             elif parsed.path == "/api/bootstrap":
@@ -6158,6 +6388,8 @@ class VeridexHandler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "request_id": request_id, "cancel_requested": cancelled})
             elif parsed.path == "/api/room/jobs":
                 self._json(room_job_action(payload))
+            elif parsed.path == "/api/estate-sales":
+                self._json(estate_action(payload))
             elif parsed.path in {"/api/chat", "/request"}:
                 if parsed.path == "/request" and not self._legacy_authorized():
                     self._json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)

@@ -8,6 +8,35 @@ because a related implementation exists. Do not record passwords or tokens here.
 
 ## Resolved with recorded evidence
 
+- **Estate Sales owner workspace (2026-11-02):** Implemented Boss's business
+  and project workspace, linked Intake inventory, version-checked edits,
+  approved pricing, quantities and online-stock guards, append-only operations,
+  client-requested disposition, deterministic settlement and adjustments,
+  atomic/idempotent CSV imports, local schedule and document exports. Individual
+  receipts exclude other transactions; business totals separate currencies and
+  disclose unset fees. Cached eBay review reads linked items without changing
+  inventory or external listings. Reviewed specialist jobs retain project scope
+  and selected references, reuse image production, and return verified draft
+  artifacts without navigating the user session. Existing image behavior is
+  covered by regression tests. Luna/low passed 505 tests with zero failures,
+  errors, or skips in 110.8 seconds, plus five JavaScript syntax checks; the final
+  focused Boss-chat guard test passed. The live API returned 11 workflows and
+  the final assets, and whitespace checks passed. Chrome visual validation is
+  pending: browser access was unavailable and native Computer Use stopped before
+  opening Estate Sales when the current URL could not be reliably verified.
+  No live specialist generation or external send/publish/payment/removal was
+  performed. See [ESTATE_SALES_PLAN.md](ESTATE_SALES_PLAN.md) for acceptance and
+  operator continuation notes.
+
+- **Configured room scope missing from chat (2026-11-02):** Custom rooms stored
+  their purpose and capabilities in the catalog, but normal chat omitted them
+  from the active-room context and compacted the directory to names only.
+  Include active-room purpose and capabilities in `context.current_room`.
+  A controlled custom-room test verifies both reach the request and survive
+  Codex context compaction without changing rooms. Luna/low passed 91 chat,
+  gateway, and server tests with zero failures, errors, or skips. This describes
+  assistant context, not implementation of specialized business tools.
+
 - **Workspace and image-jobs commit checkpoint (2026-11-02):** Updated the
   README, architecture, and functionality guide for shared room workspaces,
   explicit chat model/reasoning choices, independent image jobs, friendly names,

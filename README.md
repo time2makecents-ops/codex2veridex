@@ -656,7 +656,8 @@ actions precede **Chat with [persona]**, which opens the shared movable,
 resizable session chat. Closing chat preserves its conversation and unsent draft.
 Rooms without specialized work surfaces keep the same workspace area. Every
 room also has a **Jobs** list scoped to its workspace and room across sessions;
-only Visual Design currently creates room image jobs.
+Visual Design creates room image jobs, and Estate Sales creates durable workflow
+jobs through Boss chat and Tools.
 
 Existing studio, research, file, and seller actions remain available from each
 room's header. Control Room and Infrastructure both offer **View logs** for room
@@ -766,6 +767,39 @@ It does not place orders. Robinhood's MCP connection was authorized separately
 in Codex with a read-tool allowlist; Slick does not yet use that connection.
 Prediction-market coverage and safe isolation of the connector in Slick remain
 to be verified. Never store account credentials in this repository.
+
+### Estate Sales · Boss
+
+Estate Sales is a single-owner workspace for the business profile, service
+templates, client projects, stages, tasks, and local schedules. A project can
+reference existing Item Intake batches, items, and photos; it does not create a
+parallel inventory authority. The room offers Business, Client & plan, Inventory
+& pricing, Marketing, Sale day, and Closeout views. Sale and disposition records
+are append-only, including sales, returns, reservations and releases, pickups,
+expenses, payouts, and client-requested disposition. Quantity, approved pricing,
+and online-live checks guard sale operations. Settlement is deterministic in
+cents; unset fees remain unknown and no tax rate is assumed.
+
+CSV imports require review, are idempotent, and apply atomically. Exported reports,
+QR labels, and related deliverables are ledgered PDF, DOCX, XLSX, or CSV files;
+calendar files are ICS exports, not live calendar synchronization. Boss chat and
+Tools can prepare durable draft jobs. Review each job's brief, destination,
+selected context, and references, then confirm with **Yes**. Jobs carry the
+project, destination room, task kind, and dispatch context, and background work
+does not change the active room. Specialist drafts include marketing, museum
+pricing research, client email and agreement drafts, finance review, video
+briefs, business/sale/cleanup plans, and online listing briefs. They do not
+publish online, send Gmail, process POS, create staff/client accounts, or move
+money. Existing publishing and Gmail adapters remain separate confirmed flows.
+
+Sale-day receipts are generated for one selected sale or refund. Expense and
+payout corrections append adjustments rather than changing history. The project
+overview keeps currency totals separate and flags unset fees. **Review cached
+eBay listings** shows Bob's recorded observations and channel conflicts without
+changing stock or refreshing the external account. Refresh an actual account in
+the existing eBay workspace. Refresh stale specialist context explicitly before
+reviewing and sending again. See [ESTATE_SALES_PLAN.md](ESTATE_SALES_PLAN.md) for
+verification and the remaining Chrome layout check.
 
 ### eBay
 

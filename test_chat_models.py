@@ -16,6 +16,28 @@ REGISTRY = GovernanceRegistry(Path(__file__).parent / 'governance/navigator_gove
 
 
 class ChatModelTests(unittest.TestCase):
+    def test_custom_room_scope_reaches_chat_and_compacted_prompt(self):
+        from veridex_rooms import ROOMS
+        room={'id':'services_room','title':'Services Room','default_persona':'Coordinator','is_active':True,
+            'purpose':'Plan client-requested services.','capabilities':['planning','client-requested cleanup']}
+        with tempfile.TemporaryDirectory() as directory:
+            catalog=Path(directory)/'catalog.json'
+            catalog.write_text(json.dumps({'rooms':[*ROOMS,room]}),encoding='utf-8')
+            with patch('veridex_rooms._ROOM_CATALOG_PATH',catalog):
+                store=VeridexStore(Path(directory)/'store');initial=store.ensure_default()
+                ws=initial['workspace']['workspace_id'];session=initial['session']['session_id']
+                store.set_room(ws,session,room['id'])
+                response=dict(provider='codex_cli',model='gpt-6-luna',reasoning_effort='low',task_type='simple',text='Hello.',evidence=[])
+                with patch.object(server,'STORE',store),patch.object(server,'active_governance_registry',return_value=REGISTRY),patch.object(server,'invoke_codex',return_value=response) as invoke:
+                    server.chat_response({'workspace_id':ws,'session_id':session,'text':'hello','chat_model':'luna'})
+                request=invoke.call_args.args[0]
+                current=request['context']['current_room']
+                self.assertEqual(current['id'],room['id']);self.assertEqual(current['active_persona'],'Coordinator')
+                self.assertEqual(current['purpose'],room['purpose']);self.assertEqual(current['capabilities'],room['capabilities'])
+                compact=json.loads(codex_gateway._compact_context(request['context']))
+                self.assertEqual(compact['current_room'],current)
+                self.assertEqual(store.find_session(session)['active_room'],room['id'])
+
     def test_reasoning_choices_are_validated_per_model(self):
         for effort in ('low', 'medium', 'high', 'xhigh', 'max'):
             self.assertEqual(chat_models.resolve_choice(REGISTRY, 'luna', reasoning=effort)['reasoning'], effort)

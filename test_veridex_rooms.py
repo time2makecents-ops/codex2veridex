@@ -25,15 +25,16 @@ class VeridexRoomTests(unittest.TestCase):
                 "default_persona": "Test Guide", "is_active": True,
             }]}), encoding="utf-8")
             configure_room_catalog(path)
-            self.assertEqual(len(rooms_payload()), 22)
+            self.assertEqual(len(rooms_payload()), 23)
             self.assertEqual(route_room_request("go to Test Room")["room"]["id"], "test_room")
-            self.assertEqual(len(ROOMS), 21)
+            self.assertEqual(len(ROOMS), 22)
             configure_room_catalog(None)
-            self.assertEqual(len(rooms_payload()), 21)
+            self.assertEqual(len(rooms_payload()), 22)
 
     def test_registry_matches_expected_governed_rooms(self) -> None:
         rooms = rooms_payload()
-        self.assertEqual(len(rooms), 21)
+        self.assertEqual(len(rooms), 22)
+        self.assertEqual(resolve_room('estate sales')['default_persona'],'Boss')
         self.assertEqual(rooms[0]["id"], "lobby")
         self.assertEqual(resolve_room("art room")["id"], "art_department")
         self.assertEqual(resolve_room("Visual Design")["title"], "Visual Design")

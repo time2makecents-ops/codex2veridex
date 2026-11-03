@@ -5847,6 +5847,7 @@ function render() {
   window.renderRoomWorkspace?.();
   window.renderVideoRoom?.();
   window.renderRoomJobs?.();
+  window.renderEstateSales?.();
 }
 
 function accountRequestBody(extra = {}) {
@@ -6497,6 +6498,7 @@ async function sendMessage(text, { attachments, emailDraft, confirmExternal = fa
         chat_model: window.roomWorkspace?.chatModel() || "default",
         chat_reasoning: window.roomWorkspace?.chatReasoning() || "",
         image_draft_id: window.roomJobs?.draftId() || "",
+        estate_project_id: window.estateSales?.projectId() || "",
         attachment_ids: selectedAttachments.map((file) => file.file_id),
         email_draft: emailDraft,
         confirm_external: confirmExternal,

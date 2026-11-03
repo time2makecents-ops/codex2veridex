@@ -11,6 +11,38 @@ ROOT = Path(__file__).resolve().parent
 
 
 class WebUiTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'),'Node.js is required for estate workspace checks')
+    def test_estate_workspace_selects_project_items_and_prepares_review_without_submitting(self):
+        source=(ROOT/'web'/'estate_sales.js').read_text(encoding='utf-8')
+        program=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm');
+class Element{
+ constructor(tag='div'){this.tag=tag;this.children=[];this.options=[];this.dataset={};this.attributes={};this.value='';this.type='';}
+ append(...nodes){for(const node of nodes){node.parent=this;this.children.push(node);}}prepend(...nodes){for(const node of nodes){node.parent=this;this.children.unshift(node);}}
+ replaceChildren(...nodes){this.children=[];this.append(...nodes);}setAttribute(k,v){this.attributes[k]=v;}add(option){this.options.push(option);if(!this.value)this.value=option.value;}
+ addEventListener(){}showModal(){this.open=true;}close(){this.open=false;}remove(){}closest(tag){for(let row=this;row;row=row.parent)if(row.tag===tag)return row;return null;}contains(child){for(let row=child;row;row=row.parent)if(row===this)return true;return false;}
+}
+const root=new Element(),actions=new Element(),body=new Element(),requests=[],errors=[],confirmed=[];
+const state={workspace:{workspace_id:'workspace_fixture'},session:{session_id:'session_fixture',active_room:'estate_sales_room'},files:[]};
+const snapshot={project:{id:'sale_fixture',name:'Sample sale',stage:'preparation',version:1,currency:'USD'},inventory:[{id:'item_fixture',title:'Bowl',available:1,reserved:0,sold:0,approved_price_cents:500,channel:'on_site'}],records:[],finance:{net_sales_cents:0}};
+const response={business:{version:0,name:'',currency:'USD'},projects:[snapshot.project],snapshot,stages:['inquiry','preparation'],skills:[{id:'pricing_research',room:'antiques_department',title:'Pricing research'}],files:[],jobs:[]};
+const context={state,URLSearchParams,crypto:require('node:crypto'),setInterval(){},showError:error=>errors.push(error),localStorage:{getItem:()=> 'sale_fixture',setItem(){}},window:{roomJobs:{refresh(){},clearDraft(){},confirm:job=>confirmed.push(job)},roomWorkspace:{openChat(){}}},document:{body,createElement:tag=>new Element(tag),querySelector:selector=>selector.includes('[data-content]')?root:actions},Option:function(label,value){this.textContent=label;this.value=value;},api:async(url,options)=>{if(options){const request=JSON.parse(options.body);requests.push(request);return {...response,job:{request_id:'draft_fixture'}};}return response;}};
+vm.createContext(context);vm.runInContext(SOURCE,context);
+function walk(root){return [root,...root.children.flatMap(walk)];}
+(async()=>{await new Promise(setImmediate);const mount=root.children[0];assert.equal(mount.hidden,false);
+ walk(mount).find(node=>node.tag==='button'&&node.textContent==='Inventory & pricing').onclick();
+ const checkbox=walk(mount).find(node=>node.type==='checkbox');checkbox.checked=true;checkbox.onchange();
+ walk(mount).find(node=>node.tag==='button'&&node.textContent==='Research selected items').onclick();
+ const dialog=body.children[0],prompt=walk(dialog).find(node=>node.name==='prompt');prompt.value='Research this selected item';
+ await walk(dialog).find(node=>node.tag==='button'&&node.textContent==='Review brief').onclick();
+ assert.equal(requests.length,1);assert.equal(requests[0].action,'draft');assert.equal(requests[0].project_id,'sale_fixture');assert.deepEqual(requests[0].value.item_ids,['item_fixture']);assert.equal(requests[0].value.include_client,false);assert.equal(confirmed.length,1);
+ assert.ok(!requests.some(request=>request.action==='submit'));assert.deepEqual(errors,[]);
+ state.session.active_room='lobby';context.window.renderEstateSales();assert.equal(mount.hidden,true);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+        result=subprocess.run([shutil.which('node')],input='const SOURCE='+json.dumps(source)+';\n'+program,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required for floating chat checks')
     def test_reopening_chat_reveals_latest_reply(self) -> None:
         source=(ROOT / 'web' / 'room_workspace.js').read_text(encoding='utf-8')

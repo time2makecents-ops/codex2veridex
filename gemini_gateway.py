@@ -72,6 +72,8 @@ def _compact_context(context: Any, max_chars: int = 6000) -> str:
             "current_room",
             "chat_route",
             "room_capabilities",
+            "estate_business",
+            "estate_sale",
             "computer_access",
             "available_rooms",
             "governance",
