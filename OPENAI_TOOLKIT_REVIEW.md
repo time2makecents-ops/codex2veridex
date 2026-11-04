@@ -14,9 +14,12 @@ examples and model-based evaluations are outside this toolkit's scope.
 
 Use the existing frontend/browser skills, the installed local quality tools,
 OpenAI frontend/prompting guidance, and the regression-test method illustrated
-by the agent improvement example. Docs MCP is the next selected connection to
-configure; it remains unconfigured and untested. Agents SDK/tracing and Promptfoo
-are reference material for later feature-specific decisions.
+by the agent improvement example. Docs MCP is now configured in the managed
+setup; standalone initialization, tool discovery, search and fetch passed. A
+running Codex client must reload configuration before exposing its tools.
+The local resource kit includes three original prompts and eight pinned official
+Python examples with MIT license and hash manifest. These SDK examples were not
+executed. Agents SDK/tracing and Promptfoo remain references for later decisions.
 
 The portable selection and installed/pending status live in the canonical
 [website resources guide](https://github.com/time2makecents-ops/codex-personal-setup/blob/main/WEBSITE_RESOURCES.md).
@@ -25,7 +28,7 @@ The portable selection and installed/pending status live in the canonical
 
 | Resource | What it gives us | Recommendation and cost boundary |
 | --- | --- | --- |
-| [Docs MCP](https://developers.openai.com/learn/docs-mcp) | Read-only documentation search and page retrieval directly inside Codex. The public server does not execute OpenAI API requests. | Best immediate connection to add. Public documentation access; inference used by the coding agent remains under that agent's existing plan. Not configured or protocol-tested in this review. |
+| [Docs MCP](https://developers.openai.com/learn/docs-mcp) | Read-only documentation search and page retrieval directly inside Codex. The public server does not execute OpenAI API requests. | Configured in managed setup; standalone search/fetch check passed. Running-client connection still requires configuration reload and inspection. |
 | [Frontend prompt instructions](https://developers.openai.com/api/docs/guides/frontend-prompt) | A practical UI-quality prompt that emphasizes consistency with the existing application. | Adapt relevant instructions to our existing frontend skill and Veridex's vanilla stack. Public reference; no separate API call needed to read it. The example targets GPT-5.5, so applying it to another model requires testing. |
 | [Prompt engineering](https://developers.openai.com/api/docs/guides/prompt-engineering) | Clear instruction/input separation, examples and prompt regression checks. Current guidance keeps production prompts in application code. | Keep reviewed prompts beside the feature they support, versioned and tested. API generation remains metered even when example code is publicly available. |
 | [Agents SDK](https://developers.openai.com/api/docs/guides/agents/sdk) | Python/TypeScript agent definitions, tool use, handoffs, state, and human-review boundaries. | Use for a specific new agent workflow when needed. Avoid replacing Veridex's governed request flow as part of a toolkit setup. SDK examples are available publicly; model/tool execution needs eligible access and credits/payment. |
@@ -64,7 +67,7 @@ enrollment. No eligibility is assumed here.
 
 ## Suggested order for our projects
 
-1. Connect and verify Docs MCP when implementing the selected toolkit.
+1. Reload the Codex client and inspect its Docs MCP connection; managed configuration and standalone service checks are complete.
 2. Adapt compact website-design and debugging prompts to existing skills and
    project conventions, preserving the shared setup repository as policy authority.
 3. Turn observed failures into representative regression cases using existing

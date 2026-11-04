@@ -26,7 +26,7 @@ context it needs. Do not read every handoff automatically.
 
 9. [General image preview and editing](../IMAGE_PREVIEW_PLAN.md) - continue local image preview/editing acceptance; 517-test suite and synthetic U2NET inference passed, real-image and browser QA pending.
 
-10. [Website design toolkit](website-toolkit.md) - resume selected zero-credit website/OpenAI resources, pending MCP connections and real 45% pause acceptance.
+10. [Website design toolkit](website-toolkit.md) - resume installed zero-credit OpenAI resources, client MCP verification, separate Google work and real 45% pause acceptance; latest commits are local.
 
 Start a new PowerShell terminal, run `codexxx`, and say:
 

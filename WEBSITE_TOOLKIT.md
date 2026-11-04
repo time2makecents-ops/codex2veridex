@@ -7,7 +7,8 @@ Research snapshot: 2026-11-04. Primary sources only; quotas and product availabi
 
 Use the existing frontend/browser workflows, installed local quality tools,
 Google accessibility/LCP skills and public OpenAI prompting references. OpenAI
-Docs MCP is the next selected connection to configure; DevTools MCP still needs
+Docs MCP is configured and its standalone search/fetch checks passed; the
+running Codex client needs a configuration reload. DevTools MCP still needs
 connection/browser validation. The toolkit has a zero OpenAI API-credit budget.
 See [OpenAI review](OPENAI_TOOLKIT_REVIEW.md) and the canonical setup repository's
 [website resources guide](https://github.com/time2makecents-ops/codex-personal-setup/blob/main/WEBSITE_RESOURCES.md).
