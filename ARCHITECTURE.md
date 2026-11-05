@@ -484,6 +484,29 @@ found or changed.
 
 ## Browser search boundary
 
+### Optional browser companion prototype
+
+`browser_extension.py` adds a bounded, in-memory request broker exposed by the
+existing `/call` envelope as `browser.status/read/navigate/click/fill/stop`.
+`chrome_native_host.py` transports framed stdio messages between a Manifest V3
+extension and `POST /api/browser-extension/relay` on the existing server. This
+relay requires a separate ignored local token, loopback peer and no Origin header.
+The host accepts only the fixed extension ID and cannot accept caller-supplied
+endpoints or credentials. No new dedicated port or remote service is required.
+
+The operator selects a tab bound to the current workspace/session/room. Navigator
+runs before queueing, again on execution claim, and on returned evidence. Mutations
+also require an exact local popup approval. Read snapshots contain document and
+snapshot identities plus bounded target IDs; stale or changed targets fail closed.
+Jobs expire, disconnection never replays mutations, and stopping dispatched work
+reports outcome unknown. Results stay in memory; append-only audit contains only
+scope, request ID, action, state and timestamps. This transport does not replace
+existing trusted-CDP Lens/provider adapters or repair a client-owned browser host.
+Installation and live acceptance are separately documented in
+[`chrome_extension/README.md`](chrome_extension/README.md).
+
+### Existing dedicated CDP bridge
+
 `veridex_browser.js` owns one user-data directory under ignored Veridex `data/`
 and launches the application through a loopback-only debugging endpoint.
 `google_chrome_search.js` reuses that browser. The user-data directory may be

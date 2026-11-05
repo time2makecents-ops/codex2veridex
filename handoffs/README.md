@@ -28,6 +28,8 @@ context it needs. Do not read every handoff automatically.
 
 10. [Website design toolkit](website-toolkit.md) - resume installed zero-credit OpenAI resources, client MCP verification, separate Google work and real 45% pause acceptance; latest commits are local.
 
+11. [Google resources and Chrome companion](google-browser-companion.md) - resume isolated extension development, downloaded browser tools and the verified live read/approved-fill workflow.
+
 Start a new PowerShell terminal, run `codexxx`, and say:
 
 ```text

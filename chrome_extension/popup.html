@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Veridex Browser Companion</title><link rel="stylesheet" href="popup.css"></head>
+<body><main><h1>Veridex Browser Companion</h1>
+<p>Use this companion in the dedicated Veridex Chrome profile. Choose the tab you want Veridex to use.</p>
+<form id="selection"><details id="connection-settings" open><summary>Connection settings</summary>
+<p>These details are remembered on this Chrome profile. Changing them does not authorize a tab.</p>
+<label>Workspace ID<input id="workspace" required autocomplete="off"></label>
+<label>Session ID<input id="session" required autocomplete="off"></label>
+<label>Active room (automatic)<input id="room" readonly placeholder="Detected when you select a tab"></label></details>
+<p id="saved-connection">Enter connection details once, then select the page you want Veridex to use.</p>
+<button type="submit">Use this tab</button></form>
+<p id="status" role="status" aria-live="polite">Checking connection…</p>
+<section><h2>Requests for review</h2><p>Review each request carefully. Clicking an action can submit information or change a website.</p><div id="requests"></div></section>
+</main><script src="popup.js"></script></body></html>

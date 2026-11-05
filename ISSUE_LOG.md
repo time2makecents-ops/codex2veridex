@@ -8,6 +8,17 @@ because a related implementation exists. Do not record passwords or tokens here.
 
 ## Resolved with recorded evidence
 
+- **Chrome companion basic live acceptance (2026-11-05):** After correcting
+  profile/scope setup, automatic room binding and approval proposal recovery,
+  the installed extension completed a selected-local-page read and a fill only
+  after explicit operator approval in its popup. The field's synthetic value was
+  independently observed in Chrome. The broker result was completed with verified
+  effect; append-only metadata recorded one execution claim and one completion.
+  The fixture submitted nothing. Latest narrow checks passed 39 tests; previous
+  full suite passed 550 and browser suite passed 19 with zero axe violations.
+  This proves local read and approved fill, not real-account operations or a fix
+  to the separate client-owned browser host. See [companion instructions](chrome_extension/README.md).
+
 - **Empty-session toast after sending an image to Visual Design (2026-11-05):**
   Room-only image copies correctly have no producing session. Jobs polling tried
   to import these copies as legacy generation jobs and raised `Unknown session:`
@@ -288,6 +299,48 @@ not necessarily fixes requested in this conversation.
   bypass or recurrence check across fresh desktop sessions was performed.
 
 ## Changes present; live verification still needed
+
+- **Companion approval visibility and human timing (2026-11-05):** Live local-page
+  reading completed, but the first unexecuted approval expired during chat setup.
+  Delivered approval proposals now last ten minutes on a healthy scoped connection;
+  execution has its own two-minute bound. A failing regression reproduced an
+  unclaimed proposal being offered once and then disappearing from a reset popup
+  queue. Same-connection proposal re-delivery now restores that UI without renewing
+  expiry or permitting a second execution claim. All 39 focused tests passed.
+  The live session also changed from Lobby to Marketing and the backend process
+  restarted; the old request is not reusable. Fresh scope selection and a new
+  benign approved action remain pending. No fill completion is claimed.
+
+- **Companion binding diagnostics and remembered settings (2026-11-05):** Live
+  rejection was caused by a room label that did not match the active internal
+  room ID; the native relay originally hid this as a generic unavailable/rejected
+  error. Version 0.1.2 remembers workspace/session preferences, resolves the active
+  room only after explicit tab selection, and returns sanitized actionable errors.
+  Invalid scopes no longer mutate heartbeat/ownership, and idle other-profile
+  connectors cannot displace a selected connection. Verified 36 focused tests,
+  19 isolated browser checks, zero axe violations, and 550 full-suite tests with
+  zero failures/errors/skips. The real synthetic MCP/HTTP/native test covers
+  wrong-room rejection and automatic-room binding. Backend restarted; extension
+  reload in the dedicated profile and normal-session acceptance remain pending.
+
+- **Governed Chrome companion prototype (2026-11-04):** Added a Manifest V3
+  extension with explicit tab selection and local approval for navigate/click/fill,
+  a token-authenticated Native Messaging relay, and six scoped `browser.*` tools
+  through the existing `/call`/MCP path. Requests are bound to workspace/session/
+  room, stale documents are rejected, and uncertain dispatched work is never
+  automatically repeated. Navigator checks queueing, execution and evidence;
+  append-only audit metadata excludes page content and filled values. Full suite:
+  **545 tests passed**, zero failures/errors/skips. Isolated Chrome for Testing
+  checks: **13 passed**, zero axe violations. Real MCP/HTTP/native-stdio round
+  trip passed against a synthetic server. Installed DevTools MCP 1.12.0 separately
+  initialized, listed 32 tools and read isolated browser pages. The existing CDP
+  bridge reported connected even while the client browser host was unavailable;
+  the original host failure's cause remains unconfirmed. After explicit approval,
+  native-host registration and backend restart completed; live health, six browser
+  tools and unauthorized-relay HTTP 401 were verified. Dedicated-profile loading
+  and normal-session acceptance remain pending manual installation. See [resource record](GOOGLE_BROWSER_RESOURCES.md)
+  and [companion instructions](chrome_extension/README.md). No billing, profile,
+  global MCP configuration, commit or push was performed for this slice.
 
 - **Video room media workspace (2026-11-01):** Added gallery/list and media filters,
   browser source playback, room intake from the top toolbar, and floating Beta

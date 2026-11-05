@@ -5015,7 +5015,74 @@ def chat_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def browser_extension_context(args: Dict[str, Any]) -> Dict[str, str]:
+    try:
+        workspace_id, session_id = workspace_from_args(args)
+    except (KeyError, ValueError) as exc:
+        raise BrowserRelayError("scope_unavailable", "The saved workspace or session is unavailable") from exc
+    session = STORE.find_session(session_id)
+    room = str(session.get("active_room") or "lobby")
+    if args.get("room") and args["room"] != room:
+        raise BrowserRelayError("room_changed", "The selected room is no longer active; select the tab again to bind the current room")
+    return {"workspace_id": workspace_id, "session_id": session_id, "room": room}
+
+
+def browser_extension_guard(scope: Dict[str, str], action: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    if action in {"navigate", "click", "fill"} and access_mode() != "full":
+        return {"allowed": False, "reason": "Full computer access is required for browser actions"}
+    state = STORE.ensure_governance_state(scope["workspace_id"])
+    decision = active_governance_registry().preflight(
+        str(args.get("intent") or "Read the selected browser page"),
+        dict(state.get("gates") or {}), STORE.pending_governance(scope["workspace_id"], scope["session_id"]),
+    )
+    if not decision.get("allowed"):
+        STORE.append_governance_incident(scope["workspace_id"], scope["session_id"],
+            gate_ids=decision.get("gate_ids") or [], attempted_action=f"browser.{action}",
+            reason="Navigator rejected a browser request", evidence=[])
+    return decision
+
+
+def browser_extension_audit(scope: Dict[str, str], event: Dict[str, Any]) -> None:
+    # Append-only metadata; no page text, URLs, labels or filled values.
+    with STORE._lock:
+        STORE._append_ndjson(STORE.workspace_dir(scope["workspace_id"]) / "browser-extension-audit.ndjson", {**scope, **event})
+
+
+def browser_extension_postflight(job: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    check = active_governance_registry().postflight(
+        "Browser observation received.", [{"type": "browser_extension", "status": result.get("status"),
+                                           "request_id": job["request_id"], "action": job["action"]}],
+        task_type="browser_extension",
+    )
+    if not check.get("allowed"):
+        scope = job["scope"]
+        STORE.append_governance_incident(scope["workspace_id"], scope["session_id"],
+            gate_ids=check.get("gate_ids") or [], attempted_action=f"browser.{job['action']}",
+            reason="Navigator rejected browser evidence", evidence=[])
+    return check
+
+
+from browser_extension import BrowserExtensionBroker, BrowserRelayError
+
+BROWSER_EXTENSION = BrowserExtensionBroker(browser_extension_context, browser_extension_guard,
+                                           browser_extension_audit, browser_extension_postflight)
+
+
+def browser_extension_relay_authorized(handler: Any) -> bool:
+    if handler.client_address[0] not in {"127.0.0.1", "::1"} or handler.headers.get("Origin") is not None:
+        return False
+    try:
+        settings = json.loads((ROOT / ".runtime" / "browser-extension" / "settings.json").read_text("utf-8"))
+        token = settings.get("token")
+        return isinstance(token, str) and len(token) >= 40 and secrets.compare_digest(
+            handler.headers.get("Authorization", ""), "Bearer " + token)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 TOOLS = [
+    *({"name": "browser." + action, "description": "Scoped Chrome companion " + action + "; mutations require local popup approval."}
+      for action in ("status", "read", "navigate", "click", "fill", "stop")),
     {"name": "office.session_info", "description": "Read the active standalone session."},
     {"name": "office.workspace_list", "description": "List local workspaces."},
     {"name": "office.workspace_activate", "description": "Select the most recent session in one explicitly chosen workspace."},
@@ -5580,6 +5647,20 @@ class VeridexHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path == "/api/browser-extension/relay":
+                if not browser_extension_relay_authorized(self):
+                    self._json({"error": "Native browser relay authorization required"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                value = json.loads(self._raw_body(262144).decode("utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError("Native relay request must be an object")
+                try:
+                    result = BROWSER_EXTENSION.relay(value)
+                except BrowserRelayError as exc:
+                    self._json({"error_code": exc.code}, HTTPStatus.CONFLICT)
+                    return
+                self._json(result)
+                return
             if not self._remote_authorized():
                 self._reject_remote()
                 return
@@ -6308,7 +6389,9 @@ class VeridexHandler(BaseHTTPRequestHandler):
     def _call_tool(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         tool = str(payload.get("tool") or "")
         args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-        if tool == "office.session_info":
+        if tool in {"browser.status", "browser.read", "browser.navigate", "browser.click", "browser.fill", "browser.stop"}:
+            value = BROWSER_EXTENSION.call(tool.split(".", 1)[1], args)
+        elif tool == "office.session_info":
             session = STORE.find_session(str(args.get("session_id") or ""))
             value = dict(session)
         elif tool == "office.workspace_list":

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Veridex Browser Companion",
+  "version": "0.1.2",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkaVqx2fb+QFAEtl5TpNqNzTCzVY0qU6Xp9ahpksgrF2ddZTMWwYuraB/9KIndrlQgFYqw2w3hk5rURr+WjQw3Piz3uMpGcs+rHd8uftRqSn532bs9b/GHwCXNXcEetcF8CEXWl1aMPct1FkzVyyjk+7v6RW/UyogH9Udpy99sMMcf7INyqIlEXLzk5hd7dZVj9fF+2ZG7fOVNs56+pPgmuy38xqmT5O6pJb+rVhGKBTAcl9074hyMNb/FA2DITLUF6j8uP5/DH6MUC8U86M7ROCO8S7yV6CjodrHTDDENR/zRZi8lrZg/AYqtDkYskTnpks3Xg421IhtJkQ+RIH1cwIDAQAB",
+  "description": "Explicit tab selection and locally approved browser actions through Veridex.",
+  "permissions": ["activeTab", "scripting", "nativeMessaging", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "service_worker.js"},
+  "action": {"default_popup": "popup.html", "default_title": "Veridex Browser Companion"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'"}
+}
