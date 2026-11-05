@@ -115,6 +115,34 @@ class RoomJobTests(unittest.TestCase):
             restored=server.art_job_status('artjob_fixture',args)
         self.assertEqual(restored['status'],'completed');self.assertEqual(restored['result']['files'][0]['file_id'],file['file_id'])
 
+    def test_room_only_image_send_does_not_break_job_history(self):
+        from image_preview import ImagePreview
+
+        source_ws = self.store.create_workspace('Source')['workspace_id']
+        source_session = self.store.create_session(source_ws, 'Source image')['session_id']
+        self.store.set_room(source_ws, source_session, 'art_department')
+        source = self.store.save_file(source_ws, source_session, 'source.png', self.image_bytes(), 'image/png')
+        studio = self.store.save_file(self.ws, self.session, 'studio.png', self.image_bytes(), 'image/png',
+            source='generated', kind='generated_image', scope='room', scope_ref='art_department',
+            metadata={'art': {'job_id': 'artjob_session_fixture'}})
+        with patch.object(server, 'STORE', self.store), patch.object(server, 'room_jobs', return_value=self.manager):
+            copied = ImagePreview(self.store, server.verify_chat_attachments).send({
+                'workspace_id': source_ws, 'session_id': source_session, 'room_id': 'art_department',
+                'library': 'session', 'file_id': source['file_id'], 'sha256': source['sha256'],
+                'target_workspace_id': self.ws, 'target_room_id': 'art_department',
+                'confirm': True, 'request_id': 'room-only-history-fixture'})
+            args = {'workspace_id': self.ws, 'session_id': self.session}
+            for _ in range(2):
+                result = server.room_job_action(args)
+                self.assertEqual(len(result['jobs']), 1)
+                self.assertEqual(result['jobs'][0]['files'][0]['file_id'], studio['file_id'])
+                self.assertEqual(result['workspace_jobs'], [])
+            self.assertIn(copied['file_id'], {row['file_id'] for row in self.store.list_generated_images(self.ws)})
+            self.assertEqual(Path(copied['path']).read_bytes(), self.image_bytes())
+            server.verify_chat_attachments(self.ws, [copied])
+        self.assertEqual(len(self.store.list_sessions(self.ws)), 1)
+        self.assertEqual(self.calls, [])
+
     def test_art_studio_can_stop_save_and_resume_with_original_provider(self):
         native=ArtJobManager();started=threading.Event();release=threading.Event()
         def generate(payload,sources):

@@ -8,6 +8,18 @@ because a related implementation exists. Do not record passwords or tokens here.
 
 ## Resolved with recorded evidence
 
+- **Empty-session toast after sending an image to Visual Design (2026-11-05):**
+  Room-only image copies correctly have no producing session. Jobs polling tried
+  to import these copies as legacy generation jobs and raised `Unknown session:`
+  with an empty ID every refresh. History import now skips images without a
+  source session; the copies remain in Images and need no destination session.
+  A regression reproduced the exact exception before the fix. All 39 room-job
+  and image-preview tests passed afterward. After backend restart, the affected
+  live Jobs request changed from HTTP 404 to 200; image listing and serving an
+  existing room-only copy also returned 200. Full suite: 546 tests passed,
+  zero failures/errors/skips. Disappearance of the toast still needs the user's
+  visual confirmation in the dedicated window.
+
 - **PowerShell profile and dedicated Chrome startup (2026-11-03):** Normal
   Windows PowerShell blocked the startup profile because no persistent execution
   policy was set. With user authorization, set `CurrentUser` to `RemoteSigned`.

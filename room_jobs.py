@@ -302,6 +302,8 @@ class RoomJobs:
             known_native={r.get('external_job_id') for r in known}
             groups={}
             for file in images:
+                # Room-library copies have no producing session or generation job.
+                if not file.get('source_session_id'):continue
                 if file['file_id'] in known_files:continue
                 native=str(file.get('metadata',{}).get('art',{}).get('job_id') or '')
                 if native.startswith('rj_') or (native and native in known_native):continue

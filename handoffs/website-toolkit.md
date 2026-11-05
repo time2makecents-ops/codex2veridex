@@ -4,11 +4,24 @@ Updated 2026-11-04. Shared setup version 1.1.0.
 
 ## Resume checkpoint
 
+Follow-up 2026-11-05: diagnosed the user's empty `Unknown session:` toast after
+image Send. Room-only copies were being imported into generation-job history
+without a producing session. `room_jobs.py` now excludes these from history
+imports while keeping them in Images. Regression reproduced before the fix;
+39 focused tests passed. Backend restarted; affected live Jobs request, image
+listing and existing-copy content return 200. Full suite: 546 passed, zero
+failures/errors/skips; visual toast acceptance pending in the dedicated window
+the user just opened. The user authorized committing and pushing this fix;
+identify its revision from this checkout's Git history. Preserve the other terminal's
+browser-extension changes and the user's untracked screenshot. After this fix,
+resume the website toolkit below; the user's side-chat plan is not available
+in this main chat and still needs to be supplied before executing that plan.
+
 The OpenAI resource-installation work is complete locally. Canonical setup
-commit: **`413d865`** on `main` (`codex-personal-setup`). The user requested local
-commits and this handoff; **this slice has not been pushed**. The Veridex handoff
-commit is identified by this checkout's Git history. Do not claim cross-computer
-availability before publication. codexxx stops on unpublished source divergence;
+commit: **`413d865`** on `main` (`codex-personal-setup`) remains unpublished.
+Publishing the Veridex fix and handoff does not publish that separate setup
+repository. Do not claim cross-computer availability of the setup installation
+before its publication. codexxx stops on unpublished source divergence;
 do not bypass its guard. Preserve the Google terminal's independent changes.
 
 Next concrete action: reload/resume Codex, open `/mcp`, and check that
@@ -98,5 +111,5 @@ No OpenAI model API calls, new billing, sign-ins, hosting deployments or service
 port allocations were performed for these resource reviews. App code is
 unchanged; no Veridex application tests were needed. The setup publication
 checks and repository commit history establish synchronization; local files
-alone do not. The latest request authorizes local commits and a handoff only;
-publication of this installation slice remains pending explicit push authorization.
+alone do not. Publication of the separate setup installation slice remains
+pending explicit push authorization for that repository.
