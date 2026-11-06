@@ -26,7 +26,7 @@ context it needs. Do not read every handoff automatically.
 
 9. [General image preview and editing](../IMAGE_PREVIEW_PLAN.md) - continue local image preview/editing acceptance; 517-test suite and synthetic U2NET inference passed, real-image and browser QA pending.
 
-10. [Website design toolkit](website-toolkit.md) - resume installed zero-credit OpenAI resources, client MCP verification, separate Google work and real 45% pause acceptance; latest commits are local.
+10. [Website design toolkit](website-toolkit.md) - Full Circle website launched and verified: v7 public with 541-515-0838, HTTPS redirects, secure PHP and browser checks passed. Broader business work remains; protected v5 retained; unpublished local changes.
 
 Start a new PowerShell terminal, run `codexxx`, and say:
 

@@ -1,0 +1,12 @@
+{
+  "name": "v1-original",
+  "label": "Version 1 \u2014 Original website draft",
+  "saved_utc": "2026-11-05T18:24:41.570029+00:00",
+  "status": "Local draft; not approved or published",
+  "sha256": {
+    "assets/full-circle-brand.jpg": "617e1ea88a3792e903587c681cc8111445e632546c57b18101a768389791da23",
+    "index.html": "be9cff2876960a9323f4afd23d9b5cc1800e33eb9be2db7ef7fa99f33bbfe45e",
+    "site.js": "dfe11c3193ec1662cd30195fb6624be003a5f39e432690dd0f4328a9591f9d2c",
+    "styles.css": "d60c1f2bddf88a1b8ca66f1667d388e20a5ed51c1aedcbb86ee1febde5ae97f3"
+  }
+}

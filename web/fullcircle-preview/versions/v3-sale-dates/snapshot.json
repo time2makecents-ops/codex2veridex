@@ -1,0 +1,12 @@
+{
+  "name": "v3-sale-dates",
+  "label": "Version 3 \u2014 Sale date and date range",
+  "saved_utc": "2026-11-05T18:40:30.770538+00:00",
+  "status": "Local draft; not approved or published",
+  "sha256": {
+    "assets/full-circle-brand.jpg": "617e1ea88a3792e903587c681cc8111445e632546c57b18101a768389791da23",
+    "index.html": "8ed096b3680cf0ac1df7a2c21e6eec90d9fbd4538c229aa2c871a00d0dcbea5d",
+    "site.js": "4e4f97feffc8c17f7dc4164d52fd691d0f2430ce8899901fc3013d613f31abc6",
+    "styles.css": "c8fc2b9b7f80c50432a58a4082d817abf16254690923f535fe965c83d0ea0edc"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "v4-contact-email",
+  "label": "Version 4 \u2014 Public contact email",
+  "saved_utc": "2026-11-05T19:23:04.892401+00:00",
+  "status": "Local draft; not approved or published",
+  "sha256": {
+    "assets/full-circle-brand.jpg": "617e1ea88a3792e903587c681cc8111445e632546c57b18101a768389791da23",
+    "index.html": "cf7f01a290c4b0cac04678ea94a04aa6f6707e712dbc6c9128bbf5f2551cdede",
+    "site.js": "4e4f97feffc8c17f7dc4164d52fd691d0f2430ce8899901fc3013d613f31abc6",
+    "styles.css": "8399824519b5d893cb842171050ff9adc97b0f31e2d09199b67ae46245ae3a34"
+  }
+}
